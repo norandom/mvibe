@@ -1,6 +1,6 @@
 # OpenCode V2 target amendment
 
-On 2026-10-31 the user clarified that the target is OpenCode 2 with automatic updates, and reported a local 2.2.6 installation. This supersedes the original 1.19.5 SDK target. Task 1.1 remains complete; task 1.2 remains incomplete while V2 setup is verified.
+On 2026-10-31 the user clarified that the target is OpenCode 2 with automatic updates, and reported a local 2.2.6 installation. This supersedes the original 1.19.5 SDK target. At amendment time, task 1.1 was complete and task 1.2 awaited V2 setup. All implementation tasks are now checked in tasks.md; the final feature gate and evidence limits are recorded in validation.md.
 
 ## Verified evidence
 

@@ -101,6 +101,26 @@ The package version starts independently of the upstream Vibe source version; re
 | docs/vibe-provenance.md | Source hashes/license/deviation record |
 | scripts/verify.ps1 | Offline Python/plugin/typecheck orchestration |
 
+### Implementation File Alignment
+The initial file plan was refined into the following internal boundaries during implementation. These splits retain the dependency direction above and add no second authentication implementation.
+
+| Path | Implemented responsibility |
+| --- | --- |
+| mvibe_auth/_auth_config.py | Primitive immutable configuration below services and facade |
+| mvibe_auth/_auth_contracts.py | Public immutable outcomes, snapshots and safe failures |
+| mvibe_auth/_bridge_protocol.py | Validated Python wire models and bounded framing |
+| mvibe_auth/login_cli.py | V2 command browser presentation using public AuthSession; marker-only stdout |
+| packages/opencode-vibe-oidc/src/models.ts | Strict metadata mapping and connection-bound inventory |
+| packages/opencode-vibe-oidc/src/windows-job.ts | Windows 10+ native Job Object ownership via stdlib ctypes, including descendants after root exit |
+| scripts/verification.py | Named executed evidence and all-criterion acceptance validation |
+| scripts/live_evidence.py | Offline-only sanitized live-report validation |
+| docs/consumer-integration.md | Native-host integration evidence and supported V2 routing/retry contracts |
+| docs/offline-acceptance.md | Reproducible final offline result and limitations |
+| docs/live-results.md | Explicitly unverified live evidence record |
+| docs/live-evidence-template.json | Structured per-consumer/per-operation results |
+
+V2 provider definitions use the `aisdk:` package selector. The adapter adds the host-supported `x-should-retry: false` response header while preserving status, payload and body streaming; SDK construction options alone do not suppress native host replay. The private bridge API version follows the independent library distribution (0.1.0), not Vibe provenance (3.0.4). Credential change events invalidate the account-bound catalog. These contracts were verified with the actual isolated host in task 8.1.
+
 ### Modified Files
 - proxy.py: consume AuthSession, application factory/test injection, error normalization and streaming owner; retain CLI.
 - mvibe_auth/__init__.py: explicit public exports without application side effects.
