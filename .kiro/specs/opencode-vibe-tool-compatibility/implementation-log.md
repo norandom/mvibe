@@ -35,3 +35,15 @@ Live execution is separate from the default offline implementation checks.
   families, with explicit positive/negative expectations and bounded limits.
 - Per-run trusted fixture material supplies expected hashes. These expectations
   do not grant execution credit; applicability and runtime evidence remain scoped.
+
+## 2.1 Per-turn inventory
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED after one repair.
+- Initial RED: 0 pass / 10 fail with the flag OFF; flag removed after GREEN.
+- Review reproduced stale scope metadata under a retained hash. Nine new
+  regressions failed before repair; the independent original repro now rejects.
+- Fresh independent verification: 614 Bun tests / 1,957 assertions; typecheck
+  and build passed, exit 0. Completion gate: VERIFIED for inventory accounting.
+- Explicit provenance, per-turn definitions, negotiated MCP data and scoped
+  assignments/classifications produce gaps on unknown or changed observations.
+  Inventory accounting grants no positive tool-execution credit.

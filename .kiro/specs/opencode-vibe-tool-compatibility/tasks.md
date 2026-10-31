@@ -38,7 +38,7 @@ not a side effect of implementation or the default verifier.
   - _Requirements: 1.4, 3.4, 4.1, 4.2, 4.3, 5.4, 5.8, 5.10, 6.4_
 
 - [ ] 2. Implement inventory and independent evidence gates
-- [ ] 2.1 Reconcile registered tools with actual session offerings
+- [x] 2.1 Reconcile registered tools with actual session offerings
   - Combine transformed registry entries, negotiated MCP discovery and every primary turn's effective definitions, preserving namespaces and schema fingerprints.
   - Distinguish known origins, ambiguous identities, disabled states and absent exposure; never infer provenance from a tool name.
   - Completion is visible when late/new tools or schema drift produce explicit gaps, while no controlled fixture can grant a PASS to a different private-profile tool.
