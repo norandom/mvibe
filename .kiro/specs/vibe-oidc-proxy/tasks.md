@@ -61,7 +61,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 2.2_
   - _Requirements: 2.5, 2.6, 2.7, 2.8, 10.6_
 
-- [ ] 3.2 Verify signed-token and discovery contracts
+- [x] 3.2 Verify signed-token and discovery contracts
   - Exercise discovery issuer/endpoint checks and PKCE/state/nonce using synthetic issuer responses.
   - Generate synthetic signed tokens covering supported algorithms, claims, lifetime boundaries, changed subject and omitted replacement tokens; preserve library validation rather than copying it.
   - Done when positive exchange/refresh cases pass and invalid signatures, claims, token types and lifetimes fail with safe outcomes.
@@ -257,4 +257,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 3.1: Callback retains blank query values before cardinality checks and bounds writer shutdown; synthetic listener tests cover timeout/cancellation with existing service300seconddeadline simulated. Python486pass, independentAPPROVED.
+
+
+- 3.2: Generated signed JWT/real Authlib offline checks found nonfinite date claims accepted by dependencies; finite-date supplement runs after existing claims.validate. Python551pass; independentAPPROVED. No service/storepolicychanged.
 

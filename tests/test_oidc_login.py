@@ -1,4 +1,4 @@
-"""Offline callback contracts; all listeners, requests and deadlines are synthetic."""
+"""Offline callback and signed-token contracts using synthetic I/O and clocks."""
 from __future__ import annotations
 
 import asyncio
@@ -343,3 +343,301 @@ async def test_login_deadline_and_cancellation_release_callback(monkeypatch, lis
     assert listener.closed and listener.joined and session.closed
     assert callback_instances[0].result.cancelled()
     assert not callback_instances[0]._connections
+
+# OIDC client contracts (2.4, 3.1–3.3, 4.5–4.6, 10.6).
+import base64
+import hashlib
+from urllib.parse import parse_qs, urlsplit
+
+import httpx2
+from joserfc import jwt
+from joserfc.errors import JoseError
+from joserfc.jwk import ECKey, RSAKey
+from pydantic import ValidationError
+
+from mvibe_auth._oidc_client import OidcClient, OidcMetadata
+from mvibe_auth._oidc_config import OidcConfig
+
+
+ISSUER = "https://issuer.invalid"
+CLIENT = "synthetic-client"
+NONCE = "synthetic-nonce"
+
+
+@pytest.fixture(scope="module")
+def signing_keys():
+    # Generated in memory; no issuer credentials or disk key files.
+    return {
+        "RSA": RSAKey.generate_key(2048, parameters={"kid": "synthetic-rsa"}),
+        "EC256": ECKey.generate_key("P-256", parameters={"kid": "synthetic-ec256"}),
+        "EC384": ECKey.generate_key("P-384", parameters={"kid": "synthetic-ec384"}),
+        "EC512": ECKey.generate_key("P-521", parameters={"kid": "synthetic-ec512"}),
+    }
+
+
+@pytest.fixture
+def issuer(monkeypatch, clock, signing_keys):
+    import mvibe_auth._oidc_client as module
+    import joserfc._rfc7519.claims as claims_module
+
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock.time))
+    monkeypatch.setattr(claims_module, "_generate_now", lambda: int(clock.now))
+    config = OidcConfig(ISSUER, CLIENT, "https://api.invalid", URI, "openid offline_access")
+    metadata = OidcMetadata(
+        issuer=ISSUER, authorization_endpoint=f"{ISSUER}/authorize",
+        token_endpoint=f"{ISSUER}/token", jwks_uri=f"{ISSUER}/jwks",
+        userinfo_endpoint=f"{ISSUER}/userinfo",
+        id_token_signing_alg_values_supported=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
+    )
+
+    def signed(overrides=None, *, omit=(), alg="RS256", key=None):
+        claims = {"iss": ISSUER, "sub": "synthetic-subject", "aud": CLIENT,
+                  "exp": int(clock.now) + 300, "iat": int(clock.now), "nonce": NONCE}
+        claims.update(overrides or {})
+        for field in omit:
+            claims.pop(field, None)
+        key = key or signing_keys["RSA" if alg.startswith("RS") else f"EC{alg[2:]}"]
+        return jwt.encode({"alg": alg, "kid": key.kid}, claims, key, algorithms=[alg])
+
+    def raw(**overrides):
+        response = {"access_token": "synthetic-access", "token_type": "Bearer", "expires_in": 600,
+                    "refresh_token": "synthetic-refresh", "id_token": signed()}
+        response.update(overrides)
+        return response
+
+    def session(controlled_http):
+        # Preserve the real Authlib client and OAuth processing, replacing only I/O.
+        return module.AsyncOAuth2Client(
+            client_id=CLIENT, token_endpoint_auth_method="none", redirect_uri=URI,
+            scope=config.scope, code_challenge_method="S256", follow_redirects=False,
+            trust_env=False, transport=controlled_http.transport,
+        )
+
+    def jwks(controlled_http, key=None):
+        controlled_http.queue("GET", metadata.jwks_uri,
+                              json={"keys": [(key or signing_keys["RSA"]).as_dict(private=False)]})
+
+    return SimpleNamespace(client=OidcClient(config), metadata=metadata, signed=signed,
+                           raw=raw, session=session, jwks=jwks, clock=clock)
+
+
+@pytest.mark.anyio
+async def test_discovery_and_code_exchange_bind_pkce_state_nonce(issuer, controlled_http):
+    controlled_http.queue("GET", f"{ISSUER}/.well-known/openid-configuration",
+                          json=issuer.metadata.model_dump())
+    async with issuer.session(controlled_http) as session:
+        metadata = await issuer.client.discover(session)
+        verifier = "synthetic-verifier-" + "a" * 48
+        url, state = session.create_authorization_url(metadata.authorization_endpoint,
+                    state=STATE, nonce=NONCE, code_verifier=verifier, audience="https://api.invalid")
+        query = parse_qs(urlsplit(url).query)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        assert state == STATE
+        assert query["code_challenge"] == [challenge] and query["code_challenge_method"] == ["S256"]
+        assert query["nonce"] == [NONCE] and query["state"] == [STATE]
+        assert query["client_id"] == [CLIENT] and query["redirect_uri"] == [URI]
+        controlled_http.queue("POST", metadata.token_endpoint, json=issuer.raw())
+        raw = await session.fetch_token(metadata.token_endpoint,
+                authorization_response=f"{URI}?state={STATE}&code=synthetic-code",
+                state=STATE, code_verifier=verifier)
+        form = parse_qs(controlled_http.requests[-1].content.decode())
+        assert form["code_verifier"] == [verifier] and form["code"] == ["synthetic-code"]
+        assert form["grant_type"] == ["authorization_code"] and form["client_id"] == [CLIENT]
+        issuer.jwks(controlled_http)
+        tokens = await issuer.client.validated_tokens(session, metadata, raw, nonce=NONCE)
+        assert tokens.subject == "synthetic-subject" and tokens.nonce == NONCE
+        assert tokens.expires_at == issuer.clock.now + 600
+        assert tokens.id_token_expires_at == issuer.clock.now + 300
+        assert all("authorization" not in request.headers for request in controlled_http.requests)
+    assert not controlled_http.responses
+
+
+@pytest.mark.anyio
+async def test_exchange_rejects_state_before_http(issuer, controlled_http):
+    from authlib.oauth2.rfc6749.errors import MismatchingStateException
+    async with issuer.session(controlled_http) as session:
+        with pytest.raises(MismatchingStateException):
+            await session.fetch_token(issuer.metadata.token_endpoint,
+                authorization_response=f"{URI}?state=wrong&code=synthetic-code", state=STATE,
+                code_verifier="synthetic-verifier-" + "a" * 48)
+    assert not controlled_http.requests
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("field,value", [
+    ("issuer", "https://other.invalid"),
+    ("authorization_endpoint", "http://remote.invalid/authorize"),
+    ("token_endpoint", "https://user:password@issuer.invalid/token"),
+    ("jwks_uri", "file:///keys"),
+    ("userinfo_endpoint", "https://other.invalid/userinfo"),
+    ("token_endpoint", "https://issuer.invalid/token#fragment"),
+])
+async def test_discovery_rejects_issuer_and_unsafe_endpoints(issuer, controlled_http, field, value):
+    metadata = issuer.metadata.model_dump()
+    metadata[field] = value
+    controlled_http.queue("GET", f"{ISSUER}/.well-known/openid-configuration", json=metadata)
+    async with issuer.session(controlled_http) as session:
+        with pytest.raises(OidcError):
+            await issuer.client.discover(session)
+    assert len(controlled_http.requests) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("alg", ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"])
+async def test_supported_signed_algorithms(issuer, controlled_http, signing_keys, alg):
+    key = signing_keys["RSA" if alg.startswith("RS") else f"EC{alg[2:]}"]
+    issuer.jwks(controlled_http, key)
+    async with issuer.session(controlled_http) as session:
+        tokens = await issuer.client.validated_tokens(session, issuer.metadata,
+                    issuer.raw(id_token=issuer.signed(alg=alg)), nonce=NONCE)
+    assert tokens.subject == "synthetic-subject"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("overrides,omit", [
+    ({"iss": "https://wrong.invalid"}, ()), ({"aud": "wrong-client"}, ()),
+    ({"nonce": "wrong-nonce"}, ()), ({}, ("nonce",)),
+    ({"sub": ""}, ()), ({"sub": 123}, ()), ({}, ("sub",)),
+    ({}, ("exp",)), ({}, ("iat",)), ({}, ("iss",)), ({}, ("aud",)),
+    ({"exp": 1_699_999_969}, ()), ({"iat": 1_700_000_031}, ()),
+    ({"nbf": 1_700_000_031}, ()), ({"exp": "tomorrow"}, ()),
+    ({"aud": [CLIENT, "other"]}, ()), ({"azp": "wrong-client"}, ()),
+    ({"at_hash": "invalid-hash"}, ()),
+])
+async def test_invalid_signed_claims_rejected(issuer, controlled_http, overrides, omit):
+    issuer.jwks(controlled_http)
+    async with issuer.session(controlled_http) as session:
+        with pytest.raises((JoseError, OidcError)):
+            await issuer.client.validated_tokens(session, issuer.metadata,
+                    issuer.raw(id_token=issuer.signed(overrides, omit=omit)), nonce=NONCE)
+
+
+@pytest.mark.anyio
+async def test_invalid_signature_rejected(issuer, controlled_http):
+    wrong = RSAKey.generate_key(2048, parameters={"kid": "synthetic-rsa"})
+    issuer.jwks(controlled_http)
+    async with issuer.session(controlled_http) as session:
+        with pytest.raises(JoseError):
+            await issuer.client.validated_tokens(session, issuer.metadata,
+                    issuer.raw(id_token=issuer.signed(key=wrong)), nonce=NONCE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("algorithms", [["HS256"], ["none"], [], ["RS384"]])
+async def test_unapproved_algorithm_rejected(issuer, controlled_http, algorithms):
+    issuer.jwks(controlled_http)
+    metadata = issuer.metadata.model_copy(update={"id_token_signing_alg_values_supported": algorithms})
+    async with issuer.session(controlled_http) as session:
+        with pytest.raises((OidcError, JoseError)):
+            await issuer.client.validated_tokens(session, metadata, issuer.raw(), nonce=NONCE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("overrides", [
+    {"access_token": ""}, {"access_token": None}, {"access_token": 123},
+    {"token_type": "Basic"}, {"token_type": None}, {"token_type": 123},
+    {"expires_in": 0}, {"expires_in": -1}, {"expires_in": float("inf")},
+    {"expires_in": float("nan")}, {"expires_in": None}, {"id_token": None},
+])
+async def test_invalid_token_response_rejected_before_jwks(issuer, controlled_http, overrides):
+    async with issuer.session(controlled_http) as session:
+        with pytest.raises((OidcError, ValidationError)):
+            await issuer.client.validated_tokens(session, issuer.metadata, issuer.raw(**overrides), nonce=NONCE)
+    assert not controlled_http.requests
+
+
+@pytest.mark.anyio
+async def test_refresh_rotation_and_omitted_replacements(issuer, controlled_http):
+    async with issuer.session(controlled_http) as session:
+        issuer.jwks(controlled_http)
+        previous = await issuer.client.validated_tokens(session, issuer.metadata, issuer.raw(), nonce=NONCE)
+        controlled_http.queue("POST", issuer.metadata.token_endpoint, json=issuer.raw(
+            access_token="synthetic-access-rotated", refresh_token="synthetic-refresh-rotated",
+            id_token=issuer.signed(omit=("nonce",))))
+        raw = await session.refresh_token(issuer.metadata.token_endpoint,
+                                         refresh_token=previous.refresh_token.get_secret_value())
+        form = parse_qs(controlled_http.requests[-1].content.decode())
+        assert form["grant_type"] == ["refresh_token"] and form["refresh_token"] == ["synthetic-refresh"]
+        issuer.jwks(controlled_http)
+        rotated = await issuer.client.validated_tokens(session, issuer.metadata, raw, previous=previous)
+        assert rotated.refresh_token.get_secret_value() == "synthetic-refresh-rotated"
+        assert rotated.subject == previous.subject and rotated.nonce == NONCE
+        omitted = {"access_token": "synthetic-access-next", "token_type": "bearer", "expires_in": 90}
+        retained = await issuer.client.validated_tokens(session, issuer.metadata, omitted, previous=rotated)
+        assert retained.refresh_token == rotated.refresh_token
+        assert retained.id_token == rotated.id_token
+        assert retained.id_token_expires_at == rotated.id_token_expires_at
+        assert retained.access_token.get_secret_value() == "synthetic-access-next"
+    assert not controlled_http.responses
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("changed", [{"sub": "changed-subject"}, {"nonce": "wrong-nonce"}])
+async def test_refresh_rejects_identity_or_nonce_change(issuer, controlled_http, changed):
+    async with issuer.session(controlled_http) as session:
+        issuer.jwks(controlled_http)
+        previous = await issuer.client.validated_tokens(session, issuer.metadata, issuer.raw(), nonce=NONCE)
+        issuer.jwks(controlled_http)
+        with pytest.raises((OidcError, JoseError)):
+            await issuer.client.validated_tokens(session, issuer.metadata,
+                issuer.raw(id_token=issuer.signed(changed)), previous=previous)
+        assert previous.subject == "synthetic-subject" and previous.nonce == NONCE
+
+
+@pytest.mark.anyio
+async def test_original_nonce_required_when_refresh_includes_nonce(issuer, controlled_http):
+    async with issuer.session(controlled_http) as session:
+        issuer.jwks(controlled_http)
+        previous = await issuer.client.validated_tokens(session, issuer.metadata, issuer.raw(), nonce=NONCE)
+        issuer.jwks(controlled_http)
+        with pytest.raises(OidcError, match="original nonce is unavailable"):
+            await issuer.client.validated_tokens(session, issuer.metadata, issuer.raw(),
+                                                previous=previous.model_copy(update={"nonce": None}))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("offset", [-30, -29, 0, 30])
+async def test_id_token_expiry_uses_documented_library_leeway(issuer, controlled_http, offset):
+    issuer.jwks(controlled_http)
+    async with issuer.session(controlled_http) as session:
+        tokens = await issuer.client.validated_tokens(session, issuer.metadata,
+                issuer.raw(id_token=issuer.signed({"exp": int(issuer.clock.now) + offset})), nonce=NONCE)
+    assert tokens.id_token_expires_at == issuer.clock.now + offset
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("field,value", [
+    ("exp", float("nan")), ("exp", float("inf")),
+    ("iat", float("nan")), ("iat", float("-inf")),
+    ("nbf", float("nan")), ("nbf", float("-inf")),
+])
+async def test_nonfinite_id_token_lifetime_rejected(issuer, controlled_http, field, value):
+    issuer.jwks(controlled_http)
+    async with issuer.session(controlled_http) as session:
+        with pytest.raises((OidcError, JoseError)):
+            await issuer.client.validated_tokens(session, issuer.metadata,
+                issuer.raw(id_token=issuer.signed({field: value})), nonce=NONCE)
+
+@pytest.mark.anyio
+async def test_symmetric_token_rejected_even_if_advertised(issuer, controlled_http):
+    from joserfc.jwk import OctKey
+    key = OctKey.generate_key(256, parameters={"kid": "synthetic-hmac"})
+    encoded = jwt.encode({"alg": "HS256", "kid": key.kid}, {
+        "iss": ISSUER, "aud": CLIENT, "sub": "synthetic-subject", "nonce": NONCE,
+        "iat": int(issuer.clock.now), "exp": int(issuer.clock.now) + 300,
+    }, key, algorithms=["HS256"])
+    issuer.jwks(controlled_http)
+    metadata = issuer.metadata.model_copy(update={"id_token_signing_alg_values_supported": ["HS256", "RS256"]})
+    async with issuer.session(controlled_http) as session:
+        with pytest.raises(JoseError):
+            await issuer.client.validated_tokens(session, metadata, issuer.raw(id_token=encoded), nonce=NONCE)
+
+
+@pytest.mark.anyio
+async def test_fractional_numeric_dates_and_multi_audience_authorized_party(issuer, controlled_http):
+    issuer.jwks(controlled_http)
+    async with issuer.session(controlled_http) as session:
+        tokens = await issuer.client.validated_tokens(session, issuer.metadata, issuer.raw(
+            id_token=issuer.signed({"exp": issuer.clock.now + 300.5, "iat": issuer.clock.now - 0.5,
+                                    "nbf": issuer.clock.now - 0.5, "aud": [CLIENT, "other"], "azp": CLIENT})),
+            nonce=NONCE)
+    assert tokens.id_token_expires_at == issuer.clock.now + 300.5
