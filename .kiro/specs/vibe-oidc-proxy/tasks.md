@@ -52,7 +52,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 2.1_
   - _Requirements: 8.1, 8.2, 8.3, 12.1, 12.2_
 
-- [ ] 3. Authentication primitives
+- [x] 3. Authentication primitives
 - [x] 3.1 Correct callback validation and cleanup
   - Reject blank and nonblank duplicate required parameters while retaining valid matching denial handling.
   - Cover request limits, malformed requests, callback timeout and cancellation using controlled readers/writers.
@@ -68,7 +68,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: OIDC client_
   - _Requirements: 2.4, 3.1, 3.2, 3.3, 4.5, 4.6, 10.6_
 
-- [ ] 3.3 (P) Stabilize credential transport policy
+- [x] 3.3 (P) Stabilize credential transport policy
   - Cover destination checks, marker resolution, proxy/NO_PROXY and configured trust using injected transports; no actual remote traffic.
   - Verify UserInfo uses access tokens, inference uses its separate snapshot and redirects never receive forwarded credentials.
   - Done when transport tests cover both direct/injected paths and disallowed destinations fail before credential use; ownership excludes callback/client test files.
@@ -260,4 +260,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 3.2: Generated signed JWT/real Authlib offline checks found nonfinite date claims accepted by dependencies; finite-date supplement runs after existing claims.validate. Python551pass; independentAPPROVED. No service/storepolicychanged.
+
+
+- 3.3: Characterization-only49transporttests verify real policy with controlledboundaries; no productionchanges or behavioralflag. Python600pass and independentAPPROVED.
 
