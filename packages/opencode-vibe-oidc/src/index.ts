@@ -2,8 +2,10 @@ import { Plugin, Provider } from "@opencode/plugin";
 import { basename, isAbsolute } from "node:path";
 import { BridgeError, StdioBridge } from "./bridge.js";
 import type { HelperCommand } from "./bridge.js";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createProviderFetch, providerBaseURL } from "./provider.js";
 
-export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options">;
+export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options" | "aisdk">;
 
 function settings(options: Plugin.Context["options"]): { command: HelperCommand; audience: string } {
   const value = options.helperCommand;
@@ -21,6 +23,7 @@ function settings(options: Plugin.Context["options"]): { command: HelperCommand;
 
 export async function setupVibe(ctx: RegistrationContext) {
   const { command, audience } = settings(ctx.options);
+  const baseURL = providerBaseURL(audience);
   const bridge = new StdioBridge({ command, audience });
   const registrations: Array<{ dispose(): Promise<void> }> = [];
   let closing: Promise<void> | undefined;
@@ -36,6 +39,11 @@ export async function setupVibe(ctx: RegistrationContext) {
     registrations.push(await ctx.integration.transform(editor => {
       editor.method.update({ integrationID: providerID, method: { id: "vibe-browser", type: "command", label: "Vibe OIDC", command: [command.executable, ...command.args.slice(0, -1), "login"] } });
     }));
+    registrations.push(await ctx.aisdk.hook("sdk", event => {
+      event.options.maxRetries = 0;
+      event.options.fetch = createProviderFetch(bridge, audience);
+      event.sdk = createOpenAICompatible({ name: "vibe-oidc", baseURL, fetch: createProviderFetch(bridge, audience) });
+    }, { providerID }));
   } catch {
     try { await cleanup(); } catch { /* Report the fixed setup diagnostic below. */ }
     throw new BridgeError("setup", "Vibe OIDC registration failed; install a compatible OpenCode V2 host/plugin pair and configure an installed uv-managed helper runtime.");

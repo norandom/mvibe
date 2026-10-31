@@ -181,7 +181,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: Provider integration and Python login-command integration_
   - _Requirements: 12.3, 12.7, 12.8_
 
-- [ ] 7.3 Resolve credentials for each inference request
+- [x] 7.3 Resolve credentials for each inference request
   - Resolve a current snapshot for each request, enforce audience policy, remove caller auth and attach only approved credential/tenant headers.
   - Preserve streaming and tool-call payloads, propagate AbortSignal and prohibit redirects/replay; handle helper retirement as typed request failure.
   - Done when consecutive requests observe changed credentials and tests prove cancellation, passthrough and no token persistence or request replay.
@@ -304,4 +304,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 7.2: V2commandregistration+PythonpublicloginCLI emitsfixedmarkerafterclose/usableoutcome only. Realhost2.2.5 storesmarkerKeyshapeonly; commandcancelremovesattempt and actualPythonPIDexits. Fresh11Python/5Bun+hostsmokePASS; independentfull858Python416Bun/buildsPASS.
+
+
+- 7.3: Provider-scopedV2SDKcustomfetch resolvescurrentsnapshotperrequest validatesdestinationbeforecreds replacescallerheaders approvedonly manualredirect stream/cancel passthrough maxRetries0. RealhostSDK/retrygate8.1mandatory. Fresh18tasktestsPASS independentBun429/typecheck/buildPASS.
 
