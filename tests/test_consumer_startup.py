@@ -29,7 +29,8 @@ async def test_public_injected_startup_records_separate_local_evidence(monkeypat
             assert (await client.post('/v1/responses')).status_code == 404
             assert len(sent) == 1
     assert session.events[-1] == 'close'
-    report = Path(os.environ.get('VIBE_STARTUP_REPORT', 'reports/local-startup.json'))
+    # Report routing is test-only and survives the credential-override fixture reset.
+    report = Path(os.environ.get('MVIBE_STARTUP_REPORT', os.environ.get('VIBE_STARTUP_REPORT', 'reports/local-startup.json')))
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(json.dumps({
         'kind': 'offline-local-startup', 'status': 'passed', 'live': 'unverified',

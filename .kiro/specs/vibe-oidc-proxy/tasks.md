@@ -204,7 +204,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 6.2, 6.4, 7.4_
   - _Requirements: 6.1, 6.3, 10.5, 12.3, 12.4, 12.6, 12.10_
 
-- [ ] 8.2 Make acceptance coverage executable
+- [x] 8.2 Make acceptance coverage executable
   - Map every criterion to named executable checks or required documentary evidence; reject unknown IDs and empty evidence mappings.
   - Implement the offline orchestrator for Python tests, provider tests and typecheck using prepared locked dependencies.
   - Done when failed mandatory checks and missing coverage cause nonzero exit, and the report distinguishes pass/fail/skip without treating collected tests as successful execution.
@@ -317,4 +317,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 6.3 follow-up from8.2: Shutdown/EOF cancelsONLYpendingauth dispatches and drainsalreadyrespondingterminalwriters underoriginallock; prevents duplicatecancelledresponse/concurrentflush. Fourdeterministicregressions. Fresh45dispatcher/lifecyclePASS independent883Python/buildPASS. Originalrunnerfailurepreserved.
+
+
+- 8.2: traceability97specificIDs and scripts/verify.ps1 freshunique-run executedJUnit/host/startup evidence; missing/skipped/failed/stalecannotPASS. Independent883Python458Bun/allofflinePASS runnerexit1ONLY15futuredocevidenceunverified. Fresh20validatorchecksPASS. Upstreambridgefix33b0075 separatelyreviewed; failedoriginalreportpreserved.
 

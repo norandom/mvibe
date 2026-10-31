@@ -1,0 +1,1239 @@
+{
+  "version": 1,
+  "criteria": {
+    "1.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_allowed_routes_use_only_current_public_snapshot"
+      }
+    ],
+    "1.3": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_allowed_routes_use_only_current_public_snapshot"
+      }
+    ],
+    "1.4": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_allowed_routes_use_only_current_public_snapshot"
+      }
+    ],
+    "1.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_api.py",
+        "name": "test_failures_are_typed_sanitized_without_key_fallback"
+      }
+    ],
+    "1.5": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_transport.py",
+        "name": "test_userinfo_sends_access_token_and_never_follows_redirect"
+      }
+    ],
+    "1.6": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_transport.py",
+        "name": "test_inference_destination_denied_before_credentials"
+      }
+    ],
+    "2.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_startup.py",
+        "name": "test_startup_identity_policy"
+      }
+    ],
+    "2.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_startup.py",
+        "name": "test_startup_identity_policy"
+      }
+    ],
+    "2.3": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_startup.py",
+        "name": "test_startup_identity_policy"
+      }
+    ],
+    "2.4": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_discovery_and_code_exchange_bind_pkce_state_nonce"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_exchange_rejects_state_before_http"
+      }
+    ],
+    "2.5": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_invalid_callback_cannot_resolve"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_request_target_and_method_rejected"
+      }
+    ],
+    "2.6": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_matching_denial_is_safe_failure"
+      }
+    ],
+    "2.7": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_login_commit.py",
+        "name": "test_deadline_exposes_stable_failure_after_cleanup"
+      }
+    ],
+    "2.8": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_login_deadline_and_cancellation_release_callback"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_connection_limit_and_shutdown_drains_tasks"
+      }
+    ],
+    "2.9": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_startup.py",
+        "name": "test_failed_login_does_not_start_serving"
+      }
+    ],
+    "3.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_invalid_signed_claims_rejected"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_invalid_signature_rejected"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_supported_signed_algorithms"
+      }
+    ],
+    "3.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_discovery_rejects_issuer_and_unsafe_endpoints"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_unapproved_algorithm_rejected"
+      }
+    ],
+    "3.3": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_invalid_token_response_rejected_before_jwks"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_nonfinite_id_token_lifetime_rejected"
+      }
+    ],
+    "3.4": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_credentials.py",
+        "name": "test_storage_roundtrip_and_displays_keep_existing_schema"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_login_commit.py",
+        "name": "test_validated_login_commits_and_repeated_wait_is_stable"
+      }
+    ],
+    "3.5": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_api.py",
+        "name": "test_reuse_has_stable_typed_outcome_without_browser"
+      }
+    ],
+    "3.6": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_login_commit.py",
+        "name": "test_failed_login_has_one_safe_terminal_outcome"
+      }
+    ],
+    "3.7": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_credentials.py",
+        "name": "test_changed_revision_blocks_refresh_tenant_and_clear"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_credentials.py",
+        "name": "test_tenant_only_change_survives_refresh_commit"
+      }
+    ],
+    "3.8": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_lifecycle.py",
+        "name": "test_public_failure_and_representations_exclude_diagnostics"
+      }
+    ],
+    "3.9": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_mixed_conflicts_share_two_pass_budget"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_commit_conflict_reuses_authoritative_new_identity"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_login_commit.py",
+        "name": "test_browser_wait_preserves_newer_identity"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_login_commit.py",
+        "name": "test_login_conflict_and_refresh_conflict_share_one_budget"
+      }
+    ],
+    "4.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_exact_freshness_threshold"
+      }
+    ],
+    "4.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_exact_freshness_threshold"
+      }
+    ],
+    "4.3": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_refresh_replacement_id_must_be_fresh"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_omitted_id_without_fresh_prior_is_refused"
+      }
+    ],
+    "4.4": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_no_refresh_credentials_gives_relogin"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_invalid_grant_unchanged_rejected_once"
+      }
+    ],
+    "4.5": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_changed_subject_validation_rejected_before_commit"
+      }
+    ],
+    "4.6": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_refresh_omissions_keep_fresh_id_and_refresh"
+      }
+    ],
+    "4.7": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_coordination.py",
+        "name": "test_native_coordinator_serializes_independent_tasks"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_coordination.py",
+        "name": "test_services_on_separate_event_loops_share_rotation"
+      }
+    ],
+    "4.8": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_upstream_application_status_is_preserved_without_replay"
+      },
+      {
+        "kind": "step",
+        "name": "host"
+      }
+    ],
+    "5.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_explicit_organization_bypasses_discovery"
+      }
+    ],
+    "5.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_explicit_organization_bypasses_discovery"
+      }
+    ],
+    "5.3": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_discovery_order_exact_selection_and_pagination"
+      }
+    ],
+    "5.4": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_discovery_order_exact_selection_and_pagination"
+      }
+    ],
+    "5.5": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_discovery_order_exact_selection_and_pagination"
+      }
+    ],
+    "5.6": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_no_accessible_workspace_fails"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_workspace_identifiers_reject_empty"
+      }
+    ],
+    "5.7": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_cache_selection_matching"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_changed_revision_restarts_whole_resolution"
+      }
+    ],
+    "5.8": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_persistence_failure_requires_readable_matching_revision"
+      }
+    ],
+    "6.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_startup.py",
+        "name": "test_cli_loopback_and_port"
+      }
+    ],
+    "6.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_startup.py",
+        "name": "test_cli_loopback_and_port"
+      }
+    ],
+    "6.3": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_consumer_startup.py",
+        "name": "test_public_injected_startup_records_separate_local_evidence"
+      }
+    ],
+    "6.4": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_allowed_routes_use_only_current_public_snapshot"
+      }
+    ],
+    "6.7": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_allowed_routes_use_only_current_public_snapshot"
+      }
+    ],
+    "6.5": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_health_and_rejected_operations_do_not_resolve_or_send"
+      }
+    ],
+    "6.6": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_health_and_rejected_operations_do_not_resolve_or_send"
+      }
+    ],
+    "7.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_query_order_blanks_and_raw_body_preserved"
+      }
+    ],
+    "7.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_allowed_routes_use_only_current_public_snapshot"
+      }
+    ],
+    "7.3": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_decoded_payload_status_headers_and_no_replay_or_redirect"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_missing_type_falls_back_to_json"
+      }
+    ],
+    "7.4": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_consumer_startup.py",
+        "name": "test_public_injected_startup_records_separate_local_evidence"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_decoded_payload_status_headers_and_no_replay_or_redirect"
+      }
+    ],
+    "7.5": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_first_chunk_precedes_upstream_completion"
+      }
+    ],
+    "7.6": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_decoded_payload_status_headers_and_no_replay_or_redirect"
+      }
+    ],
+    "7.7": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_cancel_response_start_closes_without_first_iteration"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_interruption_closes_without_replacement_json"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_repeated_task_cancel_drains_protected_close"
+      }
+    ],
+    "7.8": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_interruption_closes_without_replacement_json"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_close_timeout_retires_client_aborts_sibling_and_rejects_next"
+      }
+    ],
+    "7.9": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_transport.py",
+        "name": "test_inference_marker_never_follows_redirect"
+      }
+    ],
+    "8.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_contracts.py",
+        "name": "test_overrides_capture_and_explicit_mapping"
+      }
+    ],
+    "8.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_startup.py",
+        "name": "test_proxy_default_opt_in_respects_explicit_disablement"
+      }
+    ],
+    "8.3": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_contracts.py",
+        "name": "test_configuration_rejects_invalid_values_safely"
+      }
+    ],
+    "8.4": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_safe_pre_response_errors"
+      }
+    ],
+    "8.5": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_safe_pre_response_errors"
+      }
+    ],
+    "8.6": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_safe_pre_response_errors"
+      }
+    ],
+    "8.7": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_upstream_application_status_is_preserved_without_replay"
+      }
+    ],
+    "9.1": [
+      {
+        "kind": "document",
+        "path": ".kiro/specs/vibe-oidc-proxy/current-state.md",
+        "anchor": "## Evidence and Limits",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/vibe-provenance.md",
+        "anchor": "# Vibe source provenance",
+        "required": true
+      }
+    ],
+    "9.2": [
+      {
+        "kind": "document",
+        "path": ".kiro/specs/vibe-oidc-proxy/current-state.md",
+        "anchor": "## Browser OIDC Flow",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/vibe-provenance.md",
+        "anchor": "# Vibe source provenance",
+        "required": true
+      }
+    ],
+    "9.3": [
+      {
+        "kind": "document",
+        "path": ".kiro/specs/vibe-oidc-proxy/current-state.md",
+        "anchor": "## Unverified Questions",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/vibe-provenance.md",
+        "anchor": "# Vibe source provenance",
+        "required": true
+      }
+    ],
+    "9.7": [
+      {
+        "kind": "document",
+        "path": "docs/vibe-provenance.md",
+        "anchor": "# Vibe source provenance",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "LICENSE.vibe",
+        "anchor": "Apache License",
+        "required": true
+      }
+    ],
+    "9.4": [
+      {
+        "kind": "document",
+        "path": "docs/opencode-provider.md",
+        "anchor": "# OpenCode Vibe OIDC provider",
+        "required": true
+      }
+    ],
+    "9.5": [
+      {
+        "kind": "document",
+        "path": "docs/opencode-provider.md",
+        "anchor": "# OpenCode Vibe OIDC provider",
+        "required": true
+      }
+    ],
+    "9.6": [
+      {
+        "kind": "document",
+        "path": "docs/opencode-provider.md",
+        "anchor": "# OpenCode Vibe OIDC provider",
+        "required": true
+      }
+    ],
+    "10.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_isolation.py",
+        "name": "test_real_effect_entrypoints_are_denied"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_isolation.py",
+        "name": "test_controlled_boundaries"
+      }
+    ],
+    "10.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_isolation.py",
+        "name": "test_real_effect_entrypoints_are_denied"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_isolation.py",
+        "name": "test_controlled_boundaries"
+      }
+    ],
+    "10.3": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_exact_freshness_threshold"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_read_and_drain_deadlines_are_bounded"
+      }
+    ],
+    "10.4": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_isolation.py",
+        "name": "test_fixtures_start_clean"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_isolation.py",
+        "name": "test_workers_are_drained"
+      }
+    ],
+    "10.5": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_allowed_routes_use_only_current_public_snapshot"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_health_and_rejected_operations_do_not_resolve_or_send"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_proxy.py",
+        "name": "test_safe_pre_response_errors"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_query_order_blanks_and_raw_body_preserved"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_first_chunk_precedes_upstream_completion"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_streaming.py",
+        "name": "test_interruption_closes_without_replacement_json"
+      }
+    ],
+    "10.6": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_invalid_callback_cannot_resolve"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_oidc_login.py",
+        "name": "test_invalid_signed_claims_rejected"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_credentials.py",
+        "name": "test_unreadable_is_never_absent_or_mutated"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_credentials.py",
+        "name": "test_storage_write_and_delete_failures_are_explicit_and_sanitized"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_refresh.py",
+        "name": "test_invalid_grant_changed_token_retries_rotation"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_coordination.py",
+        "name": "test_services_on_separate_event_loops_share_rotation"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_discovery_order_exact_selection_and_pagination"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_tenant.py",
+        "name": "test_no_accessible_workspace_fails"
+      }
+    ],
+    "10.7": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_transport.py",
+        "name": "test_inference_destination_denied_before_credentials"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_transport.py",
+        "name": "test_inference_marker_never_follows_redirect"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_transport.py",
+        "name": "test_environment_proxy_routes_and_closes"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_transport.py",
+        "name": "test_configured_trust_additive_certificates_and_cache"
+      }
+    ],
+    "10.8": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_traceability.py",
+        "name": "test_every_criterion_has_real_named_evidence"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_traceability.py",
+        "name": "test_invalid_acceptance_declarations_fail"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_traceability.py",
+        "name": "test_mandatory_nonpass_is_not_compliant"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_traceability.py",
+        "name": "test_junit_matches_executed_cases_and_preserves_parameter_failures"
+      }
+    ],
+    "10.9": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_traceability.py",
+        "name": "test_native_failure_overrides_passing_evidence"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_traceability.py",
+        "name": "test_collection_is_not_execution_and_missing_report_fails"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_traceability.py",
+        "name": "test_offline_runner_has_explicit_prepared_tools_and_no_setup_action"
+      },
+      {
+        "kind": "step",
+        "name": "typecheck"
+      },
+      {
+        "kind": "step",
+        "name": "provider-build"
+      },
+      {
+        "kind": "step",
+        "name": "python-build"
+      },
+      {
+        "kind": "step",
+        "name": "tools"
+      }
+    ],
+    "10.10": [
+      {
+        "kind": "document",
+        "path": ".kiro/specs/vibe-oidc-proxy/current-state.md",
+        "anchor": "## Unverified Questions",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/vibe-provenance.md",
+        "anchor": "# Vibe source provenance",
+        "required": true
+      }
+    ],
+    "11.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_traceability.py",
+        "name": "test_offline_runner_has_explicit_prepared_tools_and_no_setup_action"
+      },
+      {
+        "kind": "document",
+        "path": "docs/live-verification.md",
+        "anchor": "# Separate live verification",
+        "required": true
+      }
+    ],
+    "11.2": [
+      {
+        "kind": "document",
+        "path": ".kiro/specs/vibe-oidc-proxy/verification-plan.md",
+        "anchor": "## Later Opt-in Live Smoke",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/live-verification.md",
+        "anchor": "# Separate live verification",
+        "required": true
+      }
+    ],
+    "11.3": [
+      {
+        "kind": "document",
+        "path": "docs/live-verification.md",
+        "anchor": "# Separate live verification",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/live-results.md",
+        "anchor": "# Live verification evidence",
+        "required": true
+      }
+    ],
+    "11.4": [
+      {
+        "kind": "document",
+        "path": "docs/live-verification.md",
+        "anchor": "# Separate live verification",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/live-results.md",
+        "anchor": "# Live verification evidence",
+        "required": true
+      }
+    ],
+    "11.5": [
+      {
+        "kind": "document",
+        "path": "docs/live-verification.md",
+        "anchor": "# Separate live verification",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/live-results.md",
+        "anchor": "# Live verification evidence",
+        "required": true
+      }
+    ],
+    "11.6": [
+      {
+        "kind": "document",
+        "path": "docs/live-verification.md",
+        "anchor": "# Separate live verification",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/live-results.md",
+        "anchor": "# Live verification evidence",
+        "required": true
+      }
+    ],
+    "11.7": [
+      {
+        "kind": "document",
+        "path": "docs/live-verification.md",
+        "anchor": "# Separate live verification",
+        "required": true
+      },
+      {
+        "kind": "document",
+        "path": "docs/live-results.md",
+        "anchor": "# Live verification evidence",
+        "required": true
+      }
+    ],
+    "12.1": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_lifecycle.py",
+        "name": "test_two_public_consumers_share_rotation_tenant_and_revisions"
+      }
+    ],
+    "12.2": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_api.py",
+        "name": "test_package_exports_only_inference_public_api"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_lifecycle.py",
+        "name": "test_guide_sign_in_example_runs_against_synthetic_boundaries"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_lifecycle.py",
+        "name": "test_guide_request_example_resolves_each_request"
+      },
+      {
+        "kind": "document",
+        "path": "docs/auth-library.md",
+        "anchor": "## Resolve for every request",
+        "required": true
+      }
+    ],
+    "12.3": [
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/registration.test.ts",
+        "name": "distinct production V2 provider registers only browser command, preserves argv"
+      },
+      {
+        "kind": "step",
+        "name": "host"
+      }
+    ],
+    "12.7": [
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/registration.test.ts",
+        "name": "distinct production V2 provider registers only browser command, preserves argv"
+      },
+      {
+        "kind": "step",
+        "name": "host"
+      }
+    ],
+    "12.4": [
+      {
+        "kind": "step",
+        "name": "host"
+      },
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/provider.test.ts",
+        "name": "per-fetch rotation replaces caller credentials and preserves tool bytes, method, query and response"
+      }
+    ],
+    "12.6": [
+      {
+        "kind": "step",
+        "name": "host"
+      },
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/provider.test.ts",
+        "name": "stream response is returned without buffering; signal reaches send and body cancellation closes source"
+      },
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/provider.test.ts",
+        "name": "abort reaches a pending resolve and an in-flight transport"
+      }
+    ],
+    "12.5": [
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/models.test.ts",
+        "name": "authenticated models use current snapshot and explicit metadata only for upstream IDs"
+      },
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/models.test.ts",
+        "name": "verified upstream metadata maps without SDK defaults; partial inventory survives omissions"
+      },
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/models.test.ts",
+        "name": "empty inventory remains empty"
+      }
+    ],
+    "12.8": [
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/bridge.test.ts",
+        "name": "setup missing runtime and bare Python are actionable"
+      },
+      {
+        "kind": "test",
+        "suite": "provider",
+        "file": "packages/opencode-vibe-oidc/test/registration.test.ts",
+        "name": "registration failure rolls back earlier provider and sanitizes host errors"
+      },
+      {
+        "kind": "step",
+        "name": "host-setup"
+      }
+    ],
+    "12.9": [
+      {
+        "kind": "step",
+        "name": "bridge-process"
+      },
+      {
+        "kind": "step",
+        "name": "bridge-root-exit"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_bridge_lifecycle.py",
+        "name": "test_process_close_cancels_waiting_activity_before_persistence"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_bridge_lifecycle.py",
+        "name": "test_process_graceful_close_drains_blocked_persistence"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_bridge_lifecycle.py",
+        "name": "test_forced_death_unknown_commit_restarts_from_authoritative_store"
+      }
+    ],
+    "12.10": [
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_auth_lifecycle.py",
+        "name": "test_two_public_consumers_share_rotation_tenant_and_revisions"
+      },
+      {
+        "kind": "step",
+        "name": "host"
+      },
+      {
+        "kind": "step",
+        "name": "bridge-process"
+      }
+    ]
+  }
+}
