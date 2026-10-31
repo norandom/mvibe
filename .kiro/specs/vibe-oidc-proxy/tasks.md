@@ -35,7 +35,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 1.3_
   - _Requirements: 12.2, 12.8, 12.10_
 
-- [ ] 2. Immutable authentication contracts
+- [x] 2. Immutable authentication contracts
 - [x] 2.1 Define primitive configuration and public result contracts
   - Place immutable configuration below service/facade and define how it replaces or maps existing OIDC configuration; keep feature-enabled state and tenant selection in that snapshot.
   - Define typed login outcomes, safe failures and inference snapshots with secret-free representations; reject malformed URLs and empty inference audience.
@@ -44,7 +44,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 1.3_
   - _Requirements: 8.1, 8.2, 8.3, 12.1, 12.2_
 
-- [ ] 2.2 Integrate captured configuration throughout authentication
+- [x] 2.2 Integrate captured configuration throughout authentication
   - Explicit integration: migrate service, runtime, marker checks and transport resolution to session-owned configuration rather than repeated environment reads.
   - Preserve existing destination/TLS/proxy behavior and remove upward runtime imports through resolver injection; maintain side-effect-free package imports.
   - Done when an existing session ignores later environment changes, a new session observes them, and dependency/import tests demonstrate the intended layering.
@@ -251,4 +251,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 2.1: Primitive AuthConfig in _auth_config.py, frozen public outcomes in _auth_contracts.py re-exported by api.py; facade orchestration remains5.1. Legacy env readers remain until2.2. Python432pass and independent APPROVED.
+
+
+- 2.2: OidcService/OidcRuntime/transport own captured AuthConfig; transport injects oidc_resolver and no longer imports runtime. Task6.1 must pass owner.headers and owner.config; unconfigured markers failclosed. Python446pass, independent APPROVED.
 

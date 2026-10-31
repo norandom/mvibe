@@ -13,9 +13,9 @@ from mvibe_auth._oidc_config import (
 class AuthConfig:
     """One session's captured settings, including disablement and tenant selection.
 
-    ``from_env`` is the public session environment reader. The existing
-    ``OidcConfig.from_env`` remains a legacy entry point until integration;
-    service/client callers receive an explicitly mapped ``OidcConfig`` instead.
+    ``from_env`` is the authentication environment reader. Legacy boundaries
+    delegate here; reusable consumers retain this snapshot and pass explicitly
+    mapped ``OidcConfig`` settings to existing clients.
     Configuration is validated even when authentication is disabled.
     """
 

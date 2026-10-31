@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from urllib.parse import urlsplit
 
 from mvibe_auth.oidc_marker import oidc_enabled
@@ -83,36 +82,11 @@ class OidcConfig:
 
     @classmethod
     def from_env(cls) -> OidcConfig:
-        require_oidc_enabled()
-        issuer = os.environ.get("VIBE_CLI_OIDC_ISSUER", _DEFAULT_ISSUER)
-        registration = _CLI_REGISTRATIONS.get(issuer)
-        client_id = os.environ.get(
-            "VIBE_CLI_OIDC_CLIENT_ID",
-            registration.client_id if registration is not None else "",
-        )
-        if not issuer or not client_id:
-            raise OidcError("Set VIBE_CLI_OIDC_CLIENT_ID for the configured issuer")
-        redirect = os.environ.get(
-            "VIBE_CLI_OIDC_REDIRECT_URI", "http://127.0.0.1:8766/callback"
-        )
-        audience = os.environ.get(
-            "VIBE_CLI_OIDC_AUDIENCE",
-            registration.audience if registration is not None else "",
-        )
-        validate_oidc_url(issuer)
-        validate_oidc_url(redirect, loopback=True)
-        if audience:
-            # The audience origin receives ID tokens: never over cleartext.
-            validate_oidc_url(audience)
-        scope = os.environ.get(
-            "VIBE_CLI_OIDC_SCOPE", "openid offline_access email profile"
-        )
-        if "openid" not in scope.split():
-            raise OidcError("OIDC scope must include openid")
-        return cls(
-            issuer=issuer,
-            client_id=client_id,
-            audience=audience,
-            redirect_uri=redirect,
-            scope=scope,
-        )
+        """Legacy boundary; environment parsing belongs to AuthConfig alone."""
+        from mvibe_auth._auth_config import AuthConfig
+        from mvibe_auth._auth_contracts import AuthError
+
+        try:
+            return AuthConfig.from_env().to_oidc_config()
+        except AuthError as cause:
+            raise OidcError(str(cause)) from cause
