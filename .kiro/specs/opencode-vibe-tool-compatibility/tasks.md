@@ -98,7 +98,7 @@ not a side effect of implementation or the default verifier.
   - _Boundary: FixtureSet, workspace fixtures_
   - _Depends: 3.4_
   - _Requirements: 1.1, 1.2, 3.5, 5.2_
-- [ ] 4.2 Exercise native file creation and modification
+- [x] 4.2 Exercise native file creation and modification
   - Drive real write, edit and multi-file patch operations within an owned repository, preserving the host's normal argument validation.
   - Inspect exact resulting bytes/diffs and correlate the returned result with the next model turn.
   - Completion is visible when each mutation case changes only its owned targets and malformed operations cannot receive successful execution credit.

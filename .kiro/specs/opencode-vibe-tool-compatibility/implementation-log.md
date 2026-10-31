@@ -148,3 +148,20 @@ Live execution is separate from the default offline implementation checks.
   source; grep backend preserves trailing line LF. Definitions and native
   permissions retained. Live and full RunReport integration remain unverified.
 - Artifact: packages/opencode-vibe-oidc/.host/workspace-query-proof.json.
+
+## 4.2 Native file mutations
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED.
+- RED flag OFF: 0 pass / 2 fail HOST_MUTATION_DISABLED; removed after GREEN.
+- Fresh independent verification: 957 Bun tests / 2,596 assertions; typecheck
+  and build passed. Native mutation and existing query probes passed on 2.2.5,
+  with verified cleanup. Reviewer rejected 202 native-artifact corruptions.
+- Three positive mutation proofs cover Unicode write, CRLF-preserving edit and
+  two-file patch; repository-wide bytes and directory membership match expected
+  transitions. Missing newString yields actual schema error, unchanged state,
+  error continuation and no positive execution credit.
+- Patch uses explicitly owned fixture-gpt-mutation metadata because the host's
+  profile rules exclude it by default. Coverage never crosses model scopes.
+- Completion gate: VERIFIED for these offline Windows mutation cases. Live,
+  other platforms, full RunReport and all-tool compatibility remain unverified.
+- Artifact: packages/opencode-vibe-oidc/.host/workspace-mutation-proof.json.
