@@ -165,7 +165,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 6.3_
   - _Requirements: 2.8, 3.9, 12.9, 12.10_
 
-- [ ] 7. OpenCode provider adapter
+- [x] 7. OpenCode provider adapter
 - [x] 7.1 Implement the managed helper transport
   - Spawn the installed helper with argument arrays and hidden Windows window; validate handshake and correlate bounded protocol responses.
   - Implement deadlines, child-exit errors and disposal; resolve timeout/cancellation retires the helper, rejects all its pending requests, and never restarts browser authorization automatically.
@@ -188,7 +188,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: Provider fetch adapter_
   - _Requirements: 1.3, 1.6, 4.8, 12.4, 12.6, 12.7_
 
-- [ ] 7.4 Expose authenticated model discovery
+- [x] 7.4 Expose authenticated model discovery
   - Fetch models through the same per-request auth adapter and map to pinned SDK model types.
   - Use verified upstream or explicit operator metadata for required capabilities/limits; report missing metadata and omit incomplete models.
   - Done when synthetic model cases cover available, empty, unauthorized and incomplete results without invented entitlement, limits or pricing.
@@ -307,4 +307,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 7.3: Provider-scopedV2SDKcustomfetch resolvescurrentsnapshotperrequest validatesdestinationbeforecreds replacescallerheaders approvedonly manualredirect stream/cancel passthrough maxRetries0. RealhostSDK/retrygate8.1mandatory. Fresh18tasktestsPASS independentBun429/typecheck/buildPASS.
+
+
+- 7.4: ModelsstrictupstreamID+verified/operatorfieldgroups; no SDKdefaultlimits/capability/pricing. AccountboundsourceConnection catalog syncsnapshottransform asyncrefresh/eventreload; disconnectednohelper/network. Fresh30taskchecksPASS independentBun453/typecheck/buildPASS. Realhostgate8.1mandatory.
 

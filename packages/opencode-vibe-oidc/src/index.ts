@@ -4,8 +4,9 @@ import { BridgeError, StdioBridge } from "./bridge.js";
 import type { HelperCommand } from "./bridge.js";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createProviderFetch, providerBaseURL } from "./provider.js";
+import { createModelCatalog } from "./models.js";
 
-export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options" | "aisdk">;
+export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options" | "aisdk" | "event">;
 
 function settings(options: Plugin.Context["options"]): { command: HelperCommand; audience: string } {
   const value = options.helperCommand;
@@ -25,25 +26,36 @@ export async function setupVibe(ctx: RegistrationContext) {
   const { command, audience } = settings(ctx.options);
   const baseURL = providerBaseURL(audience);
   const bridge = new StdioBridge({ command, audience });
+  const providerID = Provider.ID.make("vibe-oidc");
+  const fetch = createProviderFetch(bridge, audience);
+  const catalog = createModelCatalog({ active: () => ctx.integration.connection.active(providerID), reload: () => ctx.provider.reload(), bridge, fetch, baseURL, metadata: ctx.options.modelMetadata ?? {}, report: message => console.warn(message) });
+  const events = new AbortController();
   const registrations: Array<{ dispose(): Promise<void> }> = [];
   let closing: Promise<void> | undefined;
   const cleanup = () => closing ??= (async () => {
+    events.abort(); catalog.close();
     const results = await Promise.allSettled([bridge.dispose(), ...[...registrations].reverse().map(registration => registration.dispose())]);
     if (results.some(result => result.status === "rejected")) throw new BridgeError("cleanup", "Vibe OIDC cleanup failed; restart the provider before retrying.");
   })();
   try {
-    const providerID = Provider.ID.make("vibe-oidc");
     registrations.push(await ctx.provider.transform(editor => {
-      editor.add({ info: { ...Provider.Info.empty(providerID), name: "Vibe OIDC", activation: "enabled", package: "@ai-sdk/openai-compatible" }, models: [] });
+      editor.add({ info: { ...Provider.Info.empty(providerID), name: "Vibe OIDC", activation: "enabled", package: "@ai-sdk/openai-compatible" }, ...catalog.snapshot });
     }));
     registrations.push(await ctx.integration.transform(editor => {
       editor.method.update({ integrationID: providerID, method: { id: "vibe-browser", type: "command", label: "Vibe OIDC", command: [command.executable, ...command.args.slice(0, -1), "login"] } });
     }));
-    registrations.push(await ctx.aisdk.hook("sdk", event => {
+    registrations.push(await ctx.aisdk.hook("sdk", async event => {
+      await catalog.refresh();
       event.options.maxRetries = 0;
-      event.options.fetch = createProviderFetch(bridge, audience);
-      event.sdk = createOpenAICompatible({ name: "vibe-oidc", baseURL, fetch: createProviderFetch(bridge, audience) });
+      event.options.fetch = fetch;
+      event.sdk = createOpenAICompatible({ name: "vibe-oidc", baseURL, fetch });
     }, { providerID }));
+    const updates = ctx.event.subscribe({ types: ["integration.updated"], signal: events.signal });
+    void (async () => {
+      try { for await (const _event of updates) { if (events.signal.aborted) break; await catalog.refresh(); } }
+      catch { if (!events.signal.aborted) console.warn("Vibe OIDC catalog updates unavailable; verify compatible OpenCode V2 versions and reload the provider."); }
+    })();
+    await catalog.refresh();
   } catch {
     try { await cleanup(); } catch { /* Report the fixed setup diagnostic below. */ }
     throw new BridgeError("setup", "Vibe OIDC registration failed; install a compatible OpenCode V2 host/plugin pair and configure an installed uv-managed helper runtime.");

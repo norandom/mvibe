@@ -1,11 +1,18 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { Plugin } from "@opencode/plugin";
 import plugin, { setupVibe } from "../src/index.js";
 import type { RegistrationContext } from "../src/index.js";
+import { StdioBridge } from "../src/bridge.js";
+import { ControlledHTTP } from "./preload.js";
 
 function fixture(options: Plugin.Context["options"] = { audience: "https://inference.example.test", helperCommand: { executable: "uv", args: ["run", "--offline", "--no-sync", "--project", "C:/installed runtime", "-m", "mvibe_auth", "bridge"] } }) {
   const providers: unknown[] = [], methods: unknown[] = [], disposed: string[] = [];
   const hooks: Array<{ name: string; options: unknown; callback: unknown }> = [];
+  let active: Awaited<ReturnType<RegistrationContext["integration"]["connection"]["active"]>>;
+  let editorCallback: ((editor: ProviderEditor) => void) | undefined;
+  let notify: (() => void) | undefined;
+  let pending = 0;
+  const emit = () => { pending++; notify?.(); };
   type ProviderEditor = Parameters<Parameters<RegistrationContext["provider"]["transform"]>[0]>[0];
   type IntegrationEditor = Parameters<Parameters<RegistrationContext["integration"]["transform"]>[0]>[0];
   // Only methods touched by setup are supplied; their signatures come from SDK.
@@ -13,11 +20,12 @@ function fixture(options: Plugin.Context["options"] = { audience: "https://infer
   const integrationEditor: Pick<IntegrationEditor, "method"> = { method: { update: input => { methods.push(input); }, list: () => [], remove: () => {} } };
   const ctx = {
     options,
-    aisdk: { hook: async (name, callback, options) => { hooks.push({ name, callback, options }); return { dispose: async () => { disposed.push("aisdk"); } }; } },
-    provider: { transform: async (edit: (editor: ProviderEditor) => void) => { edit(providerEditor as ProviderEditor); return { dispose: async () => { disposed.push("provider"); } }; } },
-    integration: { transform: async (edit: (editor: IntegrationEditor) => void) => { edit(integrationEditor as IntegrationEditor); return { dispose: async () => { disposed.push("integration"); } }; } },
-  } as RegistrationContext;
-  return { ctx, providers, methods, disposed, hooks };
+    event: { subscribe: async function* (options: { signal?: AbortSignal }) { while (!options?.signal?.aborted) { if (!pending) await new Promise<void>(resolve => { notify = resolve; options?.signal?.addEventListener("abort", () => resolve(), { once: true }); }); if (options?.signal?.aborted) break; pending--; yield { type: "integration.updated" }; } } },
+    aisdk: { hook: async (name: string, callback: unknown, options: unknown) => { hooks.push({ name, callback, options }); return { dispose: async () => { disposed.push("aisdk"); } }; } },
+    provider: { reload: async () => { editorCallback?.(providerEditor as ProviderEditor); }, transform: async (edit: (editor: ProviderEditor) => void) => { editorCallback = edit; edit(providerEditor as ProviderEditor); return { dispose: async () => { disposed.push("provider"); } }; } },
+    integration: { connection: { active: async () => active }, transform: async (edit: (editor: IntegrationEditor) => void) => { edit(integrationEditor as IntegrationEditor); return { dispose: async () => { disposed.push("integration"); } }; } },
+  } as unknown as RegistrationContext;
+  return { ctx, providers, methods, disposed, hooks, connect: () => { active = { type: "credential", id: "connection-one", label: "Vibe", method: "key" }; emit(); }, disconnect: () => { active = undefined; emit(); } };
 }
 
 test("distinct production V2 provider registers only browser command, preserves argv", async () => {
@@ -58,4 +66,24 @@ test("registration failure rolls back earlier provider and sanitizes host errors
   Object.assign(f.ctx.integration, { transform: async () => { throw new Error("SECRET host detail"); } });
   await expect(setupVibe(f.ctx)).rejects.toThrow("compatible OpenCode V2");
   expect(f.disposed).toEqual(["provider"]);
+});
+
+test("native V2 integration events publish authenticated models through synchronous transform and reload", async () => {
+  const f = fixture(); const http = new ControlledHTTP();
+  const base = "https://inference.example.test/v1/models";
+  http.queue("GET", base, Response.json({ data: [{ id: "available", name: "Synthetic", capabilities: { tools: false, input: ["text"], output: ["text"] }, limit: { context: 2048, output: 256 }, time: { released: 1 }, status: "active", cost: [{ input: 1, output: 2, cache: { read: 0, write: 0 } }] }] }));
+  const request = spyOn(StdioBridge.prototype, "request").mockImplementation((async (method: string) => method === "status" ? { signed_in: true, config_match: true } : { target: base, revision: "synthetic", expires_at: Date.now() / 1000 + 60, headers: { authorization: "Bearer synthetic" } }) as StdioBridge["request"]);
+  const transport = spyOn(globalThis, "fetch").mockImplementation(Object.assign(http.fetch, { preconnect: () => {} }));
+  let cleanup: (() => Promise<void>) | undefined;
+  try {
+    cleanup = await setupVibe(f.ctx); expect(request).not.toHaveBeenCalled(); expect(http.requests).toEqual([]);
+    f.connect();
+    for (let i = 0; i < 100 && f.providers.length < 2; i++) await Promise.resolve();
+    expect(f.providers.at(-1)).toMatchObject({ models: [{ id: "available", capabilities: { tools: false }, limit: { context: 2048, output: 256 } }], sourceConnection: { id: "connection-one" } });
+    expect(http.requests[0]!.headers.get("authorization")).toBe("Bearer synthetic");
+    // Let the watcher return to its next event before disconnection.
+    await Promise.resolve(); f.disconnect();
+    for (let i = 0; i < 100 && f.providers.length < 3; i++) await Promise.resolve();
+    expect(f.providers.at(-1)).toMatchObject({ models: [] });
+  } finally { await cleanup?.(); request.mockRestore(); transport.mockRestore(); }
 });

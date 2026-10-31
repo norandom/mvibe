@@ -1,0 +1,103 @@
+import { expect, test } from "bun:test";
+import { createModelCatalog, discoverModels } from "../src/models.js";
+import { createProviderFetch } from "../src/provider.js";
+import { ControlledHTTP } from "./preload.js";
+
+const base = "https://inference.example.test/v1";
+const metadata = {
+  name: "Synthetic", capabilities: { tools: false, input: ["text"], output: ["text"] },
+  limit: { context: 8192, output: 1024 }, time: { released: 1234 }, status: "active",
+  cost: [{ input: 1, output: 2, cache: { read: 0, write: 0 } }],
+};
+function fixture(body: unknown, status = 200) {
+  const http = new ControlledHTTP(); let resolves = 0;
+  http.queue("GET", base + "/models", Response.json(body, { status }));
+  const fetch = createProviderFetch({ request: async (_method, params) => {
+    resolves++; return { target: (params as { target_url: string }).target_url, headers: { Authorization: "Bearer synthetic" }, expires_at: Date.now() / 1000 + 60, revision: String(resolves) };
+  } } as Parameters<typeof createProviderFetch>[0], "https://inference.example.test", http.fetch);
+  return { fetch, http, resolves: () => resolves };
+}
+test("authenticated models use current snapshot and explicit metadata only for upstream IDs", async () => {
+  const f = fixture({ data: [{ id: "available" }] });
+  const result = await discoverModels(f.fetch, base, { available: metadata, invented: metadata });
+  expect(result.models.map(model => String(model.id))).toEqual(["available"]);
+  expect(result.models[0]).toMatchObject({ capabilities: { tools: false }, limit: metadata.limit, cost: metadata.cost, providerID: "vibe-oidc", modelID: "available" });
+  expect(f.resolves()).toBe(1); expect(f.http.requests[0]!.headers.get("authorization")).toBe("Bearer synthetic");
+  expect(f.http.requests[0]!.redirect).toBe("manual");
+});
+test("verified upstream metadata maps without SDK defaults; partial inventory survives omissions", async () => {
+  const f = fixture({ data: [{ id: "complete", ...metadata }, { id: "incomplete" }] });
+  const result = await discoverModels(f.fetch, base);
+  expect(result.models.map(model => String(model.id))).toEqual(["complete"]);
+  expect(result.diagnostics.join(" ")).toContain("modelMetadata");
+});
+test("empty inventory remains empty", async () => {
+  expect((await discoverModels(fixture({ data: [] }).fetch, base)).models).toEqual([]);
+});
+test("malformed upstream JSON is sanitized and never echoed", async () => {
+  const result = await discoverModels(async () => new Response("SECRET malformed JSON"), base);
+  expect(result.models).toEqual([]); expect(result.diagnostics.join()).toContain("uv-managed"); expect(result.diagnostics.join()).not.toContain("SECRET");
+});
+test.each([401, 403, 302, 500])("upstream %s produces actionable sanitized diagnostics without parsing body", async status => {
+  const result = await discoverModels(fixture({ secret: "SECRET upstream" }, status).fetch, base);
+  expect(result.models).toEqual([]); expect(result.diagnostics.length).toBeGreaterThan(0);
+  expect(result.diagnostics.join()).not.toContain("SECRET");
+});
+test.each([null, {}, { data: {} }, { data: [{ id: "m", ...metadata, limit: { context: 0, output: 4 } }] }, { data: [{ id: "m", ...metadata, cost: [] }] }])("malformed or insufficient metadata is safely omitted %j", async body => {
+  const result = await discoverModels(fixture(body).fetch, base);
+  expect(result.models).toEqual([]); expect(result.diagnostics.length).toBeGreaterThan(0);
+});
+test.each([{ limit: { context: Infinity, output: 20 } }, { capabilities: { tools: "yes", input: ["text"], output: ["text"] } }, { cost: [{ input: -1, output: 2, cache: { read: 0, write: 0 } }] }])("invalid explicit override cannot replace valid upstream values %j", async override => {
+  const result = await discoverModels(fixture({ data: [{ id: "m", ...metadata }] }).fetch, base, { m: override });
+  expect(result.models).toEqual([]); expect(result.diagnostics.length).toBeGreaterThan(0);
+});
+test("operator fields cannot inject destinations, IDs or credentials", async () => {
+  const result = await discoverModels(fixture({ data: [{ id: "m" }] }).fetch, base, { m: { ...metadata, id: "invented", headers: { authorization: "SECRET" }, settings: { apiKey: "SECRET" } } });
+  expect(result.models.map(model => String(model.id))).toEqual(["m"]);
+  expect(JSON.stringify(result)).not.toContain("SECRET"); expect(result.models[0]).not.toHaveProperty("headers");
+});
+
+function catalogFixture() {
+  type Input = Parameters<typeof createModelCatalog>[0];
+  let connection: Awaited<ReturnType<Input["active"]>>;
+  let signedIn = true, configMatch = true, statuses = 0, reloads = 0, broken = false;
+  const messages: string[] = [], requests: Request[] = [];
+  let respond: Input["fetch"] = async request => { requests.push(new Request(request)); return Response.json({ data: [{ id: "m", ...metadata }] }); };
+  const catalog = createModelCatalog({
+    active: async () => connection, reload: async () => { reloads++; }, baseURL: base, metadata: {}, report: message => messages.push(message),
+    bridge: { request: async () => { statuses++; if (broken) throw new Error("SECRET helper failure"); return { signed_in: signedIn, config_match: configMatch }; } } as Input["bridge"],
+    fetch: (request, init) => respond(request, init),
+  });
+  return { catalog, messages, requests, connect: (id = "one") => { connection = { type: "credential", id, method: "key", label: "Vibe" }; }, disconnect: () => { connection = undefined; }, signedOut: () => { signedIn = false; }, mismatch: () => { configMatch = false; }, failHelper: () => { broken = true; }, respond: (fn: Input["fetch"]) => { respond = fn; }, statuses: () => statuses, reloads: () => reloads };
+}
+test("disconnected registration never starts helper or fetch; connection enables bound catalog", async () => {
+  const f = catalogFixture(); await f.catalog.refresh();
+  expect(f.statuses()).toBe(0); expect(f.requests).toEqual([]); expect(f.catalog.snapshot.models).toEqual([]);
+  f.connect(); await f.catalog.refresh();
+  expect(f.catalog.snapshot.sourceConnection).toMatchObject({ id: "one" }); expect(f.catalog.snapshot.models).toHaveLength(1);
+  expect(f.reloads()).toBe(1);
+  f.disconnect(); await f.catalog.refresh(); expect(f.catalog.snapshot).toEqual({ models: [] });
+});
+test.each(["signedOut", "mismatch"] as const)("%s helper status never invokes model fetch or login", async method => {
+  const f = catalogFixture(); f.connect(); f[method](); await f.catalog.refresh();
+  expect(f.requests).toEqual([]); expect(f.messages.join()).toContain("connect using Vibe OIDC");
+});
+test("helper setup failure is actionable but does not prevent provider registration", async () => {
+  const f = catalogFixture(); f.connect(); f.failHelper(); await f.catalog.refresh();
+  expect(f.catalog.snapshot.models).toEqual([]); expect(f.messages.join()).toContain("uv-managed"); expect(f.messages.join()).not.toContain("SECRET");
+  expect(f.requests).toEqual([]); expect(f.statuses()).toBe(1);
+});
+test("connection changes while discovery waits cannot publish another account's inventory", async () => {
+  const f = catalogFixture(); f.connect(); let release!: () => void;
+  f.respond(async () => { await new Promise<void>(resolve => { release = resolve; }); return Response.json({ data: [{ id: "m", ...metadata }] }); });
+  const refresh = f.catalog.refresh(); while (!release) await Promise.resolve();
+  f.connect("two"); release(); await refresh;
+  expect(f.catalog.snapshot).toEqual({ models: [] });
+});
+test("cleanup aborts in-flight discovery and prevents late catalog publication", async () => {
+  const f = catalogFixture(); f.connect(); let release!: () => void; let signal: AbortSignal | null | undefined;
+  f.respond(async (_request, init) => { signal = init?.signal; await new Promise<void>(resolve => { release = resolve; }); return Response.json({ data: [{ id: "m", ...metadata }] }); });
+  const refresh = f.catalog.refresh(); while (!release) await Promise.resolve();
+  f.catalog.close(); expect(signal?.aborted).toBe(true); release(); await refresh;
+  expect(f.catalog.snapshot).toEqual({ models: [] }); await f.catalog.refresh(); expect(f.statuses()).toBe(1);
+});
