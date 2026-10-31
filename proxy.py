@@ -17,7 +17,9 @@ import os
 import webbrowser
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response
+from urllib.parse import urlencode
+from mvibe_proxy.streaming import ProxyStreamOwner
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
 from mvibe_auth.http import VibeAsyncHTTPClient
 import uvicorn
@@ -54,11 +56,16 @@ def create_app(
             state = await session.status()
             if force_login or not (state['signed_in'] and state['config_match']):
                 await login(session, force=force_login)
-            async with client_factory(auth_config=session.config, timeout=600,
-                                      follow_redirects=False) as client:
+            client = client_factory(auth_config=session.config, timeout=600,
+                                    follow_redirects=False)
+            await client.__aenter__()
+            try:
                 app.state.auth = session
                 app.state.client = client
+                app.state.stream_owner = ProxyStreamOwner(client)
                 yield
+            finally:
+                await app.state.stream_owner.shutdown()
         finally:
             await session.close()
 
@@ -70,39 +77,27 @@ def create_app(
         return {'status': 'ok'}
 
     @app.api_route('/v1/{path:path}', methods=['GET', 'POST'], response_model=None)
-    async def proxy(path: str, request: Request) -> JSONResponse | StreamingResponse:
+    async def proxy(path: str, request: Request) -> Response:
         if (request.method, path) not in {
             ('GET', 'models'), ('POST', 'chat/completions'), ('POST', 'embeddings'),
         }:
             return JSONResponse({'error': {'message': 'Unsupported endpoint'}}, status_code=404)
-        try:
+        async def acquire():
             session = request.app.state.auth
             url = session.config.audience.rstrip('/') + '/v1/' + path
             snapshot = await session.resolve(url)
             headers = dict(snapshot.headers)
             headers['Content-Type'] = 'application/json'
+            # HTTPX QueryParams groups keys; encode ordered Starlette pairs
+            # directly into the URL to preserve interleaved repeated values.
+            query = urlencode(request.query_params.multi_items())
+            target = url + ('?' + query if query else '')
             client = request.app.state.client
-            upstream = await client.send(client.build_request(
-                request.method, url, params=request.query_params,
-                headers=headers, content=await request.body()), stream=True)
-        except AuthError:
-            return JSONResponse(
-                {'error': {'message': 'Vibe authentication failed; run proxy.py --login'}},
-                status_code=401)
-        except Exception:
-            return JSONResponse({'error': {'message': 'Upstream connection failed'}}, status_code=502)
+            return await client.send(client.build_request(
+                request.method, target, headers=headers,
+                content=await request.body()), stream=True, follow_redirects=False)
 
-        async def chunks() -> AsyncIterator[bytes]:
-            try:
-                async for chunk in upstream.aiter_bytes():
-                    yield chunk
-            finally:
-                await upstream.aclose()
-
-        return StreamingResponse(chunks(), status_code=upstream.status_code, headers={
-            'Content-Type': upstream.headers.get('content-type', 'application/json'),
-            'Cache-Control': 'no-cache',
-        })
+        return request.app.state.stream_owner.response(acquire)
 
     return app
 

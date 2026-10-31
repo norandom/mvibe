@@ -31,10 +31,10 @@ proxy = ["fastapi", "uvicorn"]
 dev = ["pytest", "hatchling==1.27.0", "fastapi", "uvicorn"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["mvibe_auth"]
+packages = ["mvibe_auth", "mvibe_proxy"]
 
 [tool.hatch.build.targets.sdist]
-include = ["mvibe_auth/", "proxy.py", "pyproject.toml", "uv.lock", "README.md", "LICENSE.vibe", "tests/test_packaging.py"]
+include = ["mvibe_auth/", "mvibe_proxy/", "proxy.py", "pyproject.toml", "uv.lock", "README.md", "LICENSE.vibe", "tests/test_packaging.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

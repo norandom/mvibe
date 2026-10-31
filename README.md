@@ -16,7 +16,7 @@ OpenCode provider: use `@ai-sdk/openai-compatible` with baseURL `http://127.0.0.
 
 The proxy binds to 127.0.0.1 only (default port 8765; override with --port). It has no local authentication. Subscription and model access depend on your Mistral account. VIBE_CLI_OIDC_* environment overrides are supported, including organization/workspace selection. Avoid concurrent re-login from Vibe and the proxy because they share credentials.
 
-The mvibe_auth directory contains authentication and HTTP helpers copied from Mistral Vibe 3.0.4, with imports adapted to a local package. Original license: LICENSE.vibe. Keep this directory alongside proxy.py when moving the proxy. Browser login and upstream inference require a live account and have not been verified by the automated checks.
+The mvibe_auth directory contains authentication and HTTP helpers copied from Mistral Vibe 3.0.4, with imports adapted to a local package. Original license: LICENSE.vibe. Keep both mvibe_auth and mvibe_proxy alongside proxy.py when moving the proxy. Browser login and upstream inference require a live account and have not been verified by the automated checks.
 
 ## Python package setup and offline checks
 
@@ -46,6 +46,21 @@ The proxy opts into OIDC when `VIBE_CLI_OIDC_ENABLED` is absent, without changin
 the process environment. An explicit disabled value is respected and prevents
 sign-in and serving. App construction and import do not read credentials or start
 login; the app lifespan completes any necessary sign-in before startup succeeds.
+
+Responses stream decoded application bytes, preserving upstream status and content
+type (JSON when absent). The proxy never follows upstream redirects or replays an
+inference request after a 401. Each upstream response belongs to its ASGI request,
+including cancellation during headers or body delivery.
+
+Response cleanup is shielded from cancellation with a two-second close deadline.
+If close fails or times out, the proxy aborts and retires its shared HTTP client;
+affected concurrent streams terminate without replacement JSON or a successful
+end-of-stream marker. Subsequent forwarding requests receive a sanitized 502
+until the proxy is restarted. Health remains local liveness. Client shutdown has
+its own two-second deadline, so failed response cleanup can take up to four
+seconds including client shutdown. Cleanup diagnostics contain no payloads or
+credentials. A transport that ignores cancellation cannot be forcibly stopped by
+Python; its client remains unavailable for reuse.
 
 After online preparation, run the mandatory Python checks offline:
 

@@ -142,7 +142,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 5.2_
   - _Requirements: 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 2.9, 3.5, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 8.4, 8.5, 8.6_
 
-- [ ] 6.2 Implement owned streaming and request preservation
+- [x] 6.2 Implement owned streaming and request preservation
   - Explicit integration: acquire upstream inside response ownership, preserve repeated/blank query pairs and raw body, and forward decoded response content/status/type incrementally.
   - Close under bounded protection; on shared-client retirement reject subsequent forwarding with sanitized 502 until restart and terminate affected siblings without synthetic success content.
   - Done when tests prove first-chunk delivery before upstream completion, cleanup before/during iteration, bodyless/error statuses, no replay/redirect and documented retirement behavior.
@@ -289,4 +289,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 6.1: ProxypublicAuthSession/appfactory migration; adapterOIDCdefaultwhenenvabsent noenvmutation explicitdisablehonored. Devproxydepskeepcanonicalofflinepytestcomplete; runtime no-devlibindependent. Streamowner/queryprecision6.2. Python781pass independentAPPROVED.
+
+
+- 6.2: ProxyStreamOwner acquiresinsideASGIcall, boundsHTTPXautoiteratorclose+explicitclose; failedcleanupretiresclientuntilrestart and abortssiblings next502. OrderedquerypairsencodedwithoutHTTPXgrouping. Helperpackaged. Python806pass independentAPPROVED.
 
