@@ -12,8 +12,8 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: Packaging_
   - _Requirements: 12.1, 12.2, 10.9_
 
-- [ ] 1.2 Prepare the provider build and host test environment
-  - Create strict TypeScript build/test configuration, package exports and locked dependencies for SDK 1.19.5 and a compatible OpenAI adapter.
+- [x] 1.2 Prepare the provider build and host test environment
+  - Create strict TypeScript build/test configuration, package exports and locked dependencies for the current OpenCode 2 SDK and a compatible OpenAI adapter.
   - Provision the pinned OpenCode host in an isolated test profile as an explicit setup prerequisite; validate SDK hook signatures without a real account.
   - Done when typecheck and a synthetic plugin-load smoke succeed, or incompatibility is reported before dependent provider work begins.
   - _Boundary: Provider packaging_
@@ -175,10 +175,10 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Requirements: 12.2, 12.8, 12.9, 12.10_
 
 - [ ] 7.2 Register Vibe browser authentication in OpenCode
-  - Register the distinct provider and browser OAuth method; translate start/wait/cancel and reused-current outcomes through the pinned host contracts.
-  - Persist only the non-secret connection marker and configuration metadata; no API-key auth option or refresh-token copy.
+  - Explicit integration: register the V2 provider and command-based Vibe browser OIDC method; add the Python login command using the public session and non-secret stdout marker. Verify cancellation, reused-current and failure outcomes through the actual host contracts.
+  - Persist only the non-secret connection marker and configuration metadata; V2 stores the command marker in a key-shaped record, which is never upstream authentication. No API-key option or refresh-token copy.
   - Done when host-hook tests complete success/failure/reused-current paths and verify persisted state contains no credential material.
-  - _Boundary: Provider auth hooks_
+  - _Boundary: Provider integration and Python login-command integration_
   - _Requirements: 12.3, 12.7, 12.8_
 
 - [ ] 7.3 Resolve credentials for each inference request
@@ -236,4 +236,10 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 ## Implementation Notes
 - 1.1: Python checks: uv run --locked --offline pytest; build: uv build --offline --no-build-isolation. Propagate native failures with exit $LASTEXITCODE in PowerShell. Windows asyncio socketpair must be prepared before blocking socket connections in isolated import checks. Distribution version is independent of Vibe transport provenance.
+
+
+- User correction: target auto-updating OpenCode 2; lock exact test pairs and check current stable through a separate compatibility action. V1 hooks are superseded by V2 domain registrations. Task 7.2 owns command-based OIDC login and marker integration; task 1.2 verifies V2 setup and task 8.1 verifies the real host.
+
+
+- 1.2: Verified OpenCode2.2.5/SDK2.2.5; user-reported2.2.6 unverified. OpenAI-compatible2.0.88 uses providerV3; adapter3 uses incompatibleV4. Bun tests/typecheck/build and test:host pass. models --standalone loads fixture but does not invoke cleanup; unit disposal test only, full lifecycle remains8.1.
 
