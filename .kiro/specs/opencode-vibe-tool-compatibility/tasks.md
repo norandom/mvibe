@@ -45,7 +45,7 @@ not a side effect of implementation or the default verifier.
   - _Boundary: InventoryCoverage_
   - _Depends: 1.3_
   - _Requirements: 1.1, 1.4, 1.5, 2.1, 5.6, 5.7, 5.8, 5.9_
-- [ ] 2.2 Validate and assemble scoped positive and negative reports
+- [x] 2.2 Validate and assemble scoped positive and negative reports
   - Validate event/proof joins, manifest-defined expectations, observation hashes, required negatives and cancellation evidence before assembling coverage rows.
   - Bind results to tool, scope, request chain and mode; deny missing stages, crossed calls, reused result proofs and false all-tool claims.
   - Completion is visible when mutation tests reject forged/incomplete graphs and a valid synthetic report exposes only its supported subset, without promoting offline evidence to live PASS.

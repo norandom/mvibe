@@ -47,3 +47,14 @@ Live execution is separate from the default offline implementation checks.
 - Explicit provenance, per-turn definitions, negotiated MCP data and scoped
   assignments/classifications produce gaps on unknown or changed observations.
   Inventory accounting grants no positive tool-execution credit.
+
+## 2.2 Scoped report gate
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED.
+- RED flag OFF: 27 pass / 1 fail; flag removed after GREEN.
+- Fresh independent verification: 672 Bun tests, typecheck and build passed,
+  exit 0. Independent mutations reject missing rows, reused executor proofs,
+  crossed continuation inputs and cross-mode positive claims.
+- Completion gate: VERIFIED for report assembly and validation. External cases,
+  scope/mode, hashes, limits and provenance constrain positive/negative proofs.
+- Synthetic baseline credit demonstrates gate behavior, not host execution.
