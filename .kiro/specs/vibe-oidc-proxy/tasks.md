@@ -174,7 +174,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 1.2, 1.4, 6.4_
   - _Requirements: 12.2, 12.8, 12.9, 12.10_
 
-- [ ] 7.2 Register Vibe browser authentication in OpenCode
+- [x] 7.2 Register Vibe browser authentication in OpenCode
   - Explicit integration: register the V2 provider and command-based Vibe browser OIDC method; add the Python login command using the public session and non-secret stdout marker. Verify cancellation, reused-current and failure outcomes through the actual host contracts.
   - Persist only the non-secret connection marker and configuration metadata; V2 stores the command marker in a key-shaped record, which is never upstream authentication. No API-key option or refresh-token copy.
   - Done when host-hook tests complete success/failure/reused-current paths and verify persisted state contains no credential material.
@@ -301,4 +301,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 7.1: Explicitinstalledhelperargv uv offline/no-sync orabsoluteuvmanagedruntime. Windows10+ nativeJobObject inwindows-job.ts preservesdescendantownershipafterrootexit; verifyActiveProcesses0 beforereplacement. No dependenciesinstalledfromrequests. Bun411pass +actualprocessharnesses independentAPPROVED afterdescendantrepair.
+
+
+- 7.2: V2commandregistration+PythonpublicloginCLI emitsfixedmarkerafterclose/usableoutcome only. Realhost2.2.5 storesmarkerKeyshapeonly; commandcancelremovesattempt and actualPythonPIDexits. Fresh11Python/5Bun+hostsmokePASS; independentfull858Python416Bun/buildsPASS.
 

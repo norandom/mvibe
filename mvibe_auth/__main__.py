@@ -4,8 +4,15 @@ import sys
 
 
 def main() -> int:
+    if sys.argv[1:] == ['login']:
+        try:
+            from mvibe_auth.login_cli import main as login
+            return login()
+        except (Exception, KeyboardInterrupt):
+            sys.stderr.write('Vibe OIDC sign-in setup failed; check the installed mvibe-auth runtime.\n')
+            return 1
     if sys.argv[1:] != ['bridge']:
-        sys.stderr.write('Usage: <installed Python> -m mvibe_auth bridge\n')
+        sys.stderr.write('Usage: <installed Python> -m mvibe_auth bridge|login\n')
         return 2
     try:
         from mvibe_auth.bridge import stdio
