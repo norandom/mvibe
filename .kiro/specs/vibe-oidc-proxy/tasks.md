@@ -36,7 +36,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Requirements: 12.2, 12.8, 12.10_
 
 - [ ] 2. Immutable authentication contracts
-- [ ] 2.1 Define primitive configuration and public result contracts
+- [x] 2.1 Define primitive configuration and public result contracts
   - Place immutable configuration below service/facade and define how it replaces or maps existing OIDC configuration; keep feature-enabled state and tenant selection in that snapshot.
   - Define typed login outcomes, safe failures and inference snapshots with secret-free representations; reject malformed URLs and empty inference audience.
   - Done when config/result tests cover defaults, overrides, disablement, invalid values and distinguish inference ID-token snapshots from UserInfo access-token credentials.
@@ -248,4 +248,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 1.4: Protocol frame cap includes terminal LF. _bridge_protocol.py and src/protocol.ts consume shared vectors; preserve safe ProtocolError when normalizing JSON decoder ValueError/RecursionError. Python389/Bun388 pass. Canonical schema emitted with TypeScript build.
+
+
+- 2.1: Primitive AuthConfig in _auth_config.py, frozen public outcomes in _auth_contracts.py re-exported by api.py; facade orchestration remains5.1. Legacy env readers remain until2.2. Python432pass and independent APPROVED.
 
