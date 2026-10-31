@@ -75,7 +75,7 @@ not a side effect of implementation or the default verifier.
   - _Boundary: HostController, synthetic inference boundary_
   - _Depends: 1.2, 1.3_
   - _Requirements: 1.1, 3.1, 3.2, 3.3, 3.5, 5.1, 5.2_
-- [ ] 3.3 Prove public-hook coverage and permission ordering
+- [x] 3.3 Prove public-hook coverage and permission ordering
   - Exercise a disposable real native operation through the isolated host to locate definition, request/response, dispatch, completion and permission observations.
   - Demonstrate coverage for the custom SDK path; use the approved fixture transport observer only if its correlation and streaming coverage are proved.
   - Completion is visible when a capability report identifies usable observations and actual ordering, or a fixed unsupported outcome prevents false execution claims.

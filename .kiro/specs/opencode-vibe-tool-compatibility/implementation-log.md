@@ -99,3 +99,21 @@ Live execution is separate from the default offline implementation checks.
   repeated tools, reversed results, identity drift, bounds, abort and replay.
 - No fake executor, host launch, auth change or network fallback. Actual host
   tool execution and continuation evidence remain subsequent integration work.
+
+## 3.3 Native capability and permission probe
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED.
+- RED flag OFF: 2 pass / 1 fail, observed versus hook_unavailable; flag removed.
+- Fresh independent verification: 744 Bun tests / 2,247 assertions; typecheck
+  and build passed. Actual OpenCode 2.2.5 probe: observed, four requests,
+  68 chunks, four completed streams, verified cleanup.
+- Custom SDK/language hooks fired; public HTTP hooks did not. Fixture transport
+  installed before provider setup proves the approved fallback observation route.
+- Allowed read: dispatch, permission allow, completion. Denied read: dispatch,
+  genuine nested host Permission.BlockedError; native deny bypasses evaluate.
+- Exact fixture-derived read/error continuations gate final responses. Actual
+  input-start preceded withheld stream completion. No executor/result mutation.
+- Completion gate: VERIFIED for this capability scope. Full recorder proofs,
+  other tools, auxiliary traffic and live operation remain unverified.
+- Capability evidence: task-3.3-capability.json. Expected format/error envelope
+  came from the pinned executable source and trusted owned fixture input.

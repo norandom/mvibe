@@ -7,6 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { OpenCode } from "@opencode/client";
 import { WINDOWS_JOB_SOURCE } from "../../src/windows-job.js";
 import { requireReferenceHostVersion, checkPreparedDependencies } from "./preparation.js";
+import { parseCapabilityReport } from "./capability.js";
 
 export function requireOwnedPath(root: string, target: string): string {
   const part = relative(root, target);
@@ -62,8 +63,9 @@ function verifyRemoval(root: string): void {
   };
   inspect(root);
 }
-export type OfflineHostOptions = { host: string; bun: string; python: string; startupMs: number; executionMs: number; cleanupMs: number };
-/** No tool claims: this proves host/model readiness and resource ownership only. */
+export type OfflineHostOptions = { host: string; bun: string; python: string; startupMs: number; executionMs: number; cleanupMs: number; capabilityProbe?: boolean };
+/** Default readiness has no tool claims; the explicit capability probe adds its
+ * bounded native observations, without granting all-tool compatibility. */
 export async function smokeOfflineHost(options: OfflineHostOptions, signal?: AbortSignal) {
   if (signal?.aborted) throw new Error("HOST_CANCELLED");
   for (const ms of [options.startupMs, options.executionMs, options.cleanupMs]) requireBudget(ms);
@@ -108,9 +110,9 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
     validateDebugPaths(root, paths);
     for (const value of Object.values(paths as Record<string, string>)) if (resolve(value) !== root) verifyTree(root, value);
     const readiness = join(root, "ready.json");
-    const plugin = resolve(import.meta.dir, "readiness-plugin.ts").replaceAll("\\", "/");
+    const plugin = resolve(import.meta.dir, options.capabilityProbe ? "host-plugin.ts" : "readiness-plugin.ts").replaceAll("\\", "/");
     writeFileSync(join(root, "plugins/readiness/index.ts"), `export { default } from ${JSON.stringify(plugin)};`);
-    writeFileSync(join(cwd, "opencode.json"), JSON.stringify({ permission: { "*": "deny" }, plugins: [{ package: "../plugins/readiness", options: { readiness, helperCommand: { executable: options.python, args: ["-m", "mvibe_auth", "bridge"] }, audience: "https://inference.example.test" } }] }));
+    writeFileSync(join(cwd, "opencode.json"), JSON.stringify({ permission: options.capabilityProbe ? { "*":"deny", read: { "*":"deny", "capability-allowed.txt":"allow" } } : { "*": "deny" }, plugins: [{ package: "../plugins/readiness", options: { readiness, helperCommand: { executable: options.python, args: ["-m", "mvibe_auth", "bridge"] }, audience: "https://inference.example.test" } }] }));
     const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 403 }) });
     const port = reservation.port!; await reservation.stop(true);
     const args = [options.host, "serve", "--hostname", "127.0.0.1", "--port", String(port)];
@@ -133,9 +135,11 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
       if (abort.signal.aborted || child.exitCode !== null) throw new Error("HOST_READINESS");
       await new Promise(resolve => setTimeout(resolve, 25));
     }
+    if(lstatSync(readiness).size>65536)throw new Error("HOST_CAPTURE");
     const ready: unknown = JSON.parse(readFileSync(readiness, "utf8"));
-    if (JSON.stringify(ready) !== '{"ready":true}') throw new Error("HOST_MODEL");
-    return { hostVersion, bunVersion: "1.4.4", pythonVersion, hashes, model: "vibe-oidc/synthetic-model", ready: true, live: "unverified" };
+    if (!options.capabilityProbe && JSON.stringify(ready) !== '{"ready":true}') throw new Error("HOST_MODEL");
+    const capability = options.capabilityProbe ? parseCapabilityReport(ready) : undefined;
+    return { hostVersion, bunVersion: "1.4.4", pythonVersion, hashes, model: "vibe-oidc/synthetic-model", ready: capability ? capability.ready === true : true, live: "unverified", ...(capability ? { capability } : {}) };
   } finally {
     const cleanupDeadline = Date.now() + options.cleanupMs;
     clearTimeout(timer); abort.abort(); signal?.removeEventListener("abort", cancel);
