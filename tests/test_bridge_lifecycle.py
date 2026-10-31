@@ -204,7 +204,11 @@ def test_forced_death_unknown_commit_restarts_from_authoritative_store(tmp_path,
     native_lock(tmp_path, True)
     assert not (tmp_path / 'callback-closed').exists()
     assert child.output.empty()  # no successful completion was reported
-    authoritative = json.loads((tmp_path / 'slot.json').read_text())
+    if (tmp_path / 'credentials.enc').exists():
+        from cryptography.fernet import Fernet
+        authoritative = json.loads(Fernet((tmp_path / 'key.txt').read_bytes()).decrypt((tmp_path / 'credentials.enc').read_bytes()))
+    else:
+        authoritative = json.loads((tmp_path / 'slot.json').read_text())
     expected = 'prior-id' if point == 'before' else 'synthetic-id'
     assert authoritative['id_token'] == expected
     restarted = children(tmp_path, 'restart')

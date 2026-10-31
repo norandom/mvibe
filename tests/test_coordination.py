@@ -192,15 +192,14 @@ async def test_cancelled_store_worker_retains_native_lock(slot, tmp_path, monkey
     original = tokens()
     slot.external(original)
     started, release = threading.Event(), threading.Event()
-    method = "set_password" if operation == "save" else "delete_password"
-    underlying = getattr(keyring, method)
+    underlying = slot.write
 
     def blocked(*args):
         started.set()
         assert release.wait(5)
         underlying(*args)
 
-    monkeypatch.setattr(keyring, method, blocked)
+    monkeypatch.setattr(slot, "write", blocked)
     task = asyncio.create_task(store.save(original, expected=original) if operation == "save" else store.clear(expected=original))
     try:
         assert await asyncio.to_thread(started.wait, 3)

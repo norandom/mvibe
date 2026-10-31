@@ -92,7 +92,7 @@ async def test_repeated_close_cancellation_drains_persistence_before_native_rele
         entered.set()
         assert release.wait(10)
         original_write(*args)
-    monkeypatch.setattr('keyring.set_password', blocked_write)
+    monkeypatch.setattr(login.slot, 'write', blocked_write)
     if operation == 'login':
         handle = await session.start_login(force=True)
         login.callbacks[0].result.set_result('https://synthetic.invalid/callback?code=synthetic')

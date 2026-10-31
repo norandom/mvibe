@@ -3,7 +3,7 @@
 # dependencies = [
 #   "fastapi", "uvicorn", "authlib==1.9.1", "httpx2==2.16.0",
 #   "httpx", "joserfc==1.7.7", "pydantic==2.13.4", "keyring==25.7.0",
-#   "certifi", "truststore", "anyio", "filelock", "pydantic-settings", "python-dotenv",
+#   "cryptography==50.0.2", "certifi", "truststore", "anyio", "filelock", "pydantic-settings", "python-dotenv",
 # ]
 # ///
 """Run with: uv run --script proxy.py"""

@@ -2,23 +2,39 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
+import sys
+import tempfile
 from enum import Enum
 from threading import RLock
 from typing import Literal, cast
 
 import keyring
-from keyring.errors import KeyringError, PasswordDeleteError
+from keyring.errors import KeyringError
+from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, field_serializer
 from mvibe_auth._coordination import MutationCoordinator
 
 _KEYRING_SERVICE = "ai.mistral.vibe.oidc"
 _KEYRING_ENTRY = "cli-oidc:v1:tokens"
+_ENCRYPTION_KEY_ENTRY = "mvibe-auth:v1:fernet-key"
 _DISABLE_KEYRING_ENV_VAR = "VIBE_TEST_DISABLE_KEYRING"
 # One credential slot is shared by service instances and worker event loops.
 _slot_lock = RLock()
 _UNLOADED = object()
 # Process-wide copy of the slot, so hot paths do not read the keyring each time.
 _cached: OidcTokens | None | object = _UNLOADED
+
+
+def credential_path() -> Path:
+    """Per-user library data, independent of project, CLI and OpenCode profiles."""
+    if sys.platform == "win32":
+        root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return root / "mvibe-auth" / "credentials.v1.enc"
 
 
 class OidcTenant(BaseModel):
@@ -80,10 +96,10 @@ ABSENT = _SnapshotMarker.ABSENT
 
 
 class OidcCredentialStore:
-    """Conditionally mutate the Vibe keyring slot under native coordination.
+    """Conditionally mutate the shared encrypted store under native coordination.
 
-    Reload-and-compare detects observed changes; external writers that do not
-    share our lock can still race the backend read/write pair.
+    Legacy Vibe credentials are imported only while the new store is absent.
+    Installed Vibe does not participate in subsequent library writes.
     """
 
     def __init__(self, *, coordinator: MutationCoordinator | None = None) -> None:
@@ -93,7 +109,7 @@ class OidcCredentialStore:
         return await self._wait_for_worker(asyncio.create_task(self.coordinator.worker(self._load)))
 
     async def reload(self) -> OidcTokens | None:
-        """Read the keyring itself, e.g. before a refresh another process may have done."""
+        """Read authoritative storage before a refresh another process may have done."""
         return await self._wait_for_worker(asyncio.create_task(self.coordinator.worker(self._reload)))
 
     async def save(
@@ -181,8 +197,6 @@ class OidcCredentialStore:
             current = self._mutation_current()
             if not self._matches(current, expected):
                 return False
-            if current is None:
-                return True
             self._clear()
             return True
 
@@ -229,56 +243,68 @@ class OidcCredentialStore:
 
     def _read(self) -> OidcTokens | None:
         try:
-            raw = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ENTRY)
-        except (KeyringError, ImportError):
-            raise OidcStorageError(
-                "Could not read OIDC credentials from keyring"
-            ) from None
-        if raw is None:
-            return None
-        try:
+            try:
+                encrypted = credential_path().read_bytes()
+            except FileNotFoundError:
+                raw = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ENTRY)
+                return OidcTokens.model_validate_json(raw) if raw is not None else None
+            key = keyring.get_password(_KEYRING_SERVICE, _ENCRYPTION_KEY_ENTRY)
+            if key is None:
+                raise ValueError("missing encryption key")
+            raw = Fernet(key.encode("ascii")).decrypt(encrypted)
+            if raw == b'{"version":1,"signed_out":true}':
+                return None
             return OidcTokens.model_validate_json(raw)
-        except ValidationError:
-            # Validation errors can embed the entire stored token bundle.
-            raise OidcStorageError("Stored OIDC credentials are invalid") from None
+        except (OSError, KeyringError, ImportError, ValueError, InvalidToken):
+            # Never fall back to legacy credentials for an existing unreadable file.
+            raise OidcStorageError("Could not read OIDC credentials from storage") from None
+
+    def _write_encrypted(self, raw: bytes) -> None:
+        # Called only under coordinator -> slot lock. Key creation and first file
+        # commit therefore share the same cross-process serialization as updates.
+        temporary = None
+        try:
+            path = credential_path()
+            key = keyring.get_password(_KEYRING_SERVICE, _ENCRYPTION_KEY_ENTRY)
+            if key is None:
+                # An existing file must never be overwritten using a replacement key.
+                if path.exists():
+                    raise ValueError("missing encryption key")
+                key = Fernet.generate_key().decode("ascii")
+                keyring.set_password(_KEYRING_SERVICE, _ENCRYPTION_KEY_ENTRY, key)
+            encrypted = Fernet(key.encode("ascii")).encrypt(raw)
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            descriptor, temporary = tempfile.mkstemp(prefix=".credentials-", suffix=".tmp", dir=path.parent)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(encrypted)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            temporary = None
+        except (OSError, KeyringError, ImportError, ValueError):
+            raise OidcStorageError("Could not save OIDC credentials to storage") from None
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
     def _save(self, tokens: OidcTokens) -> None:
         if os.environ.get(_DISABLE_KEYRING_ENV_VAR) == "1":
             raise OidcStorageError("OIDC credential storage is disabled")
         _set_cached(_UNLOADED)
-        try:
-            keyring.set_password(
-                _KEYRING_SERVICE, _KEYRING_ENTRY, tokens.model_dump_json()
-            )
-        except (KeyringError, ImportError):
-            raise OidcStorageError(
-                "Could not save OIDC credentials to keyring"
-            ) from None
+        self._write_encrypted(tokens.model_dump_json().encode("utf-8"))
         _set_cached(tokens)
 
     def _clear(self) -> None:
         if os.environ.get(_DISABLE_KEYRING_ENV_VAR) == "1":
             raise OidcStorageError("OIDC credential storage is disabled")
         _set_cached(_UNLOADED)
-        try:
-            keyring.delete_password(_KEYRING_SERVICE, _KEYRING_ENTRY)
-        except PasswordDeleteError:
-            # macOS wraps access-denied errors too; only a confirmed miss is safe.
-            try:
-                remaining = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ENTRY)
-            except (KeyringError, ImportError):
-                raise OidcStorageError(
-                    "Could not verify removal of OIDC credentials from keyring"
-                ) from None
-            if remaining is not None:
-                raise OidcStorageError(
-                    "Could not remove OIDC credentials from keyring"
-                ) from None
-        except (KeyringError, ImportError):
-            raise OidcStorageError(
-                "Could not remove OIDC credentials from keyring"
-            ) from None
+        # Keep an authenticated tombstone: deleting the file would resurrect Vibe.
+        self._write_encrypted(b'{"version":1,"signed_out":true}')
         _set_cached(None)
+
 
 
 def _set_cached(value: OidcTokens | None | object) -> None:
@@ -287,7 +313,7 @@ def _set_cached(value: OidcTokens | None | object) -> None:
 
 
 def clear_oidc_token_cache() -> None:
-    """Forget the in-memory copy; the next read goes to the keyring."""
+    """Forget the in-memory copy; the next read goes to authoritative storage."""
     with _slot_lock:
         _set_cached(_UNLOADED)
 

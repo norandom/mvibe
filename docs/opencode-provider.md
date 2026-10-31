@@ -59,7 +59,7 @@ plugin's `options.audience` must match the Python `VIBE_CLI_OIDC_AUDIENCE` (defa
 Select **Vibe OIDC** and its **Vibe OIDC** connection method in OpenCode. The host
 runs the matching Python `login` command and opens browser sign-in. OpenCode
 persists only `vibe-oidc-connected`, a non-secret marker in a key-shaped record;
-real credentials stay in the shared library's keyring slot. The marker is never
+real credentials stay in the shared library's encrypted store. The marker is never
 an upstream API key. Each inference request reloads current credentials through
 the helper; streams and tool calls pass through and cancellation closes work.
 
@@ -89,9 +89,9 @@ These errors give setup/reconnection guidance and never offer API-key fallback.
 ## Loopback proxy route
 
 Prepare `uv sync --locked --python 3.12 --extra proxy`, then run
-`uv run --locked --offline proxy.py`. This starts live browser/account activity
+`uv run --locked --offline -- python proxy.py`. This starts live browser/account activity
 when stored matching credentials are absent. Force browser re-login with
-`uv run --locked --offline proxy.py --login`; select another loopback port with
+`uv run --locked --offline -- python proxy.py --login`; select another loopback port with
 `--port`. The script form `uv run --script proxy.py` has separate PEP 723
 dependencies and may download them on first use. Copy **both** `mvibe_auth/` and
 `mvibe_proxy/` alongside `proxy.py`; include `LICENSE.vibe` when redistributing.
@@ -115,12 +115,13 @@ validate credentials, entitlement, upstream readiness or stream-client recovery.
 Transport cleanup failure retires the client and requires proxy restart; health
 can remain healthy while forwarding returns 502.
 
-Both routes use Vibe's service `ai.mistral.vibe.oidc`, entry
-`cli-oidc:v1:tokens`. **Concurrent Vibe/proxy/plugin re-login can contend for
-the same credential slot.** Library consumers cooperate with native locking;
-installed Vibe may ignore it and race between comparison and write. Avoid
-simultaneous external re-login. A successful cancelled/terminated writer might
-already have committed; next resolution reloads authoritative storage.
+Both routes share portable encrypted Python persistence with a short OS-keyring
+encryption key. The legacy Vibe service `ai.mistral.vibe.oidc`, entry
+`cli-oidc:v1:tokens`, is read only when the new store is absent. Subsequent writes
+do not synchronize with installed Vibe. Library consumers cooperate with native
+locking. A successful cancelled/terminated writer might already have committed;
+next resolution reloads authoritative storage. See the
+[storage lifecycle](auth-library.md) before moving or deleting credential files.
 
 ## Offline and current-host verification
 

@@ -1,5 +1,18 @@
 # Implementation validation: vibe-oidc-proxy
 
+Live-test amendment, 2026-10-31: the report below describes the completed
+pre-live baseline. The first authorized live login reached validated-token
+persistence but Windows CredWrite failed. User-directed task 9.1 replaces the
+single keyring blob with portable encrypted persistence. Independent review
+APPROVED task 9.1 after all ten offline steps passed (934 Python tests, 458 Bun
+tests / 1,432 assertions). Fresh evidence is in
+`reports/verification/fd6226fd347d46e5a87b0b65e0d13404/acceptance.json`.
+The subsequent authorized live retry passed browser OIDC persistence, new-session
+reuse without a browser, curl health/models/chat and an isolated OpenCode 2.2.5
+CLI prompt through the proxy. See [live results](../../../docs/live-results.md)
+and [independent storage review](portable-storage-review.md). GO covers offline
+acceptance and this proxy smoke test; other live scenarios remain unverified.
+
 ## Validation Report
 
 - DECISION: **GO — offline implementation and acceptance**

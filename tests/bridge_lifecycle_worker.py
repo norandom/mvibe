@@ -38,25 +38,36 @@ def wait(name):
         time.sleep(.01)
 
 
+from mvibe_auth import _oidc_credentials as credentials
+credentials.credential_path = lambda: root / 'credentials.enc'
+
+
 def read(service, entry):
-    path = root / 'slot.json'
+    path = root / ('slot.json' if entry == credentials._KEYRING_ENTRY else 'key.txt')
     return path.read_text() if path.exists() else None
 
 
-def write(service, entry, raw):
+def write_key(service, entry, raw):
+    assert entry == credentials._ENCRYPTION_KEY_ENTRY
+    (root / 'key.txt').write_text(raw)
+
+
+original_write = credentials.OidcCredentialStore._write_encrypted
+
+
+def write(self, raw):
     mark('write-entered')
     if mode.endswith('before'):
         wait('release-write')
-    temporary = root / 'slot.tmp'
-    temporary.write_text(raw)
-    os.replace(temporary, root / 'slot.json')
+    original_write(self, raw)
     mark('write-committed')
     if mode.endswith('after'):
         wait('release-write')
 
 
+credentials.OidcCredentialStore._write_encrypted = write
 keyring.get_password = read
-keyring.set_password = write
+keyring.set_password = write_key
 config = api.AuthConfig(issuer='https://synthetic.invalid', client_id='synthetic-client',
     audience='https://inference.invalid', organization_id='synthetic-org', enabled=True)
 service = OidcService.from_config(config)

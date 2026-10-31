@@ -1,133 +1,195 @@
 # mvibe
 
-Shared Vibe browser OIDC authentication for a local OpenAI-compatible proxy and
-the direct OpenCode 2 `vibe-oidc` provider. Python 3.12+ and uv are required;
-use uv-created environments throughout. No Vibe installation, Rust build or
-symlinks are needed. Real browser login, subscription entitlement and upstream
-inference remain unverified by the offline suite.
+Use your Vibe subscription through browser OIDC from a local OpenAI-compatible
+proxy or the direct OpenCode 2 provider. Both use the same Python authentication
+library. No Mistral API key is needed.
 
-- [Library API and lifecycle](docs/auth-library.md)
-- [Direct OpenCode provider and loopback client setup](docs/opencode-provider.md)
-- [Vibe source hashes, license and deviations](docs/vibe-provenance.md)
-- [Synthetic native host and startup evidence](docs/consumer-integration.md)
+Start with the proxy and one curl request. Then run OpenCode against that proxy.
+This separates sign-in, upstream access and agent integration so each failure
+has a clear next step. These examples use PowerShell on Windows.
 
-## Prepare Python
+## 1. Prepare this checkout
 
-Online preparation may download the interpreter and dependencies:
+Install uv, then open a terminal in the checkout:
 
 ```powershell
-uv sync --locked --python 3.12
+Set-Location D:/Source/mvibe
+uv sync --locked --python 3.12 --extra proxy
 ```
 
-This prepares the library, test/build tools and proxy dependencies. For the
-runtime-only library use `uv sync --locked --python 3.12 --no-dev --no-editable`;
-FastAPI/Uvicorn are absent. To run the proxy without development dependencies use
-`uv sync --locked --python 3.12 --no-dev --no-editable --extra proxy`.
-The reference Python is CPython 3.12.10 with uv 0.13.5; resolved dependencies are
-in `uv.lock`. Distribution/API version 0.1.0 is separate from copied Vibe 3.0.4
-source provenance and private bridge protocol 1 (accepted API major 0).
+Setup may download Python and dependencies. Use uv-managed Python throughout;
+there is no need to install Windows Store Python. Bun is needed only for the
+direct TypeScript plugin and its tests.
 
-## Run the proxy
+## 2. Start the proxy and finish browser sign-in
 
-After proxy preparation, the following uses installed cached dependencies.
-Offline dependency resolution does **not** prevent this operator action from
-opening a real browser or making account requests:
+In terminal A:
 
 ```powershell
-uv run --locked --offline proxy.py
+uv run --locked --offline -- python proxy.py
 ```
 
-Startup reuses stored matching credentials or opens browser sign-in before
-serving. Force re-login with `--login`; override port with `--port`.
-`uv run --script proxy.py` remains available with its own inline PEP 723
-dependencies (first use may download). When copying the script, retain both
-`mvibe_auth/` and `mvibe_proxy/` alongside it and retain `LICENSE.vibe`.
-A library wheel contains the two packages; the source distribution also retains
-`proxy.py`. A library-only environment cannot run the proxy until its extra is
-installed.
+Keep this terminal open. Startup reuses matching credentials or opens the Vibe
+OIDC sign-in in your default browser. Complete sign-in there. The browser's
+"Sign-in received. Return to Vibe." message confirms receipt of the callback;
+wait for `Application startup complete` in terminal A before continuing.
 
-Point an OpenAI-compatible client at `http://127.0.0.1:8765/v1`, use a placeholder
-`apiKey` such as `local` if required by its SDK, and select a model ID returned by
-`GET /v1/models`. The placeholder is ignored upstream. Supported operations are
-models, chat completions (streaming/tool-call payloads) and embeddings; Responses
-API is unsupported. Local caller authentication is absent. `GET /health` is local
-liveness only, not credential/upstream readiness. Account entitlement determines
-models and capabilities.
+`--offline` applies to dependencies. The proxy still contacts the issuer and
+Mistral. The explicit `python` after `--` uses the uv project environment and its
+lockfile. `uv run --locked --offline proxy.py` instead selects the script's
+separate inline dependency metadata and requires a separate script lockfile.
 
-`VIBE_CLI_OIDC_*` overrides select issuer/client/audience/callback/scope and tenant.
-The proxy opts in when `VIBE_CLI_OIDC_ENABLED` is absent; explicit disablement
-wins. Standalone bridge/login commands also opt in when absent; library users
-must supply an enabled configuration. Sessions capture
-configuration at construction. Inference uses ID-token and tenant headers;
-UserInfo uses the distinct access token. No API-key fallback exists.
+Stop with Ctrl+C. Force another browser sign-in with
+`uv run --locked --offline -- python proxy.py --login`. Use `--port 8766` for
+another port and update client URLs accordingly.
 
-Vibe, proxy and plugin share the same OS credential slot. Avoid concurrent
-re-login: installed Vibe may ignore library coordination and overwrite a value.
-No inference replay or redirect following occurs. Stream cleanup is shielded
-with a two-second response-close deadline and a separate two-second client-close
-deadline. Failed cleanup retires the client; restart the proxy after sanitized
-502 failures. Health can remain healthy during retirement.
+## 3. Check health, models and a chat response with curl
 
-## Prepare and verify the OpenCode plugin
-
-The [provider guide](docs/opencode-provider.md) gives the production plugin
-configuration and explicit uv-managed `helperCommand`. Prepare Bun **1.4.4**,
-then from `packages/opencode-vibe-oidc` run:
+Open terminal B. Use `curl.exe` to avoid the PowerShell curl alias:
 
 ```powershell
-bun install --frozen-lockfile --ignore-scripts
-bun run typecheck
-bun run build
+curl.exe --fail-with-body --silent --show-error --max-time 10 http://127.0.0.1:8765/health
 ```
 
-The reproducible reference pair is OpenCode CLI / `@opencode/plugin` **2.2.5**,
-with `@ai-sdk/openai-compatible` **2.0.88**. User-reported OpenCode **2.2.6** is
-unverified. Use the native executable from the explicitly prepared CLI package,
-`node_modules/@opencode/cli-windows-x64/bin/opencode.exe` on Windows x64, or copy a
-verified 2.2.5 binary with `OPENCODE_TEST_SOURCE` and `bun run prepare:host`.
-Do not point tests at an active user service/profile. Current stable OpenCode 2
-updates are a separate explicit action: `bun run compatibility:current
---discover-current`, then `bun run compatibility:current --prepare-current`.
-These network-enabled actions never run inside the offline verifier. Discovery
-alone does not prove compatibility; unknown host versions remain unverified.
-
-## Offline checks
-
-After preparation, run the complete mandatory pipeline from the checkout root.
-Pass absolute paths to your prepared Bun and native host:
+Expected: `{"status":"ok"}`. This proves local liveness only. Discover the
+models your signed-in account can actually access:
 
 ```powershell
-pwsh -NoProfile -File scripts/verify.ps1 -Bun C:/tools/bun.exe -HostBinary D:/Source/mvibe/packages/opencode-vibe-oidc/node_modules/@opencode/cli-windows-x64/bin/opencode.exe
-exit $LASTEXITCODE
+$inventory = curl.exe --fail-with-body --silent --show-error --max-time 60 http://127.0.0.1:8765/v1/models
+if ($LASTEXITCODE -ne 0) { throw 'Model discovery failed; stop here.' }
+$models = ($inventory | ConvertFrom-Json).data
+$models | Select-Object id, capabilities
+$model = Read-Host 'Paste an exact chat-capable model ID from this list'
+if ($model -notin $models.id) { throw 'Choose an ID returned by this account.' }
 ```
 
-The runner installs nothing from the network. It executes Python tests, Bun
-tests/typecheck/build, helper process lifecycle and isolated native host/startup
-checks, then validates every requirement's executed or documentary evidence.
-Results go to `reports/verification/<run-id>/acceptance.json`; missing, stale,
-skipped or failed mandatory checks cause nonzero exit. Offline evidence and local
-startup are separate from live compatibility; unexercised live checks remain
-unverified. Until the separate live-procedure artifacts are delivered, their
-required documentary mappings also keep overall acceptance incomplete.
-
-Focused Python checks and packaging build use the canonical commands:
+Choose a chat model, not an embedding-only model. Send a small public prompt:
 
 ```powershell
-uv run --locked --offline pytest
-exit $LASTEXITCODE
+$body = @{
+    model = $model
+    messages = @(@{ role = 'user'; content = 'Reply with exactly OK.' })
+    max_tokens = 32
+    stream = $false
+} | ConvertTo-Json -Depth 6
+$requestFile = Join-Path $env:TEMP ('mvibe-chat-' + [guid]::NewGuid() + '.json')
+[IO.File]::WriteAllText($requestFile, $body, [Text.UTF8Encoding]::new($false))
+try {
+    curl.exe --fail-with-body --silent --show-error --max-time 120 `
+        http://127.0.0.1:8765/v1/chat/completions `
+        -H 'Content-Type: application/json' --data-binary "@$requestFile"
+    if ($LASTEXITCODE -ne 0) { throw 'Chat failed; inspect the HTTP response.' }
+} finally {
+    Remove-Item -LiteralPath $requestFile -ErrorAction SilentlyContinue
+}
 ```
+
+Success means a chat-completion JSON response containing an assistant answer.
+No caller Authorization header is required. Client SDKs that require an `apiKey`
+can use `local`; the proxy derives upstream authentication from OIDC.
+
+## 4. Run OpenCode through the proxy
+
+Keep terminal A running. Open a fresh PowerShell terminal for this test; close
+it afterward to discard temporary environment overrides. These OpenCode 2
+configuration fields were checked against the local 2.2.5 CLI. Record your
+version because OpenCode updates independently.
 
 ```powershell
-uv build --offline --no-build-isolation
-exit $LASTEXITCODE
+$probeRoot = Join-Path $env:TEMP ('mvibe-opencode-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $probeRoot | Out-Null
+$env:OPENCODE_TEST_HOME = $probeRoot
+$env:OPENCODE_DISABLE_AUTOUPDATE = 'true'
+$env:OPENCODE_DISABLE_MODELS_FETCH = 'true'
+foreach ($name in @('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME')) {
+    Set-Item "env:$name" (Join-Path $probeRoot $name)
+}
+$env:MISTRAL_API_KEY = 'local'
+$config = @{
+    update = 'disable'
+    share = 'disabled'
+    providers = @{
+        mistral = @{ settings = @{ baseURL = 'http://127.0.0.1:8765/v1'; apiKey = 'local' } }
+    }
+} | ConvertTo-Json -Depth 6
+[IO.File]::WriteAllText((Join-Path $probeRoot 'opencode.json'), $config)
+Set-Location $probeRoot
+opencode --version
+opencode models --standalone
+$model = Read-Host 'Enter a chat ID in BOTH proxy discovery and OpenCode, without mistral/'
+opencode run --standalone --model "mistral/$model" 'Reply with exactly OK. Do not use tools or read files.'
 ```
 
-`tests/test_installation.py` copies the source to a temporary directory, runs
-locked offline uv sync in a clean no-dev non-editable environment, proves web
-dependencies are absent, checks installed bridge hello/protocol errors, installs
-the proxy extra and exercises both packaged and PEP 723 `--help` entry points.
-`tests/test_auth_lifecycle.py` executes the library guide's public examples with
-synthetic boundaries. All default verification avoids real keyring, browser,
-sign-in and remote services. Missing prepared dependencies fail rather than
-silently downloading. Build/source capture retains Apache attribution in
-`LICENSE.vibe` and the original authentication helpers.
+Use the native executable's full path if `opencode` is not on PATH. The desktop
+installation here provides
+`C:/Users/mariu/AppData/Local/Programs/OpenCode/resources/opencode-cli.exe`.
+The `local` value enables the client adapter; it is a placeholder, and upstream
+authentication still uses Vibe OIDC. This checks the proxy route. The direct
+`vibe-oidc` provider has its own
+[configuration and model-metadata requirements](docs/opencode-provider.md).
+
+Require an assistant answer from OpenCode and the corresponding chat request in
+terminal A. A visible model list alone does not prove inference. Stop on failure;
+repeated sign-ins will not resolve an endpoint or model mismatch.
+
+## What about searches?
+
+The proxy supports models, chat completions (including streaming and tool-call
+payloads) and embeddings. It has no search endpoint or search executor. Forwarding
+a model's tool call does not execute the tool. Embeddings do not perform a web search.
+
+OpenCode can execute a separately configured search tool or MCP server and send
+its results back through chat. Proxying a Vibe-specific authenticated search
+service needs a follow-up spec covering the endpoint, permissions, result shape,
+citations, errors and tests. Responses API is also unsupported.
+
+## If a check fails
+
+| Last successful step | Next action |
+| --- | --- |
+| Browser callback only | Read terminal A; token validation and persistence must finish before startup. |
+| Proxy startup | Check the configured port and `/health`. |
+| Health | Check discovery status, account entitlement and OIDC/tenant configuration. |
+| Model discovery | Use an exact chat-capable ID and inspect the chat HTTP response. |
+| curl chat | Check OpenCode version, configuration, model ID and proxy access log. |
+| Forwarding returns 502 after stream cleanup failure | Restart the proxy; health can still report OK. |
+
+The 2026-10-31 Windows smoke test passed browser OIDC login, encrypted credential
+persistence and reuse, curl health/models/chat, and an OpenCode 2.2.5 CLI prompt
+through the proxy. The initial `CredWrite` failure was fixed by storing the
+encrypted bundle in a file and only a short key in the OS keyring. See
+[the live results](docs/live-results.md) for the tested scope. Live refresh,
+embeddings, tool execution and the direct provider remain unverified.
+
+The server binds to loopback and has no local caller authentication. Any local
+process that can reach the port can use it. Keep tokens, callback URLs and raw
+credential exports out of logs, issues and test evidence.
+
+## Repeatable checks and engineering reference
+
+The offline suite uses synthetic boundaries. It does not establish real account
+entitlement, browser registration or inference. Once dependencies and a native
+host are prepared, run the full pipeline from the checkout root:
+
+```powershell
+pwsh -NoProfile -File scripts/verify.ps1 -Bun C:/tools/bun.exe -HostBinary C:/Users/mariu/AppData/Local/Programs/OpenCode/resources/opencode-cli.exe
+```
+
+Use absolute paths to prepared Bun 1.4.4 and OpenCode 2 executables. Reports go
+to `reports/verification/<run-id>/acceptance.json`. Focused Python checks use
+`uv run --locked --offline pytest`; packaging uses
+`uv build --offline --no-build-isolation`.
+
+- [Shared auth API and lifecycle](docs/auth-library.md)
+- [Direct OpenCode plugin setup, build and compatibility](docs/opencode-provider.md)
+- [Live procedure and evidence checklist](docs/live-verification.md)
+- [Live results](docs/live-results.md)
+- [Offline acceptance](docs/offline-acceptance.md)
+- [Synthetic native host evidence](docs/consumer-integration.md)
+- [Vibe source attribution and deviations](docs/vibe-provenance.md)
+
+For the runtime-only library, prepare with
+`uv sync --locked --python 3.12 --no-dev --no-editable`; add `--extra proxy` when
+running the proxy. `uv run --script proxy.py` uses separate inline dependencies
+and may download them. When copying that script, retain `mvibe_auth/`,
+`mvibe_proxy/` and `LICENSE.vibe`. See `uv.lock` for dependency versions.

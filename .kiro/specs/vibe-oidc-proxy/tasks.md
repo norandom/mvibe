@@ -1,5 +1,15 @@
 # Implementation Plan
 
+## Authorized live-test remediation (2026-10-31)
+
+- [x] 9.1 Implement portable encrypted Python credential persistence
+  - _Boundary:_ Shared auth persistence, dependency manifests, storage tests and affected fixtures.
+  - _Requirements:_ 3.4, 3.6-3.9; preserve existing refresh and coordination contracts.
+  - _Design:_ Credential Store and Coordination (2026-10-31 amendment).
+  - Support large bundles with authenticated encrypted atomic file commits and a short OS-keyring key; legacy import, signed-out tombstone, fail-closed corruption/key loss, conditional updates and safe cancellation. No plaintext fallback. Independently review and run full Python checks before resuming user-authorized live curl and OpenCode CLI tests.
+  - Independent review APPROVED; full offline pipeline passed (934 Python, 458 Bun, all ten steps). Live retry passed OIDC persistence/reuse, curl health/models/chat and OpenCode 2.2.5 CLI through the proxy. See `portable-storage-review.md` and `docs/live-results.md`; other live operations remain unverified.
+
+
 Each executable sub-task is estimated at 1–3 hours. Foundation, core, integration and validation are ordered. Non-parallel tasks follow prior work; (P) tasks may run with preceding peers only after their listed dependencies and the foundation are complete. All checks are mandatory. Scope is implementation and offline verification; live-account execution and publication are excluded.
 
 File ownership follows design.md. Boundaries name components rather than repeat paths. Provider tasks sharing adapter files are sequential. The requested technical documentation and live procedure are required acceptance artifacts attached to setup/integration/testing tasks; they are not dropped under the generic code-only planning rule.

@@ -91,19 +91,33 @@ not undo a committed write. Do not assume that killing a process rolls back
 its final write: a new session must reload the authoritative store.
 
 Participating library sessions/processes use the same per-user native lock for
-the shared Vibe keyring slot. They serialize reload/refresh/conditional writes;
+the encrypted credential store. They serialize reload/refresh/conditional writes;
 the coordinator is acquired before the in-process slot lock and is not released
 until an owned storage worker finishes. Native acquisition has a 90-second
 deadline and returns a retryable transient failure if unavailable. Browser waits
 hold no coordinator lock.
 
-External Vibe and other writers may ignore this lock. Conditional comparison
-detects changes observed before a write, discards stale candidates and allows
-one conflict retry shared across token and tenant resolution. Repeated changes
-produce a safe retryable `conflict` failure. This cannot make an external
-writer's read/modify/write atomic: an uncooperative writer can race after the
-comparison or overwrite a committed value. These are cooperative guarantees,
-not exclusive ownership of the external credential store.
+The portable store encrypts token JSON with Fernet and keeps only a short
+encryption key in the OS keyring. An absent store can read the legacy Vibe slot;
+the first mutation writes the new store without changing Vibe's slot. Subsequent
+Vibe logins and refreshes are separate. A signed-out tombstone prevents old
+credentials from being imported again after clear. Missing keys or corrupt
+encrypted data fail closed, with no plaintext fallback. This is cross-platform
+storage, not a portable backup: copying the encrypted file alone to another
+machine does not transfer its OS-keyring key.
+
+The encrypted file is `mvibe-auth/credentials.v1.enc` under `%LOCALAPPDATA%`
+on Windows, `~/Library/Application Support` on macOS, or `$XDG_DATA_HOME`
+(default `~/.local/share`) on Linux. The keyring service remains
+`ai.mistral.vibe.oidc`; the short key uses entry `mvibe-auth:v1:fernet-key`.
+Use the public library to sign out; deleting the file manually can re-enable
+legacy import. Loss of the OS-keyring key makes an existing encrypted file
+unreadable, so moving the file alone is not a recovery procedure.
+
+Conditional comparison detects changes observed before a write, discards stale
+candidates and allows one conflict retry shared across token and tenant
+resolution. Repeated changes produce a safe retryable `conflict` failure.
+All consumers must use the library's native coordinator for mutation.
 
 ## Offline evidence
 

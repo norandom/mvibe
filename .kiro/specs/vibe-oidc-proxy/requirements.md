@@ -46,7 +46,7 @@ These requirements are proposed contracts, not claims that the current implement
 1. When receiving an initial token response, the Proxy shall validate the ID-token signature, issuer, client audience, nonce, subject and lifetime before accepting the identity.
 2. If discovery identifies a different issuer or a token uses an unsupported signing algorithm, the Proxy shall reject the authentication result.
 3. If the token response lacks a usable bearer access token, a positive finite access-token lifetime or the required initial ID token, the Proxy shall reject it.
-4. When sign-in succeeds, the Proxy shall persist credentials in the Vibe-compatible operating-system credential store for subsequent launches.
+4. When sign-in succeeds, the Shared Auth Library shall persist credentials in a cross-platform encrypted Python credential store for subsequent launches, using only a short encryption key in the operating-system keyring. It shall support token bundles larger than the Windows credential-blob limit without plaintext fallback. Existing Vibe credentials may be imported; subsequent writes are shared by library consumers rather than synchronized with installed Vibe.
 5. When readable stored credentials match the active issuer, client and audience, the Proxy shall reuse that identity without a new browser sign-in unless forced sign-in is requested.
 6. If credentials cannot be persisted after initial sign-in, the Proxy shall report sign-in failure rather than claim successful persistent login.
 7. When a credential update encounters a stored identity or token set changed since the update began, the Proxy shall avoid overwriting the newer credential set.
@@ -126,7 +126,7 @@ These requirements are proposed contracts, not claims that the current implement
 3. When describing behavior, the Project Documentation shall distinguish code-observed behavior, intended requirements, suspected defects and unverified external assumptions.
 4. When describing agent setup, the Project Documentation shall provide the loopback base URL, supported operations, model-ID discovery and the placeholder-only role of a client API-key field.
 5. When describing operation, the Project Documentation shall state that local caller authentication is absent, health is local liveness only, and account entitlement controls model availability.
-6. When describing shared credentials, the Project Documentation shall warn that concurrent Vibe/proxy re-login can contend for the same credential slot.
+6. When describing shared credentials, the Project Documentation shall explain legacy Vibe import, separate subsequent Vibe persistence, and coordinated sharing of the encrypted store between proxy and plugin consumers.
 7. When Vibe-derived code is changed, the Project Documentation shall retain license attribution and record deviations from the documented source baseline.
 
 ### Requirement 10: Offline Automated Verification

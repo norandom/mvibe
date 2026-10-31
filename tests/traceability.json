@@ -191,6 +191,18 @@
       {
         "kind": "test",
         "suite": "python",
+        "file": "tests/test_portable_credentials.py",
+        "name": "test_large_bundle_uses_only_short_key_and_encrypted_file"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
+        "file": "tests/test_portable_credentials.py",
+        "name": "test_legacy_migration_and_tombstone_do_not_touch_vibe"
+      },
+      {
+        "kind": "test",
+        "suite": "python",
         "file": "tests/test_credentials.py",
         "name": "test_storage_roundtrip_and_displays_keep_existing_schema"
       },

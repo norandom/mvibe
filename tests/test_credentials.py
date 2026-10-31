@@ -1,4 +1,4 @@
-"""Credential mutation contracts against a synthetic keyring slot only."""
+"""Credential mutation contracts with synthetic keyring and encrypted local storage."""
 from __future__ import annotations
 
 import asyncio
@@ -30,41 +30,73 @@ def tenant(selection=""):
 
 @pytest.fixture
 def slot(monkeypatch):
+    from cryptography.fernet import Fernet
+    original_write = OidcCredentialStore._write_encrypted
+
     class Slot:
-        raw = None
+        legacy = None
+        key = None
         writes = 0
         deletes = 0
         read_error = None
         write_error = None
         delete_error = None
 
+        @property
+        def raw(self):
+            path = credentials.credential_path()
+            if path.exists():
+                raw = Fernet(self.key.encode()).decrypt(path.read_bytes()).decode()
+                return None if raw == '{"version":1,"signed_out":true}' else raw
+            return self.legacy
+
+        @raw.setter
+        def raw(self, raw):
+            path = credentials.credential_path()
+            if path.exists():
+                path.write_bytes(Fernet(self.key.encode()).encrypt((raw or '{"version":1,"signed_out":true}').encode()))
+            else:
+                self.legacy = raw
+
         def read(self, service, entry):
-            assert (service, entry) == ("ai.mistral.vibe.oidc", "cli-oidc:v1:tokens")
+            assert service == "ai.mistral.vibe.oidc"
             if self.read_error:
                 raise self.read_error
-            return self.raw
+            return self.legacy if entry == credentials._KEYRING_ENTRY else self.key
 
-        def write(self, service, entry, raw):
-            self.read(service, entry)
+        def key_write(self, service, entry, raw):
+            assert entry == credentials._ENCRYPTION_KEY_ENTRY
+            self.key = raw
+
+        def write(self, raw):
             if self.write_error:
                 raise self.write_error
-            self.raw = raw
+            if self.delete_error and raw == b'{"version":1,"signed_out":true}':
+                raise self.delete_error
+            original_write(OidcCredentialStore(), raw)
             self.writes += 1
 
-        def delete(self, service, entry):
-            self.read(service, entry)
-            if self.delete_error:
-                raise self.delete_error
-            self.raw = None
-            self.deletes += 1
-
         def external(self, value):
-            self.raw = value.model_dump_json() if value is not None else None
+            raw = value.model_dump_json() if value is not None else None
+            path = credentials.credential_path()
+            if path.exists():
+                # Simulate a second participating library process, not Vibe.
+                encrypted = Fernet(self.key.encode()).encrypt((raw or '{"version":1,"signed_out":true}').encode())
+                path.write_bytes(encrypted)
+            else:
+                self.legacy = raw
 
     value = Slot()
     monkeypatch.setattr(keyring, "get_password", value.read)
-    monkeypatch.setattr(keyring, "set_password", value.write)
-    monkeypatch.setattr(keyring, "delete_password", value.delete)
+    monkeypatch.setattr(keyring, "set_password", value.key_write)
+    monkeypatch.setattr(keyring, "delete_password", lambda *args: pytest.fail("legacy slot mutated"))
+
+    def write(self, raw):
+        try:
+            value.write(raw)
+        except KeyringError:
+            raise OidcStorageError("Could not save OIDC credentials to storage") from None
+    monkeypatch.setattr(OidcCredentialStore, "_write_encrypted", write)
     return value
 
 
@@ -265,7 +297,7 @@ async def test_cancel_waits_for_mutating_worker_and_reports_commit_when_requeste
         assert release.wait(5), "test failed to release persistence worker"
         original_write(*args)
 
-    monkeypatch.setattr(keyring, "set_password", blocked_write)
+    monkeypatch.setattr(slot, "write", blocked_write)
     task = asyncio.create_task(store.save(tokens(), expected=ABSENT, complete_on_cancel=complete))
     try:
         async with asyncio.timeout(3):

@@ -13,9 +13,10 @@ Run the offline runner and review its fresh report separately from
 subscription entitlement, live refresh or live inference. Choose to begin the
 following procedure explicitly, using an account and harmless synthetic content
 that you are authorized to use. Real browser/keyring/network access occurs only
-when the operator deliberately starts the production consumer. Stop other Vibe,
-proxy and plugin re-login activity: they share one credential slot. Do not clear,
-export or edit that slot for these checks.
+when the operator deliberately starts the production consumer. Stop concurrent
+proxy/plugin re-login activity: they share the encrypted library store. The old
+Vibe slot is a one-way import source, not a synchronized store. Do not clear,
+export or edit either store for these checks.
 
 ## Prepare an evidence copy
 
@@ -66,7 +67,7 @@ per consumer; use a separate report if either changes.
 
 ## Exercise each consumer separately
 
-For the **proxy**, deliberately start `uv run --locked --offline proxy.py --login`
+For the **proxy**, deliberately start `uv run --locked --offline -- python proxy.py --login`
 from the prepared checkout for a fresh browser OIDC flow. Its default loopback
 base is `http://127.0.0.1:8765/v1`. Use an OpenAI-compatible client with a placeholder
 `apiKey` such as `local` if required; this is not an upstream credential. Local

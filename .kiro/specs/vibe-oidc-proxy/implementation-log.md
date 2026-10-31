@@ -39,3 +39,20 @@ The shared tasks.md progress record is included in every task commit and omitted
 
 Feature-level validation: **GO for offline acceptance**, recorded in [validation.md](validation.md) and commit `45e0a56`. Fresh final pipeline: 919 Python tests, 458 Bun tests, all ten steps and 97 criteria passed without mandatory skips. Live scenarios remain unverified. No deployment, publication, live login or inference was performed.
 
+
+## Live-test amendment: portable storage (2026-10-31)
+
+User authorized portable Python persistence after a real Windows CredWrite
+failure at the end of OIDC login. Task 9.1 preserves the token schema and shared
+library API while using Fernet-encrypted atomic files and a short OS-keyring key.
+Legacy Vibe credentials import one way; subsequent writes are separate.
+
+Task 9.1: READY_FOR_REVIEW -> APPROVED. Independent canonical pipeline exit 0:
+934 Python tests, 458 Bun tests / 1,432 assertions, all ten mandatory steps.
+Review: portable-storage-review.md. Acceptance evidence:
+reports/verification/fd6226fd347d46e5a87b0b65e0d13404/acceptance.json.
+
+Authorized live retry passed OIDC persistence/reuse, curl health/models/chat and
+OpenCode 2.2.5 CLI through the proxy. The public prompt returned OK with
+ministral-3b-latest. Other live scenarios remain unverified; see
+../../../docs/live-results.md. README now leads with the curl and CLI path.

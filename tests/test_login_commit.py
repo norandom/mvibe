@@ -214,7 +214,7 @@ async def test_cancel_during_commit_drains_write_and_reports_actual_result(login
         started.set()
         assert release.wait(5)
         original_write(*args)
-    monkeypatch.setattr('keyring.set_password', blocked_write)
+    monkeypatch.setattr(login.slot, 'write', blocked_write)
     attempt = await begin(login)
     login.callbacks[0].result.set_result('https://synthetic.invalid/callback?code=synthetic')
     assert await asyncio.to_thread(started.wait, 5)
