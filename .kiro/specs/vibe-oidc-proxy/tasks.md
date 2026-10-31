@@ -211,7 +211,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: Verification Suite_
   - _Requirements: 10.5, 10.6, 10.7, 10.8, 10.9, 10.10_
 
-- [ ] 8.3 Deliver tested installation and operator contracts
+- [x] 8.3 Deliver tested installation and operator contracts
   - Explicit integration: verify library-only installation and proxy/plugin setup in isolated environments, including script/package parity, Python prerequisite and version mismatch errors.
   - Ship the requested library/provider guides, README examples and provenance/deviation record as acceptance outputs of those checks; include source hashes, internal flow references and credential/liveness/entitlement limitations.
   - Done when setup examples and public-interface examples are checked offline and every required artifact reflects the tested code rather than unverified claims.
@@ -320,4 +320,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 8.2: traceability97specificIDs and scripts/verify.ps1 freshunique-run executedJUnit/host/startup evidence; missing/skipped/failed/stalecannotPASS. Independent883Python458Bun/allofflinePASS runnerexit1ONLY15futuredocevidenceunverified. Fresh20validatorchecksPASS. Upstreambridgefix33b0075 separatelyreviewed; failedoriginalreportpreserved.
+
+
+- 8.3: Isolatednoneditablelibrary/no-dev+proxyextra/copiedscript help/installedbridgeversionerror alltestedoffline. Operator/provenanceguides reviewed, immutablebaselineinputs+requirements capturedforcleancheckout. Fresh5installationPASS independent888Python32Bun/buildPASS. Liveartifacts8.4pending.
 

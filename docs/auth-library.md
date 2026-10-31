@@ -4,8 +4,13 @@
 typed login/error results. Both Python consumers and the provider's Python helper
 use this implementation for login, validation, refresh, storage and tenant
 selection. The library has no dependency on the proxy application or OpenCode.
-The provider adapter and its installation instructions are separate integration
-work; these examples exercise the Python API.
+The [provider guide](opencode-provider.md) covers the adapter and both consumer
+routes; these examples exercise the Python API. Prepare the independent library
+with `uv sync --locked --python 3.12 --no-dev --no-editable`. FastAPI/Uvicorn are
+optional proxy dependencies. Distribution/API 0.1.0 and bridge protocol 1 are
+independent of Vibe 3.0.4 source provenance; the adapter accepts API major 0.
+Use a uv-managed environment and interpreter, never a bare Python/WindowsApps
+alias. The [README](../README.md) separates online preparation from offline checks.
 
 ## Explicit sign-in
 
@@ -101,6 +106,15 @@ comparison or overwrite a committed value. These are cooperative guarantees,
 not exclusive ownership of the external credential store.
 
 ## Offline evidence
+
+The installed private helper runs as `uv run --offline --no-sync --project
+<prepared-checkout> -m mvibe_auth bridge`, or with the absolute interpreter from
+that uv-created environment and arguments `-m mvibe_auth bridge`. Its private
+stdin/stdout are protocol-only NDJSON, with hello/status/login/resolve/shutdown
+methods and a 1 MiB frame cap. Refresh tokens never cross the bridge. Missing
+runtime/library or protocol/API/audience mismatch requires matching installation
+and configuration; it never falls back to API-key authentication. Consumer code
+should use the public API above rather than depending on this private protocol.
 
 Run `uv run --locked --offline pytest tests/test_auth_api.py tests/test_auth_lifecycle.py -q`
 from a prepared locked environment. The lifecycle suite executes both Python
