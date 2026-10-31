@@ -117,7 +117,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8_
 
 - [ ] 5. Public shared-library integration
-- [ ] 5.1 Expose the reusable authentication session
+- [x] 5.1 Expose the reusable authentication session
   - Explicit integration: assemble config, service, store, coordinator and tenant resolver behind the documented public session interface.
   - Keep token bundles and refresh tokens private; status/resolve never launch a browser and public exports do not import the proxy.
   - Done when consumer tests obtain immutable target-bound snapshots, reuse stored identity and receive typed sanitized failures using only public interfaces.
@@ -280,4 +280,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 4.5: Runtime _resolve_headers sharesResolutionBudget with service and checks authoritative tokenrevision/freshness beforeallreturnpaths incloverride/cache. Tenantpersistfailureonlyproceedsvalidcurrent; invalidIDsrejected. Python718pass independentAPPROVED.
+
+
+- 5.1: PublicAuthSession in api.py delegates existingservice/runtime; runtime.material returns same-resolutionmetadata; serviceattempt.ready signalslisteningURL/error. Snapshotrevision opaqueHMAC; refreshprivate. Python737pass independentAPPROVED.
 

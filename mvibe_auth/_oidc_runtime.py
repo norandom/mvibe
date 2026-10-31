@@ -67,6 +67,11 @@ class OidcRuntime:
     async def headers(self, url: str) -> dict[str, str]:
         return await _oidc_headers(url, self.config, self.service)
 
+    async def material(self, url: str) -> tuple[dict[str, str], OidcTokens]:
+        """Internal facade boundary: metadata and headers from one resolution."""
+        _validate_target(url, self.config)
+        return await _resolve_material(self.config, self.service)
+
     def stored_credential(self) -> str | None:
         return stored_oidc_credential(self.config)
 
@@ -158,8 +163,18 @@ async def oidc_headers(url: str, config: AuthConfig | None = None) -> dict[str, 
 
 
 async def _oidc_headers(url: str, captured: AuthConfig, service: OidcService) -> dict[str, str]:
+    _validate_target(url, captured)
+    return await _resolve_headers(captured, service)
+
+
+def _validate_target(url: str, captured: AuthConfig) -> None:
     config = captured.to_oidc_config()
-    destination = httpx2.URL(url)
+    try:
+        destination = httpx2.URL(url)
+    except (ValueError, TypeError, httpx2.InvalidURL):
+        raise OidcError("OIDC destination is invalid") from None
+    if destination.userinfo or destination.fragment:
+        raise OidcError("OIDC destination is invalid")
     audience = httpx2.URL(config.audience)
     origins = {(audience.scheme, audience.host, audience.port)}
     for origin in map(httpx2.URL, config.web_origins):
@@ -169,10 +184,14 @@ async def _oidc_headers(url: str, captured: AuthConfig, service: OidcService) ->
         raise OidcError(
             "OIDC destination does not match the configured issuer/audience"
         )
-    return await _resolve_headers(captured, service)
 
 
 async def _resolve_headers(config: AuthConfig, service: OidcService) -> dict[str, str]:
+    headers, _ = await _resolve_material(config, service)
+    return headers
+
+
+async def _resolve_material(config: AuthConfig, service: OidcService) -> tuple[dict[str, str], OidcTokens]:
     """Resolve one identity and tenant under the service's shared conflict budget."""
     budget = ResolutionBudget()
     while True:
@@ -202,7 +221,7 @@ async def _resolve_headers(config: AuthConfig, service: OidcService) -> dict[str
             continue
         except OidcStorageError:
             raise OidcError("OIDC credential storage unavailable; retry resolution") from None
-        return {"Authorization": f"Bearer {token}", **tenant_headers}
+        return {"Authorization": f"Bearer {token}", **tenant_headers}, tokens
 
 
 class _TenantConflict(Exception):

@@ -44,6 +44,7 @@ class OidcAttempt:
     started_timestamp: float = field(default_factory=time.time)
     _done_notified: bool = False
     outcome: LoginOutcome | None = None
+    ready: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
 
 class OidcService:
@@ -127,6 +128,7 @@ class OidcService:
                     nonce=nonce,
                     **extra,
                 )
+                attempt.ready.set()
                 response = await callback.result
                 self.config.require_enabled()
                 attempt.status = "exchanging"
@@ -185,6 +187,7 @@ class OidcService:
                     if session is not None:
                         await cast(httpx2.AsyncClient, session).aclose()
                 finally:
+                    attempt.ready.set()
                     self._notify_attempt_done(attempt)
 
     def _notify_attempt_done(self, attempt: OidcAttempt) -> None:
