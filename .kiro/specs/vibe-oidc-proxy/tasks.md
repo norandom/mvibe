@@ -116,7 +116,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 4.2, 4.3_
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8_
 
-- [ ] 5. Public shared-library integration
+- [x] 5. Public shared-library integration
 - [x] 5.1 Expose the reusable authentication session
   - Explicit integration: assemble config, service, store, coordinator and tenant resolver behind the documented public session interface.
   - Keep token bundles and refresh tokens private; status/resolve never launch a browser and public exports do not import the proxy.
@@ -125,7 +125,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 4.4, 4.5_
   - _Requirements: 1.1, 1.2, 1.4, 3.5, 8.6, 12.1, 12.2_
 
-- [ ] 5.2 Verify session cancellation and consumer parity
+- [x] 5.2 Verify session cancellation and consumer parity
   - Exercise session close during waiting, refresh and persistence with controlled worker completion and repeated cancellation.
   - Verify two consumer instances use identical rotation/tenant policy and document cooperative versus external-writer guarantees alongside tested API examples.
   - Done when closure drains owned work, no token material appears in captured diagnostics, and parity/race tests pass without real keyring access.
@@ -283,4 +283,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 5.1: PublicAuthSession in api.py delegates existingservice/runtime; runtime.material returns same-resolutionmetadata; serviceattempt.ready signalslisteningURL/error. Snapshotrevision opaqueHMAC; refreshprivate. Python737pass independentAPPROVED.
+
+
+- 5.2: Publiclifecycle/parity13cases characterizecorrectbehavior no productchanges; completednativeprobe verifies persistencecancel retainslock. docs/auth-library.md publicexamples executeoffline. Python750pass independentAPPROVED.
 
