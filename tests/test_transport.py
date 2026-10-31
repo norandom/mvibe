@@ -21,6 +21,17 @@ from mvibe_auth.oidc_marker import OIDC_API_KEY
 MARKER = {'Authorization': f'Bearer {OIDC_API_KEY}'}
 
 
+def runtime_credentials(monkeypatch, owner):
+    from tests.test_credentials import tokens
+    current = tokens(issuer=owner.config.issuer, client_id=owner.config.client_id,
+                     audience=owner.config.audience, id_token=SecretStr('synthetic-id-token'),
+                     expires_at=4_000_000_000, id_token_expires_at=4_000_000_000)
+    resolve = AsyncMock(return_value=current)
+    monkeypatch.setattr(owner.service, 'access_tokens', resolve)
+    monkeypatch.setattr(owner.service.store, 'reload', AsyncMock(return_value=current))
+    return resolve
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize('url', [
     'https://other.example/v1/models', 'http://api.mistral.ai/v1/models',
@@ -46,7 +57,7 @@ async def test_inference_destination_denied_before_credentials(monkeypatch, cont
 async def test_marker_uses_inference_id_snapshot(monkeypatch, controlled_http, url):
     config = AuthConfig(enabled=True, organization_id='synthetic-org', workspace_id='synthetic-ws')
     owner = runtime.OidcRuntime(config)
-    monkeypatch.setattr(runtime, '_resolve_id_token', lambda service: 'synthetic-id-token')
+    runtime_credentials(monkeypatch, owner)
     controlled_http.queue('GET', str(httpx2.URL(url)))
     async def snapshot_headers(target):
         snapshot = AuthSnapshot(headers=await owner.headers(target), target=target,
@@ -224,8 +235,7 @@ async def test_owned_transport_marker_destination_and_redirect_policy(monkeypatc
     monkeypatch.setattr(transport, 'getproxies', lambda: {'https': 'proxy.example:3128'} if via_proxy else {})
     config = AuthConfig(enabled=True, organization_id='synthetic-org')
     owner = runtime.OidcRuntime(config)
-    resolve = Mock(return_value='synthetic-id-token')
-    monkeypatch.setattr(runtime, '_resolve_id_token', resolve)
+    resolve = runtime_credentials(monkeypatch, owner)
     async with transport.VibeAsyncHTTPClient(auth_config=config, oidc_resolver=owner.headers,
                                              follow_redirects=True) as client:
         with pytest.raises(OidcError, match='destination'):

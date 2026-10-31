@@ -8,11 +8,11 @@ import threading
 import time
 
 import httpx2
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from mvibe_auth._auth_config import AuthConfig
 from mvibe_auth._auth_contracts import AuthError
-from mvibe_auth._coordination import CoordinationError
+from mvibe_auth._coordination import CoordinationError, ResolutionBudget
 from mvibe_auth._oidc_config import OidcError
 from mvibe_auth._oidc_credentials import (
     OidcCredentialStore,
@@ -34,6 +34,13 @@ _tenant_lock = threading.Lock()
 class _Workspace(BaseModel):
     id: str
     organization_id: str
+
+    @field_validator("id", "organization_id")
+    @classmethod
+    def valid_identifier(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Invalid workspace tenant identifier")
+        return value
 
 
 class _Workspaces(BaseModel):
@@ -137,7 +144,9 @@ def _stored_tenant(tokens: OidcTokens, selection: str) -> OidcTenant | None:
     override (``""`` for the default).
     """
     tenant = tokens.tenant
-    if tenant is None or tenant.selection != selection:
+    if (tenant is None or tenant.selection != selection
+            or not tenant.organization_id.strip() or not tenant.workspace_id.strip()
+            or (selection and tenant.workspace_id != selection)):
         return None
     return tenant
 
@@ -160,31 +169,56 @@ async def _oidc_headers(url: str, captured: AuthConfig, service: OidcService) ->
         raise OidcError(
             "OIDC destination does not match the configured issuer/audience"
         )
-    token = await asyncio.to_thread(_resolve_id_token, service)
-    headers = {"Authorization": f"Bearer {token}"}
-    # Albe IdTokenGrant._resolve_membership requires an explicit organization;
-    # workspace is optional (albe/services/auth/grants/oidc_id_token.py).
-    if not captured.organization_id:
-        headers.update(await asyncio.to_thread(_tenant_headers, captured, token))
-    for value, header in (
-        (captured.organization_id, "x-external-organization-id"),
-        (captured.workspace_id, "x-external-workspace-id"),
-    ):
-        if value:
-            headers[header] = value
-    return headers
+    return await _resolve_headers(captured, service)
 
 
-def _tenant_headers(config: AuthConfig, token: str) -> dict[str, str]:
+async def _resolve_headers(config: AuthConfig, service: OidcService) -> dict[str, str]:
+    """Resolve one identity and tenant under the service's shared conflict budget."""
+    budget = ResolutionBudget()
+    while True:
+        tokens = await service.access_tokens(require_id_token=True, budget=budget)
+        token = tokens.id_token.get_secret_value()
+        if not token or not _id_token_is_fresh(tokens.id_token_expires_at):
+            raise OidcError("OIDC re-login required: ID token was not renewed")
+        try:
+            if config.organization_id:
+                tenant_headers = {"x-external-organization-id": config.organization_id}
+                if config.workspace_id:
+                    tenant_headers["x-external-workspace-id"] = config.workspace_id
+            else:
+                # Drain blocking discovery/persistence before cancellation returns.
+                tenant_headers = await service.store._wait_for_worker(asyncio.create_task(
+                    service.store.coordinator.worker(_tenant_headers, config, tokens, service.store)
+                ))
+            # Authoritative even for cached tenants and explicit overrides.
+            current = await service.store.reload()
+            if not OidcCredentialStore._matches(current, tokens):
+                raise _TenantConflict()
+            if not service._fresh(tokens.expires_at) or not _id_token_is_fresh(tokens.id_token_expires_at):
+                # Discovery may outlast the original token's usable window.
+                raise _TenantConflict()
+        except _TenantConflict:
+            budget.conflict()
+            continue
+        except OidcStorageError:
+            raise OidcError("OIDC credential storage unavailable; retry resolution") from None
+        return {"Authorization": f"Bearer {token}", **tenant_headers}
+
+
+class _TenantConflict(Exception):
+    """An observed revision change requires complete credential resolution."""
+
+
+def _tenant_headers(config: AuthConfig, session: OidcTokens,
+                    store: OidcCredentialStore) -> dict[str, str]:
     workspace = config.workspace_id
-    store = OidcCredentialStore()
-    session = _session_for(store, token)
-    if session is not None and (tenant := _stored_tenant(session, workspace)):
-        return _tenant_header_values(tenant)
+    token = session.id_token.get_secret_value()
     with _tenant_lock:
         # Another request may have discovered it while this one waited.
-        session = _session_for(store, token)
-        if session is not None and (tenant := _stored_tenant(session, workspace)):
+        current = store._reload()
+        if not OidcCredentialStore._matches(current, session):
+            raise _TenantConflict()
+        if current is not None and (tenant := _stored_tenant(current, workspace)):
             return _tenant_header_values(tenant)
         try:
             selected = run_sync(_discover_workspace(config, token, workspace))
@@ -199,29 +233,14 @@ def _tenant_headers(config: AuthConfig, token: str) -> dict[str, str]:
             organization_id=selected.organization_id,
             workspace_id=selected.id,
         )
-        if session is not None:
-            try:
-                # save_tenant shares the native coordinator with login/refresh;
-                # it reloads and checks token revision before rewriting a bundle.
-                store.save_tenant(session, tenant)
-            except OidcStorageError:
-                # Requests still carry the tenant; persistent caches stay
-                # bypassed until a later discovery saves it.
-                pass
+        try:
+            # save_tenant takes coordinator before slot and compares token material.
+            if not store.save_tenant(session, tenant):
+                raise _TenantConflict()
+        except OidcStorageError:
+            # Only the later authoritative recheck can authorize this request.
+            pass
         return _tenant_header_values(tenant)
-
-
-def _session_for(store: OidcCredentialStore, token: str) -> OidcTokens | None:
-    """The stored session ``token`` belongs to, or ``None`` when the slot holds
-    another one (a sign-in or sign-out since the token was read).
-    """
-    try:
-        tokens = store._load()
-    except OidcStorageError:
-        return None
-    if tokens is None or tokens.id_token.get_secret_value() != token:
-        return None
-    return tokens
 
 
 def _tenant_header_values(tenant: OidcTenant) -> dict[str, str]:

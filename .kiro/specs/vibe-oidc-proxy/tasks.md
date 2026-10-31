@@ -76,7 +76,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 2.2_
   - _Requirements: 1.5, 1.6, 7.9, 10.7_
 
-- [ ] 4. Credential persistence and cycling
+- [x] 4. Credential persistence and cycling
 - [x] 4.1 Implement conditional writes for all credential mutations
   - Distinguish missing slot from unreadable storage and support expected-absent as well as expected-present writes.
   - Preserve concurrent tenant-only changes while comparing token material and keep existing serialization, keyring slot and sanitized representations.
@@ -108,7 +108,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: OIDC service_
   - _Requirements: 2.4, 2.7, 2.8, 2.9, 3.4, 3.6, 3.7, 3.9_
 
-- [ ] 4.5 Bind tenant selection to the resolved identity
+- [x] 4.5 Bind tenant selection to the resolved identity
   - Implement explicit organization/workspace overrides, first/exact selection, pagination and rejection of empty/whitespace identifiers.
   - Bind cached/discovered tenant to current identity and selection; recheck token revision before return and restart on conflict within the same budget.
   - Done when selection/error cases pass and tenant persistence failure permits a valid request without enabling stale-token or cross-identity tenant reuse.
@@ -275,4 +275,9 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 4.4: Service snapshotsstore beforediscovery/browser; explicitconditionalcommitexpectedpresent/ABSENT. Changedstore discardsbrowsercandidate spends sharedbudget and returnsreused_current onlyfreshusable. waitreturnsstabletypedoutcome. Python689pass independentAPPROVED.
+
+- Python runtime rule: use uv/uvx and uv-managed environments exclusively. Never invoke or install Windows Store Python; avoid bare python/py aliases. Synthetic subprocesses use the running uv-managed sys.executable.
+
+
+- 4.5: Runtime _resolve_headers sharesResolutionBudget with service and checks authoritative tokenrevision/freshness beforeallreturnpaths incloverride/cache. Tenantpersistfailureonlyproceedsvalidcurrent; invalidIDsrejected. Python718pass independentAPPROVED.
 

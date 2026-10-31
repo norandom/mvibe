@@ -95,10 +95,15 @@ async def test_runtime_retains_tenant_destination_and_service(monkeypatch):
     monkeypatch.setenv('VIBE_CLI_OIDC_WORKSPACE_ID', 'old-workspace')
     owner = runtime.OidcRuntime.from_env()
     services = []
-    def resolve(service):
-        services.append(service)
-        return 'synthetic-id'
-    monkeypatch.setattr(runtime, '_resolve_id_token', resolve)
+    from tests.test_credentials import tokens
+    current = tokens(issuer=owner.config.issuer, client_id=owner.config.client_id,
+                     audience=owner.config.audience, expires_at=4_000_000_000,
+                     id_token_expires_at=4_000_000_000)
+    async def resolve(**kwargs):
+        services.append(owner.service)
+        return current
+    monkeypatch.setattr(owner.service, 'access_tokens', resolve)
+    monkeypatch.setattr(owner.service.store, 'reload', AsyncMock(return_value=current))
     monkeypatch.setenv('VIBE_CLI_OIDC_ORGANIZATION_ID', 'new-org')
     monkeypatch.setenv('VIBE_CLI_OIDC_WORKSPACE_ID', 'new-workspace')
     monkeypatch.setenv('VIBE_CLI_OIDC_AUDIENCE', 'https://new.example')
@@ -139,8 +144,13 @@ async def test_workspace_discovery_receives_owner_selection(monkeypatch):
     config = AuthConfig(enabled=True, workspace_id='captured-workspace')
     owner = runtime.OidcRuntime(config)
     monkeypatch.setenv('VIBE_CLI_OIDC_WORKSPACE_ID', 'later-workspace')
-    monkeypatch.setattr(runtime, '_resolve_id_token', lambda service: 'synthetic-id')
-    monkeypatch.setattr(runtime.OidcCredentialStore, '_load', lambda self: None)
+    from tests.test_credentials import tokens
+    current = tokens(issuer=config.issuer, client_id=config.client_id, audience=config.audience,
+                     expires_at=4_000_000_000, id_token_expires_at=4_000_000_000)
+    monkeypatch.setattr(owner.service, 'access_tokens', AsyncMock(return_value=current))
+    monkeypatch.setattr(owner.service.store, 'reload', AsyncMock(return_value=current))
+    monkeypatch.setattr(owner.service.store, '_reload', lambda: current)
+    monkeypatch.setattr(owner.service.store, 'save_tenant', lambda *args: True)
     discover = AsyncMock(return_value=runtime._Workspace(id='captured-workspace', organization_id='discovered-org'))
     monkeypatch.setattr(runtime, '_discover_workspace', discover)
     headers = await owner.headers('https://api.mistral.ai/v1/models')
