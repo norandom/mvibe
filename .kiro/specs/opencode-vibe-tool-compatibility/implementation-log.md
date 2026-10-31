@@ -58,3 +58,15 @@ Live execution is separate from the default offline implementation checks.
 - Completion gate: VERIFIED for report assembly and validation. External cases,
   scope/mode, hashes, limits and provenance constrain positive/negative proofs.
 - Synthetic baseline credit demonstrates gate behavior, not host execution.
+
+## 2.3 Independent read-only validator
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED.
+- RED: valid positive report rejected with the flag OFF; 2 failed / 19 passed
+  including a separately corrected test snapshot defect. Flag removed after GREEN.
+- Fresh independent verification: 1,016 Python tests and 717 Bun tests passed;
+  typecheck and build passed, exit 0. Forty-five shared synthetic vectors agree.
+- Independent cross-mode mutation rejects positive live credit from offline data.
+- Completion gate: VERIFIED for independent validation. Standard-library-only,
+  bounded read-only CLI has fixed sanitized errors and no application/account
+  imports. No host-execution or live compatibility claim follows from vectors.

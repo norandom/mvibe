@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import vector from "./tool-compatibility/vectors/report-v1.json" with { type: "json" };
+import conformance from "./tool-compatibility/vectors/evidence-v1.json" with { type: "json" };
 import { fixtureHash } from "./tool-compatibility/cases.js";
 import { assembleReport, createEvidenceGate } from "./tool-compatibility/evidence.js";
+import { parseGateResult } from "./tool-compatibility/contracts.js";
 import type { EvidenceContext } from "./tool-compatibility/evidence.js";
 import type { CaseSpec, RunReport } from "./tool-compatibility/contracts.js";
 import { reconcileTurn } from "./tool-compatibility/inventory.js";
@@ -66,6 +68,17 @@ function parallel() {
 }
 
 describe("scoped evidence gate (synthetic graphs only)", () => {
+  for (const v of conformance.vectors) test(`shared Python/TS vector: ${v.name}`, () => {
+    expect(conformance.synthetic).toBe(true);
+    const context = v.context as EvidenceContext;
+    const cases = v.expectedCases as readonly CaseSpec[];
+    const report = v.report as RunReport;
+    expect(createEvidenceGate(context).validate(report, v.expectedScopes, cases)).toEqual(parseGateResult(v.expectedResult));
+    if (!v.expectedResult.errors.length) {
+      const {rows:_, supportedToolIds:__, inventoryComplete:___, ...input} = report;
+      expect(assembleReport(input, context, v.expectedScopes, cases)).toEqual(report);
+    }
+  });
   test("valid graph credits offline read only", () => {
     const s = sample();
     expect(s.validate()).toEqual({errors:[],claims:[{scopeHash:s.context.scopes[0]!.hash,mode:"offline",supported:["read"],complete:true}]});

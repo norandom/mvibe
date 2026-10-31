@@ -37,7 +37,7 @@ not a side effect of implementation or the default verifier.
   - _Boundary: InventoryCoverage, case manifest_
   - _Requirements: 1.4, 3.4, 4.1, 4.2, 4.3, 5.4, 5.8, 5.10, 6.4_
 
-- [ ] 2. Implement inventory and independent evidence gates
+- [x] 2. Implement inventory and independent evidence gates
 - [x] 2.1 Reconcile registered tools with actual session offerings
   - Combine transformed registry entries, negotiated MCP discovery and every primary turn's effective definitions, preserving namespaces and schema fingerprints.
   - Distinguish known origins, ambiguous identities, disabled states and absent exposure; never infer provenance from a tool name.
@@ -52,7 +52,7 @@ not a side effect of implementation or the default verifier.
   - _Boundary: EvidenceGate, report writer_
   - _Depends: 1.2, 1.3_
   - _Requirements: 3.2, 3.3, 3.5, 4.2, 4.3, 5.2, 5.3, 5.4, 5.8, 5.10_
-- [ ] 2.3 (P) Implement independent read-only report validation
+- [x] 2.3 (P) Implement independent read-only report validation
   - Consume the frozen contracts/vectors and authoritative case expectations through a validator independent of application startup and model execution.
   - Require matching mode/scope, complete required evidence and bounded fixed-code failures; never import account, browser or credential operations.
   - Completion is visible when valid reports agree with the writer and malformed, stale, cross-scope or incomplete reports fail through a read-only command.
