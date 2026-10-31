@@ -88,3 +88,14 @@ Live execution is separate from the default offline implementation checks.
   with reason blocked by policy. No alternate deletion was attempted.
 - The SDK generate API lacks a location input. Readiness uses the plugin's bound
   context; external location/provider calls carry explicit verified location.
+
+## 3.2 Deterministic streamed inference
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED.
+- RED flag OFF: 1 pass / 11 fail with synthetic_protocol; flag removed after GREEN.
+- Fresh independent verification: 738 Bun tests passed; typecheck and build
+  passed, exit 0. Completion gate: VERIFIED for the pure model boundary.
+- Installed SDK stream/continuation tests cover nested Unicode, interleaved and
+  repeated tools, reversed results, identity drift, bounds, abort and replay.
+- No fake executor, host launch, auth change or network fallback. Actual host
+  tool execution and continuation evidence remain subsequent integration work.

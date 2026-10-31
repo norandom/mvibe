@@ -68,7 +68,7 @@ not a side effect of implementation or the default verifier.
   - _Boundary: HostController_
   - _Depends: 1.1, 1.2, 1.3_
   - _Requirements: 4.1, 4.2, 4.4, 5.1, 5.5, 5.6_
-- [ ] 3.2 Drive deterministic streamed inference and continuation assertions
+- [x] 3.2 Drive deterministic streamed inference and continuation assertions
   - Generate model calls using observed offered names and validated fixture inputs, with incremental nested/Unicode arguments and correct call completion semantics.
   - Accept a final synthetic answer only after the next request contains the actual expected fixture result; distinguish primary and auxiliary traffic.
   - Completion is visible when pure protocol checks reject missing results, premature final answers and incorrect call/result pairings without running a fake executor.
