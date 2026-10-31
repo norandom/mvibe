@@ -77,7 +77,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Requirements: 1.5, 1.6, 7.9, 10.7_
 
 - [ ] 4. Credential persistence and cycling
-- [ ] 4.1 Implement conditional writes for all credential mutations
+- [x] 4.1 Implement conditional writes for all credential mutations
   - Distinguish missing slot from unreadable storage and support expected-absent as well as expected-present writes.
   - Preserve concurrent tenant-only changes while comparing token material and keep existing serialization, keyring slot and sanitized representations.
   - Done when synthetic store tests prove stale login/refresh writes cannot replace an observed newer set, storage failure is explicit and token material never appears in display output.
@@ -263,4 +263,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 3.3: Characterization-only49transporttests verify real policy with controlledboundaries; no productionchanges or behavioralflag. Python600pass and independentAPPROVED.
+
+
+- 4.1: StoreABSENT sentinel distinctunreadable; conditional save/clear/tenant compare all tokenrevisionfields excludingtenant. Compatibilitysave/clear capture snapshot beforeworker;4.4must supply prebrowser snapshot. Shieldedworkersdrain repeatedcancel. Python627pass independentAPPROVED.
 
