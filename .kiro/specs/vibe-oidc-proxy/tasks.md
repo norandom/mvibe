@@ -53,7 +53,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Requirements: 8.1, 8.2, 8.3, 12.1, 12.2_
 
 - [ ] 3. Authentication primitives
-- [ ] 3.1 Correct callback validation and cleanup
+- [x] 3.1 Correct callback validation and cleanup
   - Reject blank and nonblank duplicate required parameters while retaining valid matching denial handling.
   - Cover request limits, malformed requests, callback timeout and cancellation using controlled readers/writers.
   - Done when valid callbacks resolve exactly once and every rejected/cancelled attempt closes its listener and pending activity.
@@ -254,4 +254,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 2.2: OidcService/OidcRuntime/transport own captured AuthConfig; transport injects oidc_resolver and no longer imports runtime. Task6.1 must pass owner.headers and owner.config; unconfigured markers failclosed. Python446pass, independent APPROVED.
+
+
+- 3.1: Callback retains blank query values before cardinality checks and bounds writer shutdown; synthetic listener tests cover timeout/cancellation with existing service300seconddeadline simulated. Python486pass, independentAPPROVED.
 
