@@ -308,7 +308,8 @@ async def test_login_deadline_and_cancellation_release_callback(monkeypatch, lis
         return SimpleNamespace(authorization_endpoint="https://issuer.invalid/authorize")
 
     client = SimpleNamespace(config=config.to_oidc_config(), session=lambda: session, discover=discover)
-    service = OidcService(client, object(), config=config)
+    from unittest.mock import AsyncMock
+    service = OidcService(client, SimpleNamespace(reload=AsyncMock(return_value=None)), config=config)
     callback_instances = []
 
     class CapturedCallback(OidcCallback):

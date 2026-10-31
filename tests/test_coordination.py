@@ -312,7 +312,7 @@ def test_default_coordinator_is_per_user_slot_and_bounded(monkeypatch, tmp_path)
 
 
 @pytest.mark.anyio
-async def test_browser_wait_does_not_hold_mutation_coordinator(tmp_path, monkeypatch):
+async def test_browser_wait_does_not_hold_mutation_coordinator(tmp_path, monkeypatch, slot):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from mvibe_auth._auth_config import AuthConfig

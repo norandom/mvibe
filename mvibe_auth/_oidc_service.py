@@ -17,9 +17,13 @@ from mvibe_auth._credentials_port import PlatformCredentialTarget
 from mvibe_auth._oidc_callback import OidcCallback
 from mvibe_auth._oidc_client import OidcClient
 from mvibe_auth._auth_config import AuthConfig
+from mvibe_auth._auth_contracts import (
+    AuthError, AuthFailure, LoginCompleted, LoginOutcome, LoginReusedCurrent,
+)
 from mvibe_auth._coordination import ResolutionBudget
 from mvibe_auth._oidc_config import OidcConfig, OidcError
 from mvibe_auth._oidc_credentials import (
+    ABSENT,
     OidcCredentialStore,
     OidcStorageError,
     OidcTokens,
@@ -39,6 +43,7 @@ class OidcAttempt:
     started_at: float = field(default_factory=time.monotonic)
     started_timestamp: float = field(default_factory=time.time)
     _done_notified: bool = False
+    outcome: LoginOutcome | None = None
 
 
 class OidcService:
@@ -97,6 +102,9 @@ class OidcService:
         try:
             async with asyncio.timeout(300):
                 self.config.require_enabled()
+                expected = await self.store.reload()
+                expected = expected if expected is not None else ABSENT
+                budget = ResolutionBudget()
                 session = self.client.session()
                 metadata = await self.client.discover(session)
                 self.config.require_enabled()
@@ -133,17 +141,35 @@ class OidcService:
                 )
                 async with self._lock:
                     self.config.require_enabled()
-                    await self.store.save(tokens, complete_on_cancel=True)
+                    saved = await self.store.save(
+                        tokens, expected=expected, complete_on_cancel=True
+                    )
+                    if saved:
+                        attempt.outcome = LoginCompleted()
+                    else:
+                        budget.conflict()
+                        await self.access_tokens(require_id_token=True, budget=budget)
+                        attempt.outcome = LoginReusedCurrent()
                 attempt.status = "completed"
         except asyncio.CancelledError:
-            raise
-        except OidcError as exc:
             attempt.status = "failed"
-            attempt.detail = str(exc)
+            attempt.outcome = AuthFailure("cancelled")
+            attempt.detail = attempt.outcome.message
+            raise
+        except AuthError as exc:
+            attempt.status = "failed"
+            attempt.outcome = exc.failure
+            attempt.detail = exc.failure.message
+            attempt.error_type = "oidc_error"
+        except OidcError:
+            attempt.status = "failed"
+            attempt.outcome = AuthFailure("rejected")
+            attempt.detail = attempt.outcome.message
             attempt.error_type = "oidc_error"
         except Exception as exc:
             # Library/HTTP/storage errors can contain codes or token payloads.
             attempt.status = "failed"
+            attempt.outcome = AuthFailure("transient", retryable=True)
             attempt.error_type = (
                 "storage_error"
                 if isinstance(exc, OidcStorageError)
@@ -151,20 +177,24 @@ class OidcService:
             )
             attempt.detail = "OIDC sign-in failed; check issuer, client registration and KeyRing availability"
         finally:
-            self._notify_attempt_done(attempt)
             try:
                 if callback is not None:
                     await callback.__aexit__()
             finally:
-                if session is not None:
-                    await cast(httpx2.AsyncClient, session).aclose()
+                try:
+                    if session is not None:
+                        await cast(httpx2.AsyncClient, session).aclose()
+                finally:
+                    self._notify_attempt_done(attempt)
 
     def _notify_attempt_done(self, attempt: OidcAttempt) -> None:
         if self.on_attempt_done is None or attempt._done_notified:
             return
         attempt._done_notified = True
         status = (
-            "success"
+            "cancelled"
+            if isinstance(attempt.outcome, AuthFailure) and attempt.outcome.code == "cancelled"
+            else "success"
             if attempt.status == "completed"
             else "error"
             if attempt.status == "failed"
@@ -182,16 +212,28 @@ class OidcService:
             raise OidcError("Unknown OIDC sign-in attempt")
         return self._attempt
 
+    async def wait(self, attempt_id: str) -> LoginOutcome:
+        """Return the single terminal result without cancelling the owned login."""
+        attempt = self.poll(attempt_id)
+        if attempt.task is not None:
+            await asyncio.shield(asyncio.gather(attempt.task, return_exceptions=True))
+        if attempt.outcome is None:
+            raise AuthError(AuthFailure("transient", retryable=True))
+        return attempt.outcome
+
     async def cancel(self, attempt_id: str | None = None) -> None:
         attempt = self._attempt
         if attempt is None or (
             attempt_id is not None and attempt.attempt_id != attempt_id
         ):
             return
-        self._attempt = None
         if attempt.task is not None:
             attempt.task.cancel()
             await asyncio.gather(attempt.task, return_exceptions=True)
+        if attempt.outcome is None:
+            attempt.status = "failed"
+            attempt.outcome = AuthFailure("cancelled")
+            attempt.detail = attempt.outcome.message
         self._notify_attempt_done(attempt)
 
     async def clear(self) -> None:

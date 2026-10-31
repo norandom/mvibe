@@ -101,7 +101,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 4.2_
   - _Requirements: 3.9, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7_
 
-- [ ] 4.4 Protect login commits and expose outcomes
+- [x] 4.4 Protect login commits and expose outcomes
   - Capture an authoritative snapshot before browser authorization and conditionally commit only after validation.
   - On changed storage discard the candidate and resolve the current identity within the budget; distinguish completed from reused-current and never silently claim the browser-selected account was saved.
   - Done when login conflict, denial, persistence failure and cancellation tests preserve newer credentials and expose a single terminal outcome.
@@ -272,4 +272,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 4.3: ResolutionBudget shared conflict retry permits2passes total; invalidgrant never retries unchangedrejectedrefresh. access_tokens defaultsaccessonly forUserInfo; runtimeonecall require_id_tokenTrue. Minimalruntimeintegration avoidsdoublebudget. Tenant4.5mustreusebudget. Python673pass independentAPPROVED.
+
+
+- 4.4: Service snapshotsstore beforediscovery/browser; explicitconditionalcommitexpectedpresent/ABSENT. Changedstore discardsbrowsercandidate spends sharedbudget and returnsreused_current onlyfreshusable. waitreturnsstabletypedoutcome. Python689pass independentAPPROVED.
 
