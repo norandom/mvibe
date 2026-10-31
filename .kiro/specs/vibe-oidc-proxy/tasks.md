@@ -149,7 +149,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: Proxy and Stream Owner integration_
   - _Requirements: 4.8, 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 8.7_
 
-- [ ] 6.3 (P) Implement the private Python protocol dispatcher
+- [x] 6.3 (P) Implement the private Python protocol dispatcher
   - Expose handshake, status, resolve and login lifecycle over private stdio with validated IDs, bounded frames and typed errors.
   - Allow waiting login operations without blocking cancellation/shutdown; enforce the active-request cap and keep stdout protocol-only.
   - Done when synthetic bridge tests pass for framing, concurrency, wrong versions, safe errors and all success payloads without changes to proxy-owned files.
@@ -292,4 +292,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 6.2: ProxyStreamOwner acquiresinsideASGIcall, boundsHTTPXautoiteratorclose+explicitclose; failedcleanupretiresclientuntilrestart and abortssiblings next502. OrderedquerypairsencodedwithoutHTTPXgrouping. Helperpackaged. Python806pass independentAPPROVED.
+
+
+- 6.3: PublicsessionNDJSONbridge 31ordinary+1cancel slot; malformedduplicateactiveIDs capturesstatebeforeawait, avoidssecondstartedreply andretires. Stdioincidentaloutputdiscarded originalbinarypipeprotocolonly. Python837pass independentAPPROVED aftercorrelationrepair.
 
