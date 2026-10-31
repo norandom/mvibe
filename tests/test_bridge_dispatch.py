@@ -217,19 +217,103 @@ async def test_reserved_control_slot_cancels_saturated_login_waits():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('closure', ['shutdown', 'eof'])
+@pytest.mark.parametrize('visible_before_suspend', [False, True])
+async def test_closure_drains_started_writer_before_acknowledgment(closure, visible_before_suspend):
+    p = Pipes()
+    writing = asyncio.Event()
+    release_write = asyncio.Event()
+    close_started = asyncio.Event()
+    writer_cancelled = False
+    writer_finished = False
+    original_close = p.session.close
+
+    async def close():
+        await original_close()
+        close_started.set()
+
+    p.session.close = close
+
+    async def write(frame):
+        nonlocal writer_cancelled, writer_finished
+        value = json.loads(frame)
+        if value['id'] == 'current' and value['ok']:
+            if visible_before_suspend:
+                await p.write(frame)
+            writing.set()
+            try:
+                await release_write.wait()
+            except asyncio.CancelledError:
+                writer_cancelled = True
+                raise
+            if not visible_before_suspend:
+                await p.write(frame)
+            writer_finished = True
+        else:
+            # Cancellation replies and shutdown acknowledgment must share the
+            # original writer's output lock until its flush has completed.
+            assert writer_finished
+            await p.write(frame)
+
+    task = asyncio.create_task(bridge.serve(p.read, write, session_factory=lambda: p.session))
+    try:
+        await p.send('resolve', 'current', target_url='https://api.mistral.ai/v1/models')
+        await asyncio.wait_for(writing.wait(), 2)
+        await p.send('login.wait', 'pending', attempt_id='attempt')
+        await asyncio.wait_for(p.session.waiting.wait(), 2)
+        p.input.put_nowait(request('shutdown', 'stop') if closure == 'shutdown' else b'')
+        await asyncio.wait_for(close_started.wait(), 2)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not writer_cancelled, 'closure cancelled an already-started terminal write'
+        assert not task.done(), 'closure completed before the terminal writer drained'
+        assert len(p.frames) == int(visible_before_suspend)
+        release_write.set()
+        await asyncio.wait_for(task, 2)
+        values = [json.loads(frame) for frame in p.frames]
+        assert [value['id'] for value in values] == (
+            ['current', 'pending', 'stop'] if closure == 'shutdown' else ['current', 'pending'])
+        assert values[0]['ok'] is True
+        assert values[1]['error']['code'] == 'cancelled'
+        if closure == 'shutdown':
+            assert values[-1]['result'] == {'closed': True}
+        assert writer_finished
+        assert p.session.closed
+    finally:
+        release_write.set()
+        p.input.put_nowait(b'')
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+
+
+@pytest.mark.anyio
 async def test_duplicate_during_pipe_write_cannot_emit_two_replies():
     p = Pipes()
     started = asyncio.Event()
     unblock = asyncio.Event()
+    duplicate_read = asyncio.Event()
+    reads = 0
+
+    async def read(limit):
+        nonlocal reads
+        frame = await p.read(limit)
+        reads += 1
+        if reads == 2:
+            duplicate_read.set()
+        return frame
+
     async def slow_write(frame):
         await p.write(frame)
         started.set()
         await unblock.wait()
-    task = asyncio.create_task(bridge.serve(p.read, slow_write, session_factory=lambda: p.session))
+    task = asyncio.create_task(bridge.serve(read, slow_write, session_factory=lambda: p.session))
     try:
         await p.send('hello', 'same')
         await asyncio.wait_for(started.wait(), 2)
         await p.send('hello', 'same')
+        await asyncio.wait_for(duplicate_read.wait(), 2)
+        await asyncio.sleep(0)
+        assert not task.done()
+        unblock.set()
         await asyncio.wait_for(task, 2)
         assert len(p.frames) == 1
     finally:

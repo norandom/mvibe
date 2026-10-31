@@ -314,3 +314,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 - 8.1: Actualhostnativegate found/fixedcredentialevents, APImajor0.1.0alignment, aisdk:packageprefix, x-should-retry:false forhost401/503nonreplay. Pinned/currentstable2.2.5 all12checks inclstateless/sessionerroronce; reported2.2.6stillunverified. FreshASGIstartup+nativehostPASS; independent859Python458Bun/buildsPASS. docs/consumer-integration.md recordsdetails.
 
+
+
+- 6.3 follow-up from8.2: Shutdown/EOF cancelsONLYpendingauth dispatches and drainsalreadyrespondingterminalwriters underoriginallock; prevents duplicatecancelledresponse/concurrentflush. Fourdeterministicregressions. Fresh45dispatcher/lifecyclePASS independent883Python/buildPASS. Originalrunnerfailurepreserved.
+

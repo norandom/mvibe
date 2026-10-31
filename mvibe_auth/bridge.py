@@ -136,12 +136,17 @@ async def serve(
             responding.discard(request.id)
 
     async def close() -> None:
-        tasks = tuple(active.values())
-        for task in tasks:
-            task.cancel()
+        tasks = tuple(active.items())
+        for id, task in tasks:
+            # Once a terminal write starts, its bytes may already be visible
+            # while to_thread(flush) still owns the pipe. Drain that dispatch
+            # with its output lock intact; cancellation could duplicate the
+            # reply and release the lock before the actual writer finishes.
+            if id not in responding:
+                task.cancel()
         if session is not None:
             await session.close()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
 
     try:
         while True:
