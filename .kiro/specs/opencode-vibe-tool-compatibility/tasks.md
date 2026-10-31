@@ -91,7 +91,7 @@ not a side effect of implementation or the default verifier.
   - _Requirements: 2.3, 3.1, 3.2, 3.3, 3.5, 4.2, 5.2, 5.5, 6.5_
 
 - [ ] 4. Exercise native workspace and interaction tools
-- [ ] 4.1 Exercise native file reading and search
+- [x] 4.1 Exercise native file reading and search
   - Prepare unpredictable file contents and known matching/nonmatching paths for real read, glob and grep operations.
   - Check actual host results and independent fixture state; retain real offered definitions and scoped permissions.
   - Completion is visible when each applicable query tool produces its expected observation and a correlated continuation proof.

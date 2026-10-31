@@ -132,3 +132,19 @@ Live execution is separate from the default offline implementation checks.
   privacy and native identity/result joins. Complete/parallel proof vectors pass
   the existing gate. Full native RunReport acceptance remains task 7.1.
 - Native artifact: C:/Users/mariu/AppData/Local/Temp/mvibe-task34-probe.json.
+
+## 4.1 Native read, glob and grep
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED after one repair.
+- Initial RED: fixture flag OFF 1 pass / 2 fail HOST_FIXTURE_DISABLED; removed.
+- Review reproduced crossed-run and auxiliary state acceptance. Repair RED:
+  22 pass / 27 fail; all events now share one run and primary classification.
+- Fresh independent verification: 817 Bun tests / 2,408 assertions; typecheck
+  and build passed. Native OpenCode 2.2.5: read/glob/grep each produced a proof
+  through two requests, exact results and independent state; cleanup verified.
+- Fresh native artifact accepted; all 45 crossed-run, auxiliary and crossed-record
+  mutations rejected. Completion gate: VERIFIED for these three native queries.
+- Expected outputs were precomputed from owned random fixtures and pinned host
+  source; grep backend preserves trailing line LF. Definitions and native
+  permissions retained. Live and full RunReport integration remain unverified.
+- Artifact: packages/opencode-vibe-oidc/.host/workspace-query-proof.json.
