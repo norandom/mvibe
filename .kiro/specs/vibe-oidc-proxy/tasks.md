@@ -19,7 +19,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: Provider packaging_
   - _Requirements: 12.3, 12.8, 12.10_
 
-- [ ] 1.3 Establish default-deny fixtures and state isolation
+- [x] 1.3 Establish default-deny fixtures and state isolation
   - Block real keyring, browser and remote network before application imports in Python and provider tests; provide controlled clock, store, callback and HTTP responses.
   - Isolate environment, credential/tenant/TLS caches and worker lifecycles; create a temporary cross-process synthetic store and lock area.
   - Done when deliberate attempts to access real external effects fail tests and repeated fixture use leaves no shared identity or running worker behind.
@@ -242,4 +242,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 1.2: Verified OpenCode2.2.5/SDK2.2.5; user-reported2.2.6 unverified. OpenAI-compatible2.0.88 uses providerV3; adapter3 uses incompatibleV4. Bun tests/typecheck/build and test:host pass. models --standalone loads fixture but does not invoke cleanup; unit disposal test only, full lifecycle remains8.1.
+
+
+- 1.3: Test guards install before imports; DNS callback/promise Resolver chains and UDP sends require explicit guards. Worker cleanup must be registered. Host smoke needs absolute OPENCODE_TEST_BINARY because child cwd is temporary. Python10/Bun10 pass after independent remediation review.
 
