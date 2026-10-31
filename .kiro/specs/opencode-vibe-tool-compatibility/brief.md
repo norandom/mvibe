@@ -2,8 +2,11 @@
 
 ## User intent
 
-OpenCode users selecting Mistral-Vibe need both the normal filesystem/command
-tools and tools supplied by MCP servers. The existing provider preserves streamed
+OpenCode users selecting Mistral-Vibe need all tools offered by their installed
+host, including normal filesystem/command tools and tools supplied by MCP servers.
+The user subsequently asked whether coverage includes every OpenCode tool; the
+draft now requires a runtime inventory rather than treating those two examples
+as an exhaustive tool list. The existing provider preserves streamed
 tool-call payloads in synthetic tests, but that does not establish real execution
 of either tool family through the direct Vibe OIDC provider. The user explicitly
 requested both and authorized a separate specification and end-to-end testing.
@@ -31,8 +34,10 @@ the filesystem, command executor, or MCP client as provider functionality.
 
 ## In scope
 
-Native file read/create/edit/search and harmless command execution; MCP discovery
-and invocation; structured and text tool results; errors and denied permissions;
+All offered native/plugin tools, including file read/create/edit/search, commands,
+web tools, questions, skills/subagents, session/worktree operations, model helpers,
+MCP discovery/resources/invocation and conditional experimental capabilities;
+structured and text tool results; errors and denied permissions;
 multiple calls and streamed JSON arguments; cancellation; model/version evidence;
 successful tool results included in the next model turn and final response.
 

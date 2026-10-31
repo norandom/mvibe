@@ -1,13 +1,15 @@
 # Requirements Document
 
 ## Project Description (Input)
-OpenCode users selecting Mistral-Vibe need both the native filesystem and command tools and tools supplied by MCP servers. Current synthetic checks preserve tool-call payloads, but do not prove live execution and correlated result delivery through the direct Vibe OIDC provider. Specify compatibility and repeatable end-to-end verification for both tool families, retaining OpenCode execution and permissions and making adapter changes only for observed mismatches. See brief.md and verification-plan.md for the user-authorized boundary and proposed evidence matrix.
+OpenCode users selecting Mistral-Vibe need compatibility with all tools offered by their installed host, including native file/command tools, other native and plugin tools, and MCP tools/resources. Current synthetic checks preserve tool-call payloads, but do not prove live execution and correlated result delivery for all these tools. Specify compatibility and repeatable end-to-end verification against an actual runtime inventory, retaining OpenCode execution and permissions and making adapter changes only for observed mismatches. See brief.md, tool-coverage.md and verification-plan.md.
 
 ## Boundary Context
 
-- In scope: normal OpenCode file and command tools, configured MCP tools, complete
-  tool round trips, permission/error/cancellation outcomes, and separate offline
-  and live end-to-end evidence for both families.
+- In scope: all registered tools offered to the selected OpenCode agent/session,
+  including file/command, web, question, skill/subagent, session/worktree,
+  model/resource helpers, configured plugin/MCP tools and conditional experimental
+  tools; complete round trips, permission/error/cancellation outcomes, and
+  separate offline and live evidence.
 - Out of scope: replacing OpenCode's executors or MCP client, granting arbitrary
   command permissions, adding a Vibe search endpoint, or promising support for
   every model and future OpenCode version.
@@ -24,13 +26,14 @@ OpenCode users selecting Mistral-Vibe need both the native filesystem and comman
 ## Requirements
 
 ### Requirement 1: Native OpenCode Tools
-**Objective:** OpenCode users can use the normal file and command tools while selecting Mistral-Vibe.
+**Objective:** OpenCode users retain the host's complete offered tool set while selecting Mistral-Vibe.
 
 #### Acceptance Criteria
 1. When OpenCode offers native tools to a Mistral-Vibe turn, the Integration shall preserve the host-provided tool identities, descriptions and input constraints.
 2. When the model requests an available native file read, create, edit or search operation, the Integration shall let OpenCode execute it under the host's permissions and associate its result with the requested call.
 3. When the model requests an approved native command, the Integration shall return the host's command outcome to the model, including the output and exit information supplied by the host.
 4. If a native tool is disabled or unavailable, the Integration shall report that outcome without claiming that the operation executed.
+5. When OpenCode offers another native or plugin-defined tool, the Integration shall preserve its tool identity, input constraints and host-provided result without requiring a replacement executor in the provider.
 
 ### Requirement 2: MCP Tools
 **Objective:** The same provider can use tools supplied by configured MCP servers.
@@ -70,12 +73,26 @@ OpenCode users selecting Mistral-Vibe need both the native filesystem and comman
 4. If an operation or model has not been exercised, the Project Documentation shall mark it unverified rather than infer support from another model, tool family or evidence class.
 5. When recording a run, the Verification Suite shall identify the observed OpenCode, provider and model versions or identifiers and exclude real credentials, sign-in URLs and private workspace contents.
 6. If an OpenCode update changes the observed version, the Project Documentation shall distinguish earlier compatibility evidence from results actually obtained with that version.
+7. When a compatibility run begins, the Verification Suite shall record the registered and actually offered tool inventories for the selected host, profile, agent, model and capability state, including tools discovered through MCP.
+8. When reporting coverage, the Verification Suite shall account for each discovered tool with separate offline/live results and an explicit executed, unsupported, disabled or unverified status with evidence or a reason.
+9. If an update or configuration change exposes an unaccounted tool, the Verification Suite shall fail the inventory-coverage gate rather than silently omit it.
+10. When claiming compatibility with all applicable tools in a scoped configuration, the Verification Suite shall require executed positive evidence for every applicable offered tool; unsupported, disabled and unverified entries shall limit that claim.
+
+### Requirement 6: Host-Managed and Conditional Tools
+**Objective:** Specialized tool behavior remains controlled by OpenCode rather than being reduced to a generic text-only success.
+
+#### Acceptance Criteria
+1. When a question tool requires user input, the Integration shall preserve the host's interaction and cancellation outcome rather than fabricate the user's answer.
+2. When a tool loads a skill or delegates work to a subagent, the Integration shall preserve the host's lifecycle and actual returned result.
+3. When a tool changes a session or worktree, the Integration shall preserve the host's permission checks and reported mutation outcome.
+4. If a resource, web or experimental tool requires capabilities or returns content unsupported by the selected configuration, the Integration shall preserve an explicit unsupported or unavailable outcome rather than silently discard the content or claim success.
+5. When OpenCode supplies a supported non-text tool result to a capable model, the Integration shall preserve the supported content and metadata needed for the subsequent model turn.
 
 ## Review Status
 
-Requirements review gate passed inline: numeric headings, EARS criteria,
-observable outcomes, coverage of both requested tool families and explicit
-boundaries checked. These are generated requirements for human review; design,
+Requirements review gate passed inline after the all-tool expansion: numeric
+headings, EARS criteria, observable outcomes, runtime-inventory coverage and
+explicit boundaries checked. These are generated requirements for human review; design,
 tasks and implementation are not approved. The proposed discovery matrix remains
 in verification-plan.md.
 
