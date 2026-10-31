@@ -263,14 +263,12 @@ def _resolve_id_token(service: OidcService) -> str:
     # Sync credential callers and HTTP hooks share refresh-token rotation.
     with _refresh_lock:
         try:
-            tokens = run_sync(service.access_tokens())
-            if not _id_token_is_fresh(tokens.id_token_expires_at):
-                tokens = run_sync(service.access_tokens(force_refresh=True))
+            tokens = run_sync(service.access_tokens(require_id_token=True))
             token = tokens.id_token.get_secret_value()
             if not token or not _id_token_is_fresh(tokens.id_token_expires_at):
                 raise OidcError("OIDC re-login required: ID token was not renewed")
             return token
-        except (OidcError, CoordinationError):
+        except (OidcError, AuthError):
             raise
         except Exception:
             raise OidcError(

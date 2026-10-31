@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 import secrets
 import time
+import math
 from typing import Literal, cast
 
 from authlib.integrations.base_client.errors import OAuthError
@@ -16,6 +17,7 @@ from mvibe_auth._credentials_port import PlatformCredentialTarget
 from mvibe_auth._oidc_callback import OidcCallback
 from mvibe_auth._oidc_client import OidcClient
 from mvibe_auth._auth_config import AuthConfig
+from mvibe_auth._coordination import ResolutionBudget
 from mvibe_auth._oidc_config import OidcConfig, OidcError
 from mvibe_auth._oidc_credentials import (
     OidcCredentialStore,
@@ -198,52 +200,80 @@ class OidcService:
             await self.cancel()
             await self.store.clear()
 
-    async def access_tokens(self, *, force_refresh: bool = False) -> OidcTokens:
+    async def access_tokens(
+        self, *, force_refresh: bool = False, require_id_token: bool = False,
+        budget: ResolutionBudget | None = None,
+    ) -> OidcTokens:
+        """Resolve from storage; inference opts into the ID-token freshness rule.
+
+        Pass the same budget through tenant resolution so all observed rotation
+        conflicts share the original pass plus a single retry.
+        """
         self.config.require_enabled()
+        budget = budget if budget is not None else ResolutionBudget()
+        rejected_refresh = None
         async with self.store.coordinator.hold_async():
-            # Another participating service/process may have rotated while we waited.
-            tokens = await self.store.reload()
-            config = self.client.config
-            if tokens is None:
-                raise OidcError("OIDC re-login required: no stored credentials")
-            if (tokens.issuer, tokens.client_id, tokens.audience) != (
-                config.issuer,
-                config.client_id,
-                config.audience,
-            ):
-                raise OidcError(
-                    "OIDC re-login required: credential configuration changed"
-                )
-            if not force_refresh and tokens.expires_at > time.time() + 30:
-                return tokens
-            if tokens.refresh_token is None:
-                raise OidcError("OIDC re-login required: no refresh token")
-            session = self.client.session()
-            async with cast(httpx2.AsyncClient, session):
-                metadata = await self.client.discover(session)
-                try:
-                    raw = await session.refresh_token(
-                        metadata.token_endpoint,
-                        refresh_token=tokens.refresh_token.get_secret_value(),
-                        scope=None,
+            while True:
+                self.config.require_enabled()
+                tokens = await self.store.reload()
+                config = self.client.config
+                if tokens is None:
+                    raise OidcError("OIDC re-login required: no stored credentials")
+                if (tokens.issuer, tokens.client_id, tokens.audience) != (
+                    config.issuer, config.client_id, config.audience,
+                ):
+                    raise OidcError("OIDC re-login required: credential configuration changed")
+                if not force_refresh and self._fresh(tokens.expires_at) and (
+                    not require_id_token or self._fresh_id(tokens)
+                ):
+                    return tokens
+                if tokens.refresh_token is None or not tokens.refresh_token.get_secret_value():
+                    raise OidcError("OIDC re-login required: no refresh token")
+                if tokens.refresh_token == rejected_refresh:
+                    raise OidcError("OIDC re-login required: refresh token rejected")
+                session = self.client.session()
+                async with cast(httpx2.AsyncClient, session):
+                    metadata = await self.client.discover(session)
+                    try:
+                        raw = await session.refresh_token(
+                            metadata.token_endpoint,
+                            refresh_token=tokens.refresh_token.get_secret_value(),
+                            scope=None,
+                        )
+                    except OAuthError as exc:
+                        if exc.error != "invalid_grant":
+                            raise OidcError("OIDC refresh failed; retry the probe later") from None
+                        current = await self.store.reload()
+                        if OidcCredentialStore._matches(current, tokens):
+                            raise OidcError("OIDC re-login required: refresh token rejected") from None
+                        rejected_refresh = tokens.refresh_token
+                        budget.conflict()
+                        # A newer usable set should be reused even after an
+                        # explicit refresh of the rejected original set.
+                        force_refresh = False
+                        continue
+                    updated = await self.client.validated_tokens(
+                        session, metadata, raw, previous=tokens
                     )
-                except OAuthError as exc:
-                    if exc.error == "invalid_grant":
-                        raise OidcError(
-                            "OIDC re-login required: refresh token rejected"
-                        ) from None
-                    raise OidcError(
-                        "OIDC refresh failed; retry the probe later"
-                    ) from None
-                updated = await self.client.validated_tokens(
-                    session, metadata, raw, previous=tokens
-                )
-            self.config.require_enabled()
-            if not await self.store.save_if_current(updated, expected=tokens):
-                raise OidcError(
-                    "OIDC credentials changed during refresh; retry or re-login"
-                )
-            return updated
+                if not updated.same_identity(tokens):
+                    raise OidcError("OIDC refresh changed the authenticated identity")
+                if require_id_token and not self._fresh_id(updated):
+                    raise OidcError("OIDC re-login required: ID token was not renewed")
+                if not self._fresh(updated.expires_at):
+                    raise OidcError("OIDC re-login required: access token was not renewed")
+                self.config.require_enabled()
+                if await self.store.save_if_current(updated, expected=tokens):
+                    return updated
+                budget.conflict()
+                force_refresh = False
+
+    @staticmethod
+    def _fresh(expires_at: float | None) -> bool:
+        return expires_at is not None and math.isfinite(expires_at) and expires_at > time.time() + 30
+
+    @classmethod
+    def _fresh_id(cls, tokens: OidcTokens) -> bool:
+        return bool(tokens.id_token.get_secret_value()) and cls._fresh(tokens.id_token_expires_at)
 
     async def probe(self) -> dict[str, str]:
         self.config.require_enabled()

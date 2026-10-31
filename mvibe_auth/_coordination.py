@@ -39,6 +39,18 @@ class CoordinationError(AuthError):
         super().__init__(AuthFailure("transient", retryable=True))
 
 
+@dataclass
+class ResolutionBudget:
+    """One shared conflict retry for the complete token/tenant resolution."""
+
+    _remaining: int = 1
+
+    def conflict(self) -> None:
+        if self._remaining <= 0:
+            raise AuthError(AuthFailure("conflict", retryable=True)) from None
+        self._remaining -= 1
+
+
 def slot_lock_path() -> Path:
     root = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     slot = sha256(b"ai.mistral.vibe.oidc\0cli-oidc:v1:tokens").hexdigest()

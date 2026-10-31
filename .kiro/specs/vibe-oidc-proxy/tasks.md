@@ -93,7 +93,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 4.1_
   - _Requirements: 3.7, 3.9, 4.7, 5.7_
 
-- [ ] 4.3 Implement bounded refresh and conflict cycling
+- [x] 4.3 Implement bounded refresh and conflict cycling
   - Reload authoritative storage for each resolution, apply access/ID-token freshness thresholds and allow one conflict retry.
   - On invalid grant reload and retry only changed token material; retain a fresh prior ID token when allowed and reject an unchanged stale token.
   - Done when controlled tests cover exact expiry thresholds, rotation, competing updates, exhausted budget and re-login guidance without unbounded retries.
@@ -269,4 +269,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 4.2: Native coordinator in _coordination.py; activeowner leases and explicit worker delegation prevent childtask/stalecontext bypass. Storeworkersmustdrainbefore leaving scope. Allbundlewrites incltenantcoordinatebeforeslot; no browserwaitlock. Python642pass independentAPPROVED afterownershiprepair.
+
+
+- 4.3: ResolutionBudget shared conflict retry permits2passes total; invalidgrant never retries unchangedrejectedrefresh. access_tokens defaultsaccessonly forUserInfo; runtimeonecall require_id_tokenTrue. Minimalruntimeintegration avoidsdoublebudget. Tenant4.5mustreusebudget. Python673pass independentAPPROVED.
 
