@@ -56,3 +56,31 @@ Authorized live retry passed OIDC persistence/reuse, curl health/models/chat and
 OpenCode 2.2.5 CLI through the proxy. The public prompt returned OK with
 ministral-3b-latest. Other live scenarios remain unverified; see
 ../../../docs/live-results.md. README now leads with the curl and CLI path.
+
+## Direct-provider installation amendment (2026-10-31)
+
+Task 9.2 adds install.sh/install.ps1 with a common JSONC-preserving editor,
+backup/atomic replacement, idempotent registration and locked uv/Bun preparation.
+Provider ID remains vibe-oidc; display name and connection label are Mistral-Vibe.
+Only complete canonical Mistral metadata and explicit operator overrides are
+used, intersected with authenticated IDs. Live startup exposed lazy metadata,
+superseded initial discovery and same-connection refresh gaps; regression tests
+now cover them, and SDK creation no longer triggers rediscovery. Each inference
+still resolves fresh OIDC credentials through the shared library.
+
+Final independent pipeline: all ten mandatory stages passed, 934 Python tests,
+492 Bun tests / 1,548 assertions and 12 native-host checks. Evidence:
+reports/verification/4e1f12b27eec438999372e15b7dd8b8d/acceptance.json.
+Earlier failed runs remain preserved. A synthetic model-GET snapshot captured
+before fixture rotation was proved valid at resolution, and the fixture was
+corrected to verify provenance while retaining strict current POST credentials.
+See direct-install-review.md and catalog-bootstrap-review.md.
+
+The PowerShell installer was run on the user profile, with backup and unrelated
+settings verified. Reinstallation reported no config change. Native CLI 2.2.5
+connected OIDC, exposed 18 provider models, returned the Mistral-Vibe label, and
+answered OK from a fresh direct-provider CLI prompt. No mvibe proxy is involved
+in that route. Native file/command and MCP execution remain unverified live.
+The separate opencode-vibe-tool-compatibility requirements draft and proposed
+end-to-end matrix cover both requested tool families; approval/design/tasks are
+pending rather than being inferred from this installation.

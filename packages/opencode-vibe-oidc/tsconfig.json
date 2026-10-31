@@ -4,6 +4,6 @@
     "strict": true, "resolveJsonModule": true, "noUncheckedIndexedAccess": true, "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true, "skipLibCheck": true, "types": ["bun"], "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
 }
 

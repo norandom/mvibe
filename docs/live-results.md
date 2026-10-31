@@ -38,6 +38,46 @@ separate timing or cancellation measurement was taken. Account entitlement is
 established only for the observed operations/model. The original blank template
 below remains unchanged as a starting point for a complete per-operation run.
 
+## Direct-provider installation and smoke test, 2026-10-31
+
+The PowerShell installer was executed with the prepared native uv 0.13.5,
+Bun 1.4.4 and OpenCode 2.2.5 executables. It prepared locked dependencies,
+built the direct plugin and updated the user's `opencode.jsonc`. A backup was
+created; a read-only comparison confirmed unrelated settings were preserved and
+exactly one direct-plugin entry was installed. A subsequent PowerShell install
+with `-SkipPrepare` reported configuration unchanged.
+
+| Check | Observed result |
+| --- | --- |
+| Direct OIDC connection | PASS: `auth login vibe-oidc --method vibe-browser --standalone` connected using existing OIDC credentials |
+| Provider label | PASS: native provider API returned `Mistral-Vibe` |
+| Model selection | PASS: native CLI listed 18 `vibe-oidc/` model IDs |
+| Direct inference | PASS: fresh CLI `run --standalone --model vibe-oidc/ministral-3b-latest` answered `OK`, exit 0 |
+| Reinstallation | PASS: no duplicate entry, no config change |
+
+Final independent offline acceptance also passed all ten stages: 934 Python
+tests, 492 Bun tests / 1,548 assertions, and all twelve native-host checks.
+Evidence: `reports/verification/4e1f12b27eec438999372e15b7dd8b8d/acceptance.json`.
+Earlier failed runs were retained. A synthetic rotation assertion was corrected
+only after recording a model request that resolved before rotation and reached
+transport afterward; inference freshness and captured-snapshot provenance remain
+strictly checked.
+
+The direct plugin uses `https://api.mistral.ai` and the shared Python OIDC
+library; it does not route through the local mvibe proxy. Tests used an empty
+temporary workspace and a public prompt requesting no tools. The temporary
+diagnostic plugin was removed before the successful production-plugin test,
+and the separate owned OpenCode test server was stopped afterward.
+
+Live checks exposed catalog initialization and refresh races beyond the initial
+synthetic coverage. Regressions now cover late host metadata, an initial
+discovery superseded by a credential event, same-connection atomic replacement,
+and SDK creation without rediscovery. No tool executors or MCP client code were
+changed. Native filesystem/command and MCP tool round trips remain unverified;
+their separate scope and test matrix are captured in
+[the draft compatibility requirements](../.kiro/specs/opencode-vibe-tool-compatibility/requirements.md)
+and [verification plan](../.kiro/specs/opencode-vibe-tool-compatibility/verification-plan.md).
+
 ## Original task 8.4 template
 
 No live login or inference was performed for task 8.4. The

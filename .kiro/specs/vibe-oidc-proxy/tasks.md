@@ -2,6 +2,11 @@
 
 ## Authorized live-test remediation (2026-10-31)
 
+- [x] 9.2 Install the direct provider with cross-platform entry points
+  - _Boundary:_ Bash/PowerShell installers, shared configuration editor, provider display/catalog integration, installation tests and operator docs.
+  - User request: add `install.sh` and `install.ps1`, run PowerShell installation locally, and expose the direct provider as `Mistral-Vibe` in `/models` without a proxy dependency. Preserve existing configuration and back it up before edits; repeat installs must not duplicate entries. Prepare locked Python through uv and locked plugin dependencies through Bun. Reject incompatible OpenCode major versions and missing prerequisites explicitly. Reuse authenticated inventory, with complete trusted host catalog or explicit operator metadata; never invent metadata or grant entitlement from a catalog. Independently review before modifying the user's installation, then verify the native CLI's direct-provider models and inference.
+  - Initial installer review approved; live checks exposed catalog startup/refresh races, now covered by deterministic regressions. Final canonical pipeline: all ten steps passed, 934 Python tests, 492 Bun tests / 1,548 assertions, native host 12/12 checks. PowerShell installed and reinstallation was inert; provider API label `Mistral-Vibe`, 18 selectable IDs, fresh direct CLI prompt returned `OK`. See `direct-install-review.md`, `catalog-bootstrap-review.md`, and `docs/live-results.md`. Native and MCP tool execution remain a separate compatibility specification.
+
 - [x] 9.1 Implement portable encrypted Python credential persistence
   - _Boundary:_ Shared auth persistence, dependency manifests, storage tests and affected fixtures.
   - _Requirements:_ 3.4, 3.6-3.9; preserve existing refresh and coordination contracts.

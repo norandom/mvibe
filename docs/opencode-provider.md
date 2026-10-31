@@ -1,5 +1,14 @@
 # OpenCode Vibe OIDC provider
 
+The selectable display name is **Mistral-Vibe**; the stable provider ID remains
+`vibe-oidc`. This direct route uses the Python OIDC library and does not need the
+proxy server. Install with `./install.ps1` on Windows or `bash ./install.sh` on
+macOS/Linux from the checkout root. Both support explicit tool/config paths,
+prepare locked dependencies and back up changed configuration while preserving
+JSONC comments. Restart OpenCode and run
+`opencode auth login vibe-oidc --method vibe-browser --standalone`, then open
+`/models`. Full entry-point instructions are in the [README](../README.md).
+
 Choose the direct `vibe-oidc` plugin or an OpenAI-compatible client pointed at the
 loopback proxy. Both delegate login, refresh and tenant selection to the same
 Python library. There is no API-key fallback. Python 3.12+ installed and managed
@@ -52,13 +61,14 @@ Prepare that project/environment first. Request handling never installs Python,
 libraries or dependencies. On Windows the helper supervisor requires Windows 10+
 native Job Objects and tracks only its owned process tree.
 
-Set `VIBE_CLI_OIDC_ENABLED=true` in the host environment before connecting. The
-plugin's `options.audience` must match the Python `VIBE_CLI_OIDC_AUDIENCE` (default
+The bridge and login command opt in when `VIBE_CLI_OIDC_ENABLED` is absent;
+an explicit false value disables OIDC. The plugin's `options.audience` must match
+the Python `VIBE_CLI_OIDC_AUDIENCE` (default
 `https://api.mistral.ai`). Configure issuer/client/callback/scope and optional
 `VIBE_CLI_OIDC_ORGANIZATION_ID` / `VIBE_CLI_OIDC_WORKSPACE_ID` there as needed.
-Select **Vibe OIDC** and its **Vibe OIDC** connection method in OpenCode. The host
+Select **Mistral-Vibe** and its **Mistral-Vibe** connection method in OpenCode. The host
 runs the matching Python `login` command and opens browser sign-in. OpenCode
-persists only `vibe-oidc-connected`, a non-secret marker in a key-shaped record;
+persists only `vibe-oidc-connected-v1`, a non-secret marker in a key-shaped record;
 real credentials stay in the shared library's encrypted store. The marker is never
 an upstream API key. Each inference request reloads current credentials through
 the helper; streams and tool calls pass through and cancellation closes work.
@@ -67,7 +77,11 @@ the helper; streams and tool calls pass through and cancellation closes work.
 
 After connection the plugin queries authenticated `/v1/models`. Account
 entitlement controls model availability. Only returned upstream IDs with complete
-verified or explicit operator metadata are exposed; absent capabilities, token
+verified or explicit operator metadata are exposed. The provider reads matching
+metadata from OpenCode's canonical Mistral catalog, including inactive templates;
+catalog entries never add an ID absent from the authenticated response. Only
+safe capabilities, limits, release/status and cost fields are copied, with
+explicit operator fields taking precedence. Absent capabilities, token
 limits or prices are never invented. If discovery reports incomplete metadata,
 set `options.modelMetadata["exact-upstream-id"]` with the verified fields:
 `name`, `capabilities.tools` (boolean), nonempty `capabilities.input` and

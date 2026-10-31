@@ -1,5 +1,26 @@
 # Implementation validation: vibe-oidc-proxy
 
+Direct installation amendment, 2026-10-31: task 9.2 adds Bash/PowerShell
+installers and the `Mistral-Vibe` display name, with canonical host metadata
+intersected with authenticated IDs. The final fresh independent pipeline passed
+all ten stages: 934 Python tests, 492 Bun tests / 1,548 assertions, builds and
+native OpenCode 2.2.5 integration (12/12 checks). Evidence:
+`reports/verification/4e1f12b27eec438999372e15b7dd8b8d/acceptance.json`.
+See [initial installation review](direct-install-review.md) and
+[final catalog/fixture review](catalog-bootstrap-review.md). Earlier failed
+runs remain recorded; the final result follows catalog race fixes and a proved
+synthetic snapshot-rotation fixture correction, not removal of failing gates.
+
+Actual PowerShell installation and idempotent reinstallation passed; config
+backup, unrelated settings and single registration were checked. The native
+provider API reported `Mistral-Vibe`, CLI model selection exposed 18 IDs, and a
+fresh direct-provider CLI prompt returned `OK`, exit 0. This uses the shared OIDC
+library directly and requires no mvibe proxy. [Live results](../../../docs/live-results.md)
+separate this smoke test from still-unverified live tool execution, refresh,
+embeddings and other scenarios. Native file/command and MCP tool compatibility
+has a separate requirements draft and end-to-end matrix under
+`opencode-vibe-tool-compatibility`; no tool executor rewrite was introduced.
+
 Live-test amendment, 2026-10-31: the report below describes the completed
 pre-live baseline. The first authorized live login reached validated-token
 persistence but Windows CredWrite failed. User-directed task 9.1 replaces the

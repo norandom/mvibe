@@ -11,6 +11,26 @@ const text = (value: unknown): value is string => typeof value === "string" && v
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 const positiveInt = (value: unknown): value is number => finite(value) && Number.isSafeInteger(value) && value > 0;
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.every(text);
+
+/** Reuse only metadata from the host's canonical Mistral definitions. */
+export function metadataFromHostCatalog(models: ReadonlyMap<string, unknown>, configured: unknown): unknown {
+  const operator = record(configured);
+  if (!operator) return configured;
+  const result = new Map<string, unknown>();
+  for (const [id, value] of models) {
+    const model = record(value);
+    if (!model || model.providerID !== "mistral" || model.id !== id || model.modelID !== id) continue;
+    const validated = record(mapModel(id, model, undefined));
+    if (!validated) continue;
+    const metadata: Record<string, unknown> = {};
+    for (const field of ["name", "capabilities", "limit", "time", "cost", "status"]) metadata[field] = validated[field];
+    result.set(id, metadata);
+  }
+  for (const [id, value] of Object.entries(operator)) {
+    result.set(id, record(value) ? { ...record(result.get(id)), ...record(value) } : value);
+  }
+  return Object.fromEntries(result);
+}
 function mapModel(id: string, upstream: Record<string, unknown>, operator: unknown): Model.Info | undefined {
   if (operator !== undefined && !record(operator)) return;
   // Only named metadata fields can cross this boundary: never headers/settings,
@@ -41,30 +61,48 @@ function mapModel(id: string, upstream: Record<string, unknown>, operator: unkno
     variants: [], enabled: true,
   };
 }
-export async function discoverModels(fetch: ProviderFetch, baseURL: string, metadata: unknown = {}, signal?: AbortSignal): Promise<{ models: Model.Info[]; diagnostics: string[] }> {
+type Inventory = { entries: Record<string, unknown>[]; incomplete: boolean; diagnostics: string[] };
+function mapInventory(inventory: Inventory, metadata: unknown): { models: Model.Info[]; diagnostics: string[] } {
+  const configured = record(metadata);
+  if (!configured) return { models: [], diagnostics: ["Invalid model discovery/configuration data; verify the upstream models response and options.modelMetadata object."] };
+  const models: Model.Info[] = [];
+  let incomplete = inventory.incomplete;
+  for (const entry of inventory.entries) {
+    const id = entry.id as string;
+    const model = mapModel(id, entry, Object.hasOwn(configured, id) ? configured[id] : undefined);
+    if (model) models.push(model); else incomplete = true;
+  }
+  return { models, diagnostics: [...inventory.diagnostics, ...(incomplete ? [metadataGuidance] : [])] };
+}
+async function discoverInventory(fetch: ProviderFetch, baseURL: string, signal?: AbortSignal): Promise<Inventory> {
   try {
     const response = await fetch(baseURL + "/models", { method: "GET", ...(signal ? { signal } : {}) });
     if (!response.ok) {
       await response.body?.cancel();
-      return { models: [], diagnostics: [response.status === 401 || response.status === 403 ? "Model discovery was not authorized; reconnect Vibe OIDC and verify account model access." : "Model discovery failed upstream; retry explicitly and verify the configured audience."] };
+      return { entries: [], incomplete: false, diagnostics: [response.status === 401 || response.status === 403 ? "Model discovery was not authorized; reconnect Vibe OIDC and verify account model access." : "Model discovery failed upstream; retry explicitly and verify the configured audience."] };
     }
     const payload: unknown = await response.json();
     const data = record(payload)?.data;
-    const configured = record(metadata);
-    if (!Array.isArray(data) || !configured) return { models: [], diagnostics: ["Invalid model discovery/configuration data; verify the upstream models response and options.modelMetadata object."] };
-    const models: Model.Info[] = []; let incomplete = false;
+    if (!Array.isArray(data)) return { entries: [], incomplete: false, diagnostics: ["Invalid model discovery/configuration data; verify the upstream models response and options.modelMetadata object."] };
+    const entries: Record<string, unknown>[] = []; let incomplete = false;
     const seen = new Set<string>();
     for (const item of data) {
       const entry = record(item);
       if (!entry || !text(entry.id) || seen.has(entry.id)) { incomplete = true; continue; }
       seen.add(entry.id);
-      const model = mapModel(entry.id, entry, Object.hasOwn(configured, entry.id) ? configured[entry.id] : undefined);
-      if (model) models.push(model); else incomplete = true;
+      // Retain only authenticated IDs and metadata fields; never credentials,
+      // destination settings or SDK overlays from the upstream response.
+      const safe: Record<string, unknown> = { id: entry.id };
+      for (const field of ["name", "capabilities", "limit", "time", "cost", "status"]) safe[field] = entry[field];
+      entries.push(safe);
     }
-    return { models, diagnostics: incomplete ? [metadataGuidance] : [] };
+    return { entries, incomplete, diagnostics: [] };
   } catch {
-    return { models: [], diagnostics: ["Model discovery unavailable; configure an installed uv-managed mvibe-auth runtime, compatible bridge versions and current Vibe OIDC sign-in, then retry."] };
+    return { entries: [], incomplete: false, diagnostics: ["Model discovery unavailable; configure an installed uv-managed mvibe-auth runtime, compatible bridge versions and current Vibe OIDC sign-in, then retry."] };
   }
+}
+export async function discoverModels(fetch: ProviderFetch, baseURL: string, metadata: unknown = {}, signal?: AbortSignal): Promise<{ models: Model.Info[]; diagnostics: string[] }> {
+  return mapInventory(await discoverInventory(fetch, baseURL, signal), metadata);
 }
 
 /** Async work stays outside the host's synchronous provider transform. */
@@ -78,40 +116,65 @@ export function createModelCatalog(input: {
   metadata: unknown;
   report: (message: string) => void;
 }) {
-  let snapshot: { models: readonly Model.Info[]; sourceConnection?: ConnectionInfo } = { models: [] };
+  let inventory: Inventory | undefined;
+  let sourceConnection: ConnectionInfo | undefined;
+  const metadata = () => typeof input.metadata === "function" ? (input.metadata as () => unknown)() : input.metadata;
+  const clear = () => { inventory = undefined; sourceConnection = undefined; };
   let generation = 0, closed = false;
   let controller: AbortController | undefined;
+  let pending: Promise<void> = Promise.resolve();
   const key = (connection: ConnectionInfo | undefined) => connection?.type === "credential" ? "credential:" + connection.id : connection ? "env:" + connection.name : undefined;
-  return {
-    get snapshot() { return snapshot; },
-    close() { closed = true; generation++; controller?.abort(); snapshot = { models: [] }; },
-    async refresh() {
+  const invalidate = async () => {
+    const hadCatalog = sourceConnection !== undefined;
+    clear();
+    if (hadCatalog) await input.reload();
+  };
+  async function run() {
       if (closed) return;
       const turn = ++generation;
       controller?.abort(); const current = controller = new AbortController();
       try {
         const connection = await input.active();
         if (turn !== generation || closed) return;
-        const hadCatalog = snapshot.sourceConnection !== undefined;
-        snapshot = { models: [] };
-        if (hadCatalog) await input.reload();
+        // A same-account update must not remove models that are currently
+        // being resolved. Different/disconnected accounts invalidate at once.
+        if (key(connection) !== key(sourceConnection)) await invalidate();
         if (!connection || turn !== generation || closed) return;
         const status = await input.bridge.request("status", {}, current.signal);
         if (!status.config_match || !status.signed_in) {
-          if (turn === generation && !closed) input.report("Model discovery requires current Vibe OIDC sign-in matching the configured audience; connect using Vibe OIDC.");
+          if (turn === generation && !closed) {
+            await invalidate();
+            input.report("Model discovery requires current Vibe OIDC sign-in matching the configured audience; connect using Vibe OIDC.");
+          }
           return;
         }
-        const result = await discoverModels(input.fetch, input.baseURL, input.metadata, current.signal);
+        const result = await discoverInventory(input.fetch, input.baseURL, current.signal);
         const active = await input.active();
-        if (turn !== generation || closed || key(active) !== key(connection)) return;
-        snapshot = { models: result.models, sourceConnection: connection };
-        for (const message of result.diagnostics) input.report(message);
+        if (turn !== generation || closed) return;
+        if (key(active) !== key(connection)) { await invalidate(); return; }
+        inventory = result; sourceConnection = connection;
+        for (const message of mapInventory(result, metadata()).diagnostics) input.report(message);
         await input.reload();
       } catch {
         if (turn !== generation || closed) return;
-        snapshot = { models: [] };
+        await invalidate();
         input.report("Model catalog unavailable; verify the installed uv-managed helper, compatible OpenCode V2/bridge versions and Vibe OIDC connection, then retry.");
       }
+  }
+  return {
+    get snapshot(): { models: readonly Model.Info[]; sourceConnection?: ConnectionInfo } {
+      // The host runs transforms lazily. Resolve metadata only after its
+      // canonical catalog is available, without doing IO inside the transform.
+      return inventory && sourceConnection ? { models: mapInventory(inventory, metadata()).models, sourceConnection } : { models: [] };
+    },
+    close() { closed = true; generation++; controller?.abort(); clear(); },
+    async refresh() {
+      if (closed) return;
+      pending = run();
+      // Setup and event callers wait for the latest generation, including a
+      // replacement started while their own request was being cancelled.
+      let observed: Promise<void>;
+      do { observed = pending; await observed; } while (!closed && observed !== pending);
     },
   };
 }

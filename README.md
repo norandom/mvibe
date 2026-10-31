@@ -4,9 +4,53 @@ Use your Vibe subscription through browser OIDC from a local OpenAI-compatible
 proxy or the direct OpenCode 2 provider. Both use the same Python authentication
 library. No Mistral API key is needed.
 
-Start with the proxy and one curl request. Then run OpenCode against that proxy.
-This separates sign-in, upstream access and agent integration so each failure
-has a clear next step. These examples use PowerShell on Windows.
+For OpenCode, install the direct provider below. For curl and protocol checks,
+use the proxy sequence afterward. These examples use PowerShell on Windows.
+
+## Install Mistral-Vibe directly in OpenCode
+
+The direct provider does not use the proxy. It calls Mistral through the shared
+Python OIDC library, including the same encrypted credentials and refresh logic.
+Prepare native uv, Bun 1.4.4 and OpenCode 2, then run from this checkout:
+
+```powershell
+./install.ps1
+```
+
+On macOS or Linux:
+
+```bash
+bash ./install.sh
+```
+
+If tools are not on PATH, pass `-Bun`, `-Uv` and `-OpenCode` executable paths to
+PowerShell, or `--bun`, `--uv` and `--opencode` to Bash. The installer prepares
+locked dependencies, builds the plugin and adds it to your user config. Existing
+JSONC comments and unrelated settings are retained; changed configs get a backup.
+Running it again updates the same entry. Use `-ConfigPath` / `--config-path` for
+another configuration file. Setup can download dependencies and does not start
+the proxy or sign in automatically.
+
+Restart OpenCode, then connect the provider:
+
+```powershell
+opencode auth login vibe-oidc --method vibe-browser --standalone
+```
+
+Open `/models` and choose **Mistral-Vibe**. Its saved provider ID remains
+`vibe-oidc`, so CLI model names use `vibe-oidc/<model-id>`. Existing matching OIDC
+credentials can be reused without another browser sign-in. The provider exposes
+authenticated model IDs with complete metadata from OpenCode's Mistral catalog
+or your explicit overrides; incomplete entries are omitted. Keep this checkout
+and its prepared dependencies in place. See the
+[provider guide](docs/opencode-provider.md) for configuration and recovery.
+
+The Windows PowerShell installation, provider label, 18-model inventory and a
+direct CLI response were verified on OpenCode 2.2.5. See
+[live results](docs/live-results.md). Native file/command tools and MCP tool
+execution have separate [draft compatibility requirements](.kiro/specs/opencode-vibe-tool-compatibility/requirements.md)
+and [end-to-end test matrix](.kiro/specs/opencode-vibe-tool-compatibility/verification-plan.md);
+their live round trips have not yet been verified.
 
 ## 1. Prepare this checkout
 
@@ -159,7 +203,8 @@ persistence and reuse, curl health/models/chat, and an OpenCode 2.2.5 CLI prompt
 through the proxy. The initial `CredWrite` failure was fixed by storing the
 encrypted bundle in a file and only a short key in the OS keyring. See
 [the live results](docs/live-results.md) for the tested scope. Live refresh,
-embeddings, tool execution and the direct provider remain unverified.
+embeddings and tool execution remain unverified. The direct provider was
+subsequently verified separately as described above.
 
 The server binds to loopback and has no local caller authentication. Any local
 process that can reach the port can use it. Keep tokens, callback URLs and raw

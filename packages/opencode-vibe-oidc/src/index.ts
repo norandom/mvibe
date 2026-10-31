@@ -4,7 +4,7 @@ import { BridgeError, StdioBridge } from "./bridge.js";
 import type { HelperCommand } from "./bridge.js";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createProviderFetch, providerBaseURL } from "./provider.js";
-import { createModelCatalog } from "./models.js";
+import { createModelCatalog, metadataFromHostCatalog } from "./models.js";
 
 export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options" | "aisdk" | "event">;
 
@@ -28,7 +28,8 @@ export async function setupVibe(ctx: RegistrationContext) {
   const bridge = new StdioBridge({ command, audience });
   const providerID = Provider.ID.make("vibe-oidc");
   const fetch = createProviderFetch(bridge, audience);
-  const catalog = createModelCatalog({ active: () => ctx.integration.connection.active(providerID), reload: () => ctx.provider.reload(), bridge, fetch, baseURL, metadata: ctx.options.modelMetadata ?? {}, report: message => console.warn(message) });
+  let hostModels: ReadonlyMap<string, unknown> = new Map();
+  const catalog = createModelCatalog({ active: () => ctx.integration.connection.active(providerID), reload: () => ctx.provider.reload(), bridge, fetch, baseURL, metadata: () => metadataFromHostCatalog(hostModels, ctx.options.modelMetadata ?? {}), report: message => console.warn(message) });
   const events = new AbortController();
   const registrations: Array<{ dispose(): Promise<void> }> = [];
   let closing: Promise<void> | undefined;
@@ -39,13 +40,13 @@ export async function setupVibe(ctx: RegistrationContext) {
   })();
   try {
     registrations.push(await ctx.provider.transform(editor => {
-      editor.add({ info: { ...Provider.Info.empty(providerID), name: "Vibe OIDC", activation: "enabled", package: "aisdk:@ai-sdk/openai-compatible" }, ...catalog.snapshot });
+      hostModels = editor.get?.("mistral")?.models ?? new Map();
+      editor.add({ info: { ...Provider.Info.empty(providerID), name: "Mistral-Vibe", activation: "enabled", package: "aisdk:@ai-sdk/openai-compatible" }, ...catalog.snapshot });
     }));
     registrations.push(await ctx.integration.transform(editor => {
-      editor.method.update({ integrationID: providerID, method: { id: "vibe-browser", type: "command", label: "Vibe OIDC", command: [command.executable, ...command.args.slice(0, -1), "login"] } });
+      editor.method.update({ integrationID: providerID, method: { id: "vibe-browser", type: "command", label: "Mistral-Vibe", command: [command.executable, ...command.args.slice(0, -1), "login"] } });
     }));
     registrations.push(await ctx.aisdk.hook("sdk", async event => {
-      await catalog.refresh();
       event.options.maxRetries = 0;
       event.options.fetch = fetch;
       event.sdk = createOpenAICompatible({ name: "vibe-oidc", baseURL, fetch });

@@ -4,6 +4,7 @@ import { setupVibe } from "../src/index.js";
 import { StdioBridge, BridgeError } from "../src/bridge.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
+import { HostFixtureCredentials } from "./host-fixture-credentials.js";
 
 export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx) {
   const evidence = String(ctx.options.evidence), rotation = String(ctx.options.rotation);
@@ -14,10 +15,15 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   const observedCredentials: string[] = [];
   const eventTypes: string[] = [];
   const warnings: string[] = [];
+  const credentials = new HostFixtureCredentials();
   const originalWarn = console.warn;
   const originalRequest = StdioBridge.prototype.request;
   StdioBridge.prototype.request = async function(this: StdioBridge, method, params, signal) {
-    try { return await originalRequest.call(this, method, params, signal); }
+    try {
+      const result = await originalRequest.call(this, method, params, signal);
+      if (method === "resolve" && "target" in result && "headers" in result) credentials.resolved(result.target, result.headers);
+      return result;
+    }
     catch (error) { warnings.push("bridge:" + method + ":" + (error instanceof BridgeError ? error.code : "unexpected")); throw error; }
   } as StdioBridge["request"];
   console.warn = (...values: unknown[]) => { warnings.push(values.map(String).join(" ")); };
@@ -28,17 +34,15 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   // No fallback: every fetch in this host fixture is synthetic or fails closed.
   globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
-    assert.equal(new URL(request.url).origin, "https://inference.example.test");
     const expected = readFileSync(rotation, "utf8");
-    assert.equal(request.headers.get("authorization"), "Bearer synthetic-" + expected);
-    assert.equal(request.redirect, "manual");
+    const observed = credentials.assertRequest(request, expected);
     if (request.url.endsWith("/models")) {
       models++;
       return Response.json({ data: [{ id: "synthetic-model", name: "Synthetic", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 131072, output: 4096 }, time: { released: 0 }, status: "active", cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] }] });
     }
     assert.ok(request.url.endsWith("/chat/completions"));
     inference++;
-    observedCredentials.push(expected);
+    observedCredentials.push(observed);
     const body = await request.json() as Record<string, unknown>;
     if (mode === "401" || mode === "503") return Response.json({ error: { message: "synthetic rejection" } }, { status: Number(mode) });
     if (!body.stream) return Response.json({ id: "synthetic", object: "chat.completion", created: 0, model: "synthetic-model", choices: [{ index: 0, message: { role: "assistant", content: "synthetic answer" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
