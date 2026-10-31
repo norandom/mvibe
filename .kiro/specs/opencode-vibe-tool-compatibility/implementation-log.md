@@ -70,3 +70,21 @@ Live execution is separate from the default offline implementation checks.
 - Completion gate: VERIFIED for independent validation. Standard-library-only,
   bounded read-only CLI has fixed sanitized errors and no application/account
   imports. No host-execution or live compatibility claim follows from vectors.
+
+## 3.1 Isolated offline host lifecycle
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED.
+- RED: 0 pass / 2 fail HOST_DISABLED; flag ON 2 pass, then removed.
+- Fresh independent verification: 721 Bun tests / 2,183 assertions, typecheck
+  and build passed. Windows native readiness and cancellation smokes passed:
+  OpenCode 2.2.5 / Bun 1.4.4 / uv-managed Python 3.12.10; cleanup verified.
+- Completion gate: VERIFIED for isolated lifecycle on Windows. Other platforms,
+  actual tools, observation chains and live operation remain unverified.
+- Windows launch-before-Job cleanup race was reproduced and repaired; the failed
+  probe Job was drained and no owned supervisors remained. Its directory remains
+  at C:/Users/mariu/AppData/Local/Temp/vibe-tool-host-OtoRTJ.
+- Automatic approval review rejected resolved-target PowerShell deletion of
+  C:/Users/mariu/AppData/Local/Temp/vibe-debug-edf6d716-fbb6-4720-8d3e-707c2a731f03
+  with reason blocked by policy. No alternate deletion was attempted.
+- The SDK generate API lacks a location input. Readiness uses the plugin's bound
+  context; external location/provider calls carry explicit verified location.
