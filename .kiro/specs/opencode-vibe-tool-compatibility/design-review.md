@@ -23,3 +23,8 @@ Requirements approved by user. Design generated, not human-approved. Tasks and
 implementation remain pending. No live model/tool execution was run in this phase;
 installed SDK sources, primary protocol documentation and CLI debug-path probes
 provided design evidence. Core steering files remain absent.
+
+## Subsequent phase update
+The user approved the technical design. Its technical review evidence above is
+unchanged. Implementation tasks have now been generated and independently
+reviewed; task approval and implementation remain pending.

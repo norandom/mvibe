@@ -92,6 +92,6 @@ OpenCode users selecting Mistral-Vibe need compatibility with all tools offered 
 
 Requirements review gate passed inline after the all-tool expansion: numeric
 headings, EARS criteria, observable outcomes, runtime-inventory coverage and
-explicit boundaries checked. The user approved these requirements; design,
-tasks and implementation are not approved. The proposed discovery matrix remains
+explicit boundaries checked. The user approved requirements and design;
+implementation tasks are generated but not yet approved. The proposed discovery matrix remains
 in verification-plan.md.

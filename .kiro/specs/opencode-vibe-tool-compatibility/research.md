@@ -4,8 +4,9 @@
 - Feature: opencode-vibe-tool-compatibility.
 - Discovery: extension of the installed direct provider, with focused source/API
   investigation and comprehensive primary protocol checks for tool results.
-- Requirements: user approved the expanded six groups and 33 criteria. Design is
-  the current phase; no implementation or live tool execution was performed.
+- Requirements and design: user approved the expanded six groups, 33 criteria
+  and technical design. The task plan is generated and independently reviewed,
+  pending human approval; no implementation or live tool execution was performed.
 - Findings: existing hooks can observe the full round trip; registry and session
   offerings differ; the installed V3 serializer has error/media limitations;
   Mistral constraints vary by tokenizer/model; profile isolation needs more than
@@ -194,3 +195,10 @@ added explicit scope/tool/request-chain/call identifiers and authoritative negat
 case expectations with attached cancellation evidence. Independent second pass
 returned PASS. Human design approval is pending; no implementation or live tool
 execution is inferred from this technical review. See design-review.md.
+
+## Task planning
+The user approved the design. The task plan now contains eight groups and 36
+executable subtasks, with five parallel candidates and all 33 criteria mapped.
+Mechanical coverage/dependency checks and a fresh independent task-graph sanity
+review passed. No plan repair was required. Task approval and implementation are
+pending; live tool results remain unverified. See tasks.md and task-plan-review.md.
