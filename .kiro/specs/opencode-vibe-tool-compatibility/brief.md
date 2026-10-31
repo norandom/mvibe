@@ -55,6 +55,5 @@ The parent specification is `vibe-oidc-proxy`, especially requirement 12.6.
 Synthetic payload preservation and native host checks are useful baseline
 evidence; live native-tool and MCP round trips remain unverified. Capture actual
 host, SDK, model and adapter versions for each future run. Core steering files
-are absent. Requirements and design are approved. The implementation task plan
-has been generated and independently reviewed; task approval and implementation
-remain pending.
+are absent. Requirements, design and implementation tasks are approved. The task
+plan passed independent review; implementation and its verification are in progress.

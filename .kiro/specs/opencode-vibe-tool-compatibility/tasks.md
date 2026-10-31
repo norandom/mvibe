@@ -1,7 +1,7 @@
 # Implementation Plan
 
-Requirements and design are approved. Tasks are generated for review; none are
-implemented or task-approved yet. Each subtask is a bounded 1-3 hour coding,
+Requirements, design and tasks are approved. Implementation is in progress.
+Each subtask is a bounded 1-3 hour coding,
 configuration or verification unit and follows the repository's tests-first and
 independent implementation-review workflow.
 
@@ -18,7 +18,7 @@ recorded conformance failures. Live execution is a separate deliberate command,
 not a side effect of implementation or the default verifier.
 
 - [ ] 1. Establish prepared runtimes and shared contracts
-- [ ] 1.1 Prepare locked dependencies and test-runtime configuration
+- [x] 1.1 Prepare locked dependencies and test-runtime configuration
   - Prepare the reference host, fixture SDK and V3 type dependencies explicitly, preserving the working provider's pinned runtime and uv-managed Python constraint.
   - Keep pure checks separate from real-host/MCP process checks; default commands must not install dependencies or touch accounts.
   - Completion is visible when prepared-runtime/version checks and existing build checks pass, with missing preparation producing an actionable failure.

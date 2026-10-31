@@ -19,7 +19,8 @@
     "test:host": "bun run test/host-smoke.ts",
     "test:consumer-host": "bun run test/host-integration.ts",
     "compatibility:current": "bun run test/check-compatibility.ts",
-    "prepare:host": "bun run test/prepare-host.ts"
+    "prepare:host": "bun run test/prepare-host.ts",
+    "check:tool-runtimes": "bun --no-install run test/tool-compatibility/check-prepared.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "2.0.88",
@@ -27,6 +28,8 @@
     "jsonc-parser": "3.3.1"
   },
   "devDependencies": {
+    "@ai-sdk/provider": "3.0.19",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@types/bun": "1.3.11",
     "typescript": "5.9.3",
     "@opencode/cli": "2.2.5"
