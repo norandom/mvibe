@@ -60,7 +60,7 @@ not a side effect of implementation or the default verifier.
   - _Depends: 1.1, 1.2, 1.3_
   - _Requirements: 3.5, 5.1, 5.2, 5.3, 5.4, 5.5, 5.8, 5.9, 5.10_
 
-- [ ] 3. Build isolated real-host control and passive observation
+- [x] 3. Build isolated real-host control and passive observation
 - [x] 3.1 Start and close an isolated offline host with owned resources
   - Prepare private host configuration/data/cache/state/temporary locations, an owned working directory and a disposable readiness input.
   - Apply synthetic authentication and default-deny external-effect guards; validate host paths, binaries, explicit client location and actual model readiness.
@@ -82,7 +82,7 @@ not a side effect of implementation or the default verifier.
   - _Boundary: RoundTripRecorder, host capability probe_
   - _Depends: 2.1, 3.1, 3.2_
   - _Requirements: 1.1, 3.5, 4.1, 5.2, 5.5, 5.7_
-- [ ] 3.4 Capture bounded correlated evidence without private payloads
+- [x] 3.4 Capture bounded correlated evidence without private payloads
   - Correlate offered definitions, upstream and host identifiers, actual execution outcomes, next-request results and final responses within each scoped case.
   - Preserve stream backpressure/cancellation; capture only approved fixture observations and hashes, never whole requests, headers or unrelated output.
   - Completion is visible when parallel/crossed identities and oversized/private captures fail, while complete primary chains produce validator-accepted proofs.

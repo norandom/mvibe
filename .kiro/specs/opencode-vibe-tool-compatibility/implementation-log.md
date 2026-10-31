@@ -117,3 +117,18 @@ Live execution is separate from the default offline implementation checks.
   other tools, auxiliary traffic and live operation remain unverified.
 - Capability evidence: task-3.3-capability.json. Expected format/error envelope
   came from the pinned executable source and trusted owned fixture input.
+
+## 3.4 Bounded correlated recorder
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED after one repair.
+- Initial RED flag OFF: 0 pass / 4 fail hook_unavailable; flag removed.
+- Review reproduced crossed-run and unrelated session/tool/result acceptance in
+  native capability joins. Repair RED: 17 pass / 4 fail. Original independent
+  corruptions now reject while the genuine native baseline remains accepted.
+- Fresh independent verification: 768 Bun tests / 2,315 assertions; typecheck
+  and build passed. Native 2.2.5: four requests, 68 chunks, four stream ends,
+  six recorder events and proof-2, cleanup verified. Python validator: 82 passed.
+- Completion gate: VERIFIED for bounded passive capture, stream preservation,
+  privacy and native identity/result joins. Complete/parallel proof vectors pass
+  the existing gate. Full native RunReport acceptance remains task 7.1.
+- Native artifact: C:/Users/mariu/AppData/Local/Temp/mvibe-task34-probe.json.
