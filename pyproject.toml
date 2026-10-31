@@ -28,7 +28,7 @@ dependencies = [
 proxy = ["fastapi", "uvicorn"]
 
 [dependency-groups]
-dev = ["pytest", "hatchling==1.27.0"]
+dev = ["pytest", "hatchling==1.27.0", "fastapi", "uvicorn"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["mvibe_auth"]

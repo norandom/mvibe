@@ -134,7 +134,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Requirements: 2.8, 3.8, 3.9, 10.3, 10.4, 12.1, 12.10_
 
 - [ ] 6. Proxy and bridge adapters
-- [ ] 6.1 Migrate proxy startup and routes to the public library
+- [x] 6.1 Migrate proxy startup and routes to the public library
   - Explicit integration: inject public session/client factories, preserve CLI browser presentation and loopback settings, and replace private auth imports.
   - Move configuration and authentication failures inside the safe request boundary; retain supported operation allowlist and generic errors.
   - Done when isolated startup/route tests cover missing/matching identity, forced sign-in, health, methods, caller-credential exclusion and 401/502 behavior.
@@ -286,4 +286,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 5.2: Publiclifecycle/parity13cases characterizecorrectbehavior no productchanges; completednativeprobe verifies persistencecancel retainslock. docs/auth-library.md publicexamples executeoffline. Python750pass independentAPPROVED.
+
+
+- 6.1: ProxypublicAuthSession/appfactory migration; adapterOIDCdefaultwhenenvabsent noenvmutation explicitdisablehonored. Devproxydepskeepcanonicalofflinepytestcomplete; runtime no-devlibindependent. Streamowner/queryprecision6.2. Python781pass independentAPPROVED.
 

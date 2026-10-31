@@ -463,8 +463,10 @@ proxy = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "fastapi" },
     { name = "hatchling" },
     { name = "pytest" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -488,8 +490,10 @@ provides-extras = ["proxy"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fastapi" },
     { name = "hatchling", specifier = "==1.27.0" },
     { name = "pytest" },
+    { name = "uvicorn" },
 ]
 
 [[package]]

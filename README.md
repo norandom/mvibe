@@ -24,8 +24,8 @@ The shared `mvibe-auth` distribution supports Python 3.12 or newer. The prepared
 reference environment uses CPython 3.12.10 and uv 0.13.5. Distribution version
 0.1.0 is independent of the copied Vibe 3.0.4 source version; the existing
 transport version remains unchanged. `LICENSE.vibe` is included in built packages.
-The public session facade is planned separately; packaging does not change the
-existing authentication interfaces.
+The public authentication session is documented in [docs/auth-library.md](docs/auth-library.md).
+The proxy uses that public session for startup and each inference request.
 
 Online preparation (downloads interpreter/dependencies if needed):
 
@@ -33,14 +33,19 @@ Online preparation (downloads interpreter/dependencies if needed):
 uv sync --locked --python 3.12
 ```
 
-This installs the library plus development tools, without the optional proxy web
-framework. Runtime, proxy-extra and test/build dependency versions are recorded
+This installs the library plus development tools and proxy web dependencies needed
+by the mandatory offline startup/route tests. Runtime, proxy-extra and test/build dependency versions are recorded
 in `uv.lock`. Install the proxy extra explicitly with
 `uv sync --locked --python 3.12 --extra proxy`. For a runtime-only library environment,
 use `uv sync --locked --python 3.12 --no-dev --no-editable`.
 The existing `uv run --script proxy.py` entry point remains available and uses its
 own inline dependency metadata; it is a live account operation and is not the
 locked verification command.
+
+The proxy opts into OIDC when `VIBE_CLI_OIDC_ENABLED` is absent, without changing
+the process environment. An explicit disabled value is respected and prevents
+sign-in and serving. App construction and import do not read credentials or start
+login; the app lifespan completes any necessary sign-in before startup succeeds.
 
 After online preparation, run the mandatory Python checks offline:
 
