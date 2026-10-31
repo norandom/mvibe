@@ -218,7 +218,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: Operational acceptance integration_
   - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 12.2, 12.8_
 
-- [ ] 8.4 Prepare separate live-verification evidence tooling
+- [x] 8.4 Prepare separate live-verification evidence tooling
   - Create and validate the explicit live procedure and structured result template for browser login, reuse, tenant, models, chat, streaming, tools, embeddings and refresh where available.
   - Provide synthetic evidence checks for version/config fields, secret exclusion and distinct unverified/entitlement outcomes; keep default verification unable to launch live checks.
   - Done when sanitized fixture reports distinguish offline, startup and live evidence, and untouched live scenarios remain unverified; this task performs no live login or inference.
@@ -323,4 +323,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 8.3: Isolatednoneditablelibrary/no-dev+proxyextra/copiedscript help/installedbridgeversionerror alltestedoffline. Operator/provenanceguides reviewed, immutablebaselineinputs+requirements capturedforcleancheckout. Fresh5installationPASS independent888Python32Bun/buildPASS. Liveartifacts8.4pending.
+
+
+- 8.4: Bothconsumerlivemanualprocedure+strictsanitized18scenarioevidencetemplate/validator; allinitialUNVERIFIED. Offlinevalidatorneverlaunchesaccountaction; structuralvaliditynotproofobservations. Fresh31checks+CLI18unverifiedPASS independent919Python/buildPASS. No liveperformed.
 

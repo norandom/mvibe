@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "offline": {
+    "status": "UNVERIFIED",
+    "observed_at": null
+  },
+  "local_startup": {
+    "status": "UNVERIFIED",
+    "observed_at": null
+  },
+  "consumers": {
+    "proxy": {
+      "versions": null,
+      "configuration": null
+    },
+    "direct_provider": {
+      "versions": null,
+      "configuration": null
+    }
+  },
+  "operations": [
+    {
+      "consumer": "proxy",
+      "operation": "browser_oidc",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "proxy",
+      "operation": "credential_reuse",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "proxy",
+      "operation": "tenant_selection",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "proxy",
+      "operation": "models",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "proxy",
+      "operation": "chat",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "proxy",
+      "operation": "streaming",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "proxy",
+      "operation": "tool_exchange",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "proxy",
+      "operation": "embeddings",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "proxy",
+      "operation": "refresh",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "direct_provider",
+      "operation": "browser_oidc",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "direct_provider",
+      "operation": "credential_reuse",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "direct_provider",
+      "operation": "tenant_selection",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "direct_provider",
+      "operation": "models",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "direct_provider",
+      "operation": "chat",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "direct_provider",
+      "operation": "streaming",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "direct_provider",
+      "operation": "tool_exchange",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "direct_provider",
+      "operation": "embeddings",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    },
+    {
+      "consumer": "direct_provider",
+      "operation": "refresh",
+      "status": "UNVERIFIED",
+      "reason": "not_exercised",
+      "observed_at": null
+    }
+  ]
+}
