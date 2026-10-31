@@ -166,7 +166,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Requirements: 2.8, 3.9, 12.9, 12.10_
 
 - [ ] 7. OpenCode provider adapter
-- [ ] 7.1 Implement the managed helper transport
+- [x] 7.1 Implement the managed helper transport
   - Spawn the installed helper with argument arrays and hidden Windows window; validate handshake and correlate bounded protocol responses.
   - Implement deadlines, child-exit errors and disposal; resolve timeout/cancellation retires the helper, rejects all its pending requests, and never restarts browser authorization automatically.
   - Done when synthetic child tests prove owned-process cleanup, actionable setup failures and authoritative reload on lazy restart; preserve graceful drain before five-second forced termination.
@@ -298,4 +298,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 6.4: Actualmoduleprocess10lifecyclecases confirm gracefulworkerdrain/nativeexclusion and forcedkillbefore/aftercommit authoritative restart. Windowsuvvenvexe mayberedirectorparent;7.1mustterminateownedruntime/tree notlauncheronly. Synthetic harnessrecordsos.getpid. Python847pass independentAPPROVED no orphanworkers.
+
+
+- 7.1: Explicitinstalledhelperargv uv offline/no-sync orabsoluteuvmanagedruntime. Windows10+ nativeJobObject inwindows-job.ts preservesdescendantownershipafterrootexit; verifyActiveProcesses0 beforereplacement. No dependenciesinstalledfromrequests. Bun411pass +actualprocessharnesses independentAPPROVED afterdescendantrepair.
 
