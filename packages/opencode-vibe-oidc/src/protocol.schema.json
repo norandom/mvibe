@@ -1,0 +1,651 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mvibe:stdio:1",
+  "title": "Vibe private stdio protocol v1",
+  "description": "UTF-8 JSON with one terminal LF; maximum 1048576 bytes including LF. Response result is validated against the pending request method. Protocol errors use fixed safe diagnostics; auth errors are missing, invalid, rejected, transient, conflict, cancelled.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/response"
+    }
+  ],
+  "$defs": {
+    "hello.params": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "hello.result": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": 1,
+          "type": "integer"
+        },
+        "api_version": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "api_version",
+        "audience"
+      ],
+      "additionalProperties": false
+    },
+    "status.params": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "status.result": {
+      "type": "object",
+      "properties": {
+        "signed_in": {
+          "type": "boolean"
+        },
+        "config_match": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "signed_in",
+        "config_match"
+      ],
+      "additionalProperties": false
+    },
+    "login.start.params": {
+      "type": "object",
+      "properties": {
+        "force": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "force"
+      ],
+      "additionalProperties": false
+    },
+    "login.start.result": {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string"
+        },
+        "authorization_url": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "authorization_url",
+        "expires_at"
+      ],
+      "additionalProperties": false
+    },
+    "login.wait.params": {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id"
+      ],
+      "additionalProperties": false
+    },
+    "login.wait.result": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "enum": [
+            "completed",
+            "reused_current"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "login.cancel.params": {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id"
+      ],
+      "additionalProperties": false
+    },
+    "login.cancel.result": {
+      "type": "object",
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cancelled"
+      ],
+      "additionalProperties": false
+    },
+    "resolve.params": {
+      "type": "object",
+      "properties": {
+        "target_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_url"
+      ],
+      "additionalProperties": false
+    },
+    "resolve.result": {
+      "type": "object",
+      "properties": {
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "expires_at": {
+          "type": "number"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "headers",
+        "expires_at",
+        "revision",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "shutdown.params": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "shutdown.result": {
+      "type": "object",
+      "properties": {
+        "closed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "closed"
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "missing",
+            "invalid",
+            "rejected",
+            "transient",
+            "conflict",
+            "cancelled",
+            "unsupported_version",
+            "unknown_method",
+            "invalid_frame",
+            "frame_too_large"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    "request": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "method": {
+              "const": "hello",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/hello.params"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "method": {
+              "const": "status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/status.params"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "method": {
+              "const": "login.start",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/login.start.params"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "method": {
+              "const": "login.wait",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/login.wait.params"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "method": {
+              "const": "login.cancel",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/login.cancel.params"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "method": {
+              "const": "resolve",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/resolve.params"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "method": {
+              "const": "shutdown",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/$defs/shutdown.params"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ok": {
+              "const": true,
+              "type": "boolean"
+            },
+            "result": {
+              "$ref": "#/$defs/hello.result"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "ok",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ok": {
+              "const": true,
+              "type": "boolean"
+            },
+            "result": {
+              "$ref": "#/$defs/status.result"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "ok",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ok": {
+              "const": true,
+              "type": "boolean"
+            },
+            "result": {
+              "$ref": "#/$defs/login.start.result"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "ok",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ok": {
+              "const": true,
+              "type": "boolean"
+            },
+            "result": {
+              "$ref": "#/$defs/login.wait.result"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "ok",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ok": {
+              "const": true,
+              "type": "boolean"
+            },
+            "result": {
+              "$ref": "#/$defs/login.cancel.result"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "ok",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ok": {
+              "const": true,
+              "type": "boolean"
+            },
+            "result": {
+              "$ref": "#/$defs/resolve.result"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "ok",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ok": {
+              "const": true,
+              "type": "boolean"
+            },
+            "result": {
+              "$ref": "#/$defs/shutdown.result"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "ok",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "version": {
+              "const": 1,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ok": {
+              "const": false,
+              "type": "boolean"
+            },
+            "error": {
+              "$ref": "#/$defs/error"
+            }
+          },
+          "required": [
+            "version",
+            "id",
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

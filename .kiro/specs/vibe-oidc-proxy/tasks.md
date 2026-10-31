@@ -4,7 +4,7 @@ Each executable sub-task is estimated at 1–3 hours. Foundation, core, integrat
 
 File ownership follows design.md. Boundaries name components rather than repeat paths. Provider tasks sharing adapter files are sequential. The requested technical documentation and live procedure are required acceptance artifacts attached to setup/integration/testing tasks; they are not dropped under the generic code-only planning rule.
 
-- [ ] 1. Foundation and isolated verification
+- [x] 1. Foundation and isolated verification
 - [x] 1.1 Prepare the installable Python environment
   - Package the shared library independently of optional proxy dependencies; preserve the script entry point and Vibe license attribution.
   - Resolve and lock the declared runtime, native locking and Python test dependencies; record supported interpreter and separate online setup from offline runs.
@@ -27,7 +27,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 1.1, 1.2_
   - _Requirements: 10.1, 10.2, 10.3, 10.4, 11.1, 12.10_
 
-- [ ] 1.4 Establish cross-language wire-contract fixtures
+- [x] 1.4 Establish cross-language wire-contract fixtures
   - Create the canonical versioned request/response schema and synthetic fixture vectors for all documented methods, error reasons and result variants.
   - Create Python and strict TypeScript validation tests, including absent versus unreadable storage outcomes and secret-field rejection.
   - Done when both runtimes accept the same valid vectors and reject unknown versions, malformed envelopes, oversized frames and credential-bearing extra fields.
@@ -245,4 +245,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 1.3: Test guards install before imports; DNS callback/promise Resolver chains and UDP sends require explicit guards. Worker cleanup must be registered. Host smoke needs absolute OPENCODE_TEST_BINARY because child cwd is temporary. Python10/Bun10 pass after independent remediation review.
+
+
+- 1.4: Protocol frame cap includes terminal LF. _bridge_protocol.py and src/protocol.ts consume shared vectors; preserve safe ProtocolError when normalizing JSON decoder ValueError/RecursionError. Python389/Bun388 pass. Canonical schema emitted with TypeScript build.
 
