@@ -196,7 +196,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Requirements: 12.5, 12.8_
 
 - [ ] 8. Integrated validation and reproducible operation
-- [ ] 8.1 Verify public startup and provider-host integration
+- [x] 8.1 Verify public startup and provider-host integration
   - Explicit integration: start the proxy with injected boundaries and load the plugin in the isolated pinned host profile with synthetic provider/helper responses.
   - Verify real host propagation of custom fetch, auth marker, model discovery, first streaming chunk and cancellation.
   - Done when local-startup and host compatibility results are separately recorded with no real account activity; failures remain blocking rather than skipped.
@@ -310,4 +310,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 7.4: ModelsstrictupstreamID+verified/operatorfieldgroups; no SDKdefaultlimits/capability/pricing. AccountboundsourceConnection catalog syncsnapshottransform asyncrefresh/eventreload; disconnectednohelper/network. Fresh30taskchecksPASS independentBun453/typecheck/buildPASS. Realhostgate8.1mandatory.
+
+
+- 8.1: Actualhostnativegate found/fixedcredentialevents, APImajor0.1.0alignment, aisdk:packageprefix, x-should-retry:false forhost401/503nonreplay. Pinned/currentstable2.2.5 all12checks inclstateless/sessionerroronce; reported2.2.6stillunverified. FreshASGIstartup+nativehostPASS; independent859Python458Bun/buildsPASS. docs/consumer-integration.md recordsdetails.
 

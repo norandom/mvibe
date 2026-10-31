@@ -30,7 +30,13 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
       for (const [name, value] of Object.entries(snapshot.headers)) if (credentialHeaders.has(name.toLowerCase())) headers.set(name, value);
       // Request construction transfers the body stream without reading it. The
       // original signal remains linked through both Request objects.
-      return await transport(new Request(request, { headers, redirect: "manual" }));
+      const response = await transport(new Request(request, { headers, redirect: "manual" }));
+      // OpenCode V2's native retry policy reads this response control header;
+      // SDK maxRetries alone does not govern host-level one-shot/session retries.
+      // Keep upstream status/body/stream intact, including cancellation ownership.
+      const responseHeaders = new Headers(response.headers);
+      responseHeaders.set("x-should-retry", "false");
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders });
     } catch (error) {
       if (error instanceof BridgeError) throw error;
       throw new BridgeError("request", "Provider request failed; retry explicitly or sign in again if needed.");

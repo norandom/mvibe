@@ -21,6 +21,9 @@ export class BridgeError extends Error {
  */
 export type HelperCommand = { executable: string; args: readonly string[] };
 export type BridgeOptions = { command?: HelperCommand; audience: string; apiMajor?: number };
+// mvibe-auth distribution/API version (pyproject.toml), independent of Vibe
+// source provenance and the separately versioned NDJSON protocol.
+const HELPER_API_MAJOR = 0;
 export type BridgeRuntime = {
   spawn: (command: string, args: string[], options: { shell: false; windowsHide: true; detached: boolean; stdio: ["pipe", "pipe", "pipe"] }) => Child;
   terminate: (child: Child) => Promise<void>;
@@ -131,7 +134,7 @@ export class StdioBridge {
     child.once("exit", () => { finish(); this.retire(session, new BridgeError("exit")); });
     try {
       const hello = await this.send(session, "hello", {}, 10_000);
-      if (hello.protocol !== 1 || !new RegExp("^" + (this.options.apiMajor ?? 3) + "\\.\\d+\\.\\d+(?:[.+-].*)?$").test(hello.api_version) || hello.audience !== this.options.audience) throw new BridgeError("incompatible", "Authentication helper protocol, API version or audience is incompatible; install compatible versions and check audience configuration.");
+      if (hello.protocol !== 1 || !new RegExp("^" + (this.options.apiMajor ?? HELPER_API_MAJOR) + "\\.\\d+\\.\\d+(?:[.+-].*)?$").test(hello.api_version) || hello.audience !== this.options.audience) throw new BridgeError("incompatible", "Authentication helper protocol, API version or audience is incompatible; install compatible versions and check audience configuration.");
       return session;
     } catch (error) { this.retire(session, error instanceof BridgeError ? error : new BridgeError("incompatible")); throw error; }
   }

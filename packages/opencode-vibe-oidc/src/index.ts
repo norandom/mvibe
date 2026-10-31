@@ -39,7 +39,7 @@ export async function setupVibe(ctx: RegistrationContext) {
   })();
   try {
     registrations.push(await ctx.provider.transform(editor => {
-      editor.add({ info: { ...Provider.Info.empty(providerID), name: "Vibe OIDC", activation: "enabled", package: "@ai-sdk/openai-compatible" }, ...catalog.snapshot });
+      editor.add({ info: { ...Provider.Info.empty(providerID), name: "Vibe OIDC", activation: "enabled", package: "aisdk:@ai-sdk/openai-compatible" }, ...catalog.snapshot });
     }));
     registrations.push(await ctx.integration.transform(editor => {
       editor.method.update({ integrationID: providerID, method: { id: "vibe-browser", type: "command", label: "Vibe OIDC", command: [command.executable, ...command.args.slice(0, -1), "login"] } });
@@ -50,7 +50,7 @@ export async function setupVibe(ctx: RegistrationContext) {
       event.options.fetch = fetch;
       event.sdk = createOpenAICompatible({ name: "vibe-oidc", baseURL, fetch });
     }, { providerID }));
-    const updates = ctx.event.subscribe({ types: ["integration.updated"], signal: events.signal });
+    const updates = ctx.event.subscribe({ types: ["integration.updated", "credential.updated", "credential.switched"], signal: events.signal });
     void (async () => {
       try { for await (const _event of updates) { if (events.signal.aborted) break; await catalog.refresh(); } }
       catch { if (!events.signal.aborted) console.warn("Vibe OIDC catalog updates unavailable; verify compatible OpenCode V2 versions and reload the provider."); }

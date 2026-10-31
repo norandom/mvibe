@@ -17,6 +17,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test:host": "bun run test/host-smoke.ts",
+    "test:consumer-host": "bun run test/host-integration.ts",
+    "compatibility:current": "bun run test/check-compatibility.ts",
     "prepare:host": "bun run test/prepare-host.ts"
   },
   "dependencies": {

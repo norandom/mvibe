@@ -11,8 +11,8 @@ function fixture(options: Plugin.Context["options"] = { audience: "https://infer
   let active: Awaited<ReturnType<RegistrationContext["integration"]["connection"]["active"]>>;
   let editorCallback: ((editor: ProviderEditor) => void) | undefined;
   let notify: (() => void) | undefined;
-  let pending = 0;
-  const emit = () => { pending++; notify?.(); };
+  const pending: string[] = [];
+  const emit = (type: string) => { pending.push(type); notify?.(); };
   type ProviderEditor = Parameters<Parameters<RegistrationContext["provider"]["transform"]>[0]>[0];
   type IntegrationEditor = Parameters<Parameters<RegistrationContext["integration"]["transform"]>[0]>[0];
   // Only methods touched by setup are supplied; their signatures come from SDK.
@@ -20,19 +20,19 @@ function fixture(options: Plugin.Context["options"] = { audience: "https://infer
   const integrationEditor: Pick<IntegrationEditor, "method"> = { method: { update: input => { methods.push(input); }, list: () => [], remove: () => {} } };
   const ctx = {
     options,
-    event: { subscribe: async function* (options: { signal?: AbortSignal }) { while (!options?.signal?.aborted) { if (!pending) await new Promise<void>(resolve => { notify = resolve; options?.signal?.addEventListener("abort", () => resolve(), { once: true }); }); if (options?.signal?.aborted) break; pending--; yield { type: "integration.updated" }; } } },
+    event: { subscribe: async function* (options: { signal?: AbortSignal; types?: string[] }) { while (!options?.signal?.aborted) { if (!pending.length) await new Promise<void>(resolve => { notify = resolve; options?.signal?.addEventListener("abort", () => resolve(), { once: true }); }); if (options?.signal?.aborted) break; const type = pending.shift()!; if (!options.types || options.types.includes(type)) yield { type }; } } },
     aisdk: { hook: async (name: string, callback: unknown, options: unknown) => { hooks.push({ name, callback, options }); return { dispose: async () => { disposed.push("aisdk"); } }; } },
     provider: { reload: async () => { editorCallback?.(providerEditor as ProviderEditor); }, transform: async (edit: (editor: ProviderEditor) => void) => { editorCallback = edit; edit(providerEditor as ProviderEditor); return { dispose: async () => { disposed.push("provider"); } }; } },
     integration: { connection: { active: async () => active }, transform: async (edit: (editor: IntegrationEditor) => void) => { edit(integrationEditor as IntegrationEditor); return { dispose: async () => { disposed.push("integration"); } }; } },
   } as unknown as RegistrationContext;
-  return { ctx, providers, methods, disposed, hooks, connect: () => { active = { type: "credential", id: "connection-one", label: "Vibe", method: "key" }; emit(); }, disconnect: () => { active = undefined; emit(); } };
+  return { ctx, providers, methods, disposed, hooks, connect: (event = "integration.updated") => { active = { type: "credential", id: "connection-one", label: "Vibe", method: "key" }; emit(event); }, disconnect: (event = "integration.updated") => { active = undefined; emit("credential.switched"); } };
 }
 
 test("distinct production V2 provider registers only browser command, preserves argv", async () => {
   const f = fixture();
   expect(plugin.id).toBe("vibe-oidc");
   const cleanup = await setupVibe(f.ctx);
-  expect(f.providers).toMatchObject([{ info: { id: "vibe-oidc", name: "Vibe OIDC" }, models: [] }]);
+  expect(f.providers).toMatchObject([{ info: { id: "vibe-oidc", name: "Vibe OIDC", package: "aisdk:@ai-sdk/openai-compatible" }, models: [] }]);
   expect(f.methods).toEqual([{ integrationID: "vibe-oidc", method: { id: "vibe-browser", type: "command", label: "Vibe OIDC", command: ["uv", "run", "--offline", "--no-sync", "--project", "C:/installed runtime", "-m", "mvibe_auth", "login"] } }]);
   await cleanup();
   await cleanup();
@@ -68,7 +68,7 @@ test("registration failure rolls back earlier provider and sanitizes host errors
   expect(f.disposed).toEqual(["provider"]);
 });
 
-test("native V2 integration events publish authenticated models through synchronous transform and reload", async () => {
+test.each(["integration.updated", "credential.updated", "credential.switched"])("native V2 %s publishes authenticated models through synchronous transform and reload", async event => {
   const f = fixture(); const http = new ControlledHTTP();
   const base = "https://inference.example.test/v1/models";
   http.queue("GET", base, Response.json({ data: [{ id: "available", name: "Synthetic", capabilities: { tools: false, input: ["text"], output: ["text"] }, limit: { context: 2048, output: 256 }, time: { released: 1 }, status: "active", cost: [{ input: 1, output: 2, cache: { read: 0, write: 0 } }] }] }));
@@ -77,7 +77,7 @@ test("native V2 integration events publish authenticated models through synchron
   let cleanup: (() => Promise<void>) | undefined;
   try {
     cleanup = await setupVibe(f.ctx); expect(request).not.toHaveBeenCalled(); expect(http.requests).toEqual([]);
-    f.connect();
+    f.connect(event);
     for (let i = 0; i < 100 && f.providers.length < 2; i++) await Promise.resolve();
     expect(f.providers.at(-1)).toMatchObject({ models: [{ id: "available", capabilities: { tools: false }, limit: { context: 2048, output: 256 } }], sourceConnection: { id: "connection-one" } });
     expect(http.requests[0]!.headers.get("authorization")).toBe("Bearer synthetic");
