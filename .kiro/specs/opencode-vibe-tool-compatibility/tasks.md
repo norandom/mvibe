@@ -24,7 +24,7 @@ not a side effect of implementation or the default verifier.
   - Completion is visible when prepared-runtime/version checks and existing build checks pass, with missing preparation producing an actionable failure.
   - _Boundary: HostController, dependency preparation_
   - _Requirements: 5.1, 5.5, 5.6_
-- [ ] 1.2 Define immutable scope, inventory and round-trip evidence contracts
+- [x] 1.2 Define immutable scope, inventory and round-trip evidence contracts
   - Define the approved run, tool identity, scope, correlation, cancellation, outcome and claim contracts with runtime validation and canonical synthetic vectors.
   - Include exact request/call/tool links, authoritative manifest expectations and separate offline/live outcomes; vectors are not execution evidence.
   - Completion is visible when valid vectors parse and malformed/unknown fields, unsafe values and inconsistent identities fail without exposing rejected contents.

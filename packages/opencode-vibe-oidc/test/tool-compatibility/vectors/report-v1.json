@@ -1,0 +1,356 @@
+{
+  "synthetic": true,
+  "description": "Schema contract sample only; never execution evidence.",
+  "report": {
+    "schemaVersion": 1,
+    "feature": "opencode-vibe-tool-compatibility",
+    "runId": "synthetic-run",
+    "mode": "offline",
+    "caseManifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "criteriaMappingHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "scopes": [
+      {
+        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "hostVersion": "2.2.5",
+        "hostSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sdkVersion": "2.0.88",
+        "providerBuildHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "profileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent": "fixture",
+        "model": "fixture-model",
+        "protocolProfile": "preserve",
+        "negotiatedMcpVersions": [
+          "2025-11-25"
+        ]
+      }
+    ],
+    "inventories": [
+      {
+        "scope": {
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "hostVersion": "2.2.5",
+          "hostSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sdkVersion": "2.0.88",
+          "providerBuildHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "profileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "agent": "fixture",
+          "model": "fixture-model",
+          "protocolProfile": "preserve",
+          "negotiatedMcpVersions": [
+            "2025-11-25"
+          ]
+        },
+        "registered": [
+          {
+            "registryId": "read",
+            "declaredName": "read",
+            "offeredName": "read",
+            "origin": "native",
+            "schemaHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "offered": [
+          {
+            "registryId": "read",
+            "declaredName": "read",
+            "offeredName": "read",
+            "origin": "native",
+            "schemaHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "classifiedAbsent": []
+      }
+    ],
+    "rows": [
+      {
+        "tool": {
+          "registryId": "read",
+          "declaredName": "read",
+          "offeredName": "read",
+          "origin": "native",
+          "schemaHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "scopeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "offline": {
+          "status": "PASS",
+          "proofIds": [
+            "proof-1"
+          ]
+        },
+        "live": {
+          "status": "UNVERIFIED",
+          "reason": "not_exercised"
+        }
+      }
+    ],
+    "events": [
+      {
+        "sequence": 1,
+        "runId": "synthetic-run",
+        "caseId": "read-positive",
+        "scopeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sessionId": "session-1",
+        "chainId": "chain-1",
+        "requestId": "request-1",
+        "requestKind": "primary",
+        "payloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "definition",
+        "toolId": "read",
+        "toolSchemaHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "sequence": 2,
+        "runId": "synthetic-run",
+        "caseId": "read-positive",
+        "scopeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sessionId": "session-1",
+        "chainId": "chain-1",
+        "requestId": "request-1",
+        "requestKind": "primary",
+        "payloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "model_call",
+        "toolId": "read",
+        "toolSchemaHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "call": {
+          "hostMessageId": "message-1",
+          "hostCallId": "call-1",
+          "upstreamCallId": "upstream-1",
+          "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "link": "host_exposed"
+        },
+        "wireCallId": "upstream-1"
+      },
+      {
+        "sequence": 3,
+        "runId": "synthetic-run",
+        "caseId": "read-positive",
+        "scopeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sessionId": "session-1",
+        "chainId": "chain-1",
+        "requestId": "request-1",
+        "requestKind": "primary",
+        "payloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "executor_started",
+        "toolId": "read",
+        "toolSchemaHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "call": {
+          "hostMessageId": "message-1",
+          "hostCallId": "call-1",
+          "upstreamCallId": "upstream-1",
+          "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "link": "host_exposed"
+        }
+      },
+      {
+        "sequence": 4,
+        "runId": "synthetic-run",
+        "caseId": "read-positive",
+        "scopeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sessionId": "session-1",
+        "chainId": "chain-1",
+        "requestId": "request-1",
+        "requestKind": "primary",
+        "payloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observationHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "executor_completed",
+        "toolId": "read",
+        "toolSchemaHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "call": {
+          "hostMessageId": "message-1",
+          "hostCallId": "call-1",
+          "upstreamCallId": "upstream-1",
+          "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "link": "host_exposed"
+        }
+      },
+      {
+        "sequence": 5,
+        "runId": "synthetic-run",
+        "caseId": "read-positive",
+        "scopeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sessionId": "session-1",
+        "chainId": "chain-1",
+        "requestId": "request-2",
+        "requestKind": "primary",
+        "payloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observationHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "next_model_request",
+        "toolId": "read",
+        "toolSchemaHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "call": {
+          "hostMessageId": "message-1",
+          "hostCallId": "call-1",
+          "upstreamCallId": "upstream-1",
+          "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "link": "host_exposed"
+        },
+        "wireCallId": "upstream-1"
+      },
+      {
+        "sequence": 6,
+        "runId": "synthetic-run",
+        "caseId": "read-positive",
+        "scopeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sessionId": "session-1",
+        "chainId": "chain-1",
+        "requestId": "request-2",
+        "requestKind": "primary",
+        "payloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "final_response"
+      }
+    ],
+    "proofs": [
+      {
+        "id": "proof-1",
+        "caseId": "read-positive",
+        "scopeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sessionId": "session-1",
+        "toolId": "read",
+        "toolSchemaHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "chainId": "chain-1",
+        "requestKind": "primary",
+        "primaryRequestId": "request-1",
+        "nextRequestId": "request-2",
+        "hostMessageId": "message-1",
+        "upstreamCallId": "upstream-1",
+        "hostCallId": "call-1",
+        "continuationWireCallId": "upstream-1",
+        "definitionEvent": 1,
+        "modelCallEvent": 2,
+        "executorStartEvent": 3,
+        "executorEndEvent": 4,
+        "nextRequestEvent": 5,
+        "finalResponseEvent": 6
+      }
+    ],
+    "caseResults": [
+      {
+        "caseId": "read-positive",
+        "scopeHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "toolId": "read",
+        "sessionId": "session-1",
+        "chainId": "chain-1",
+        "status": "PASS",
+        "observedOutcome": "success",
+        "eventReferences": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "proofId": "proof-1"
+      }
+    ],
+    "inventoryComplete": true,
+    "supportedToolIds": [
+      "read"
+    ],
+    "cleanupComplete": true
+  },
+  "caseSpec": {
+    "id": "read-positive",
+    "toolIds": [
+      "read"
+    ],
+    "prerequisites": [
+      "owned-workspace"
+    ],
+    "fixtureKind": "filesystem",
+    "expectedObservationHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "positiveRequired": true,
+    "timeoutMs": 1000,
+    "expectedCalls": [
+      {
+        "toolId": "read",
+        "fixtureNonceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observationHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "expectedOutcome": "success",
+    "requiredObservations": [
+      "definition",
+      "model_call",
+      "executor_started",
+      "executor_completed",
+      "next_model_request",
+      "final_response"
+    ],
+    "executorExpectation": "must_complete"
+  },
+  "runSpec": {
+    "mode": "offline",
+    "hostExecutable": "C:/prepared/opencode.exe",
+    "bunExecutable": "C:/prepared/bun.exe",
+    "preparedPython": "C:/prepared/python.exe",
+    "caseManifest": "manifests/default.json",
+    "ownedProfile": "C:/owned/profile",
+    "model": "fixture-model",
+    "reportDirectory": "C:/owned/reports",
+    "loginPolicy": "reuse-only",
+    "limits": {
+      "startupMs": 1000,
+      "discoveryMs": 1000,
+      "cancellationMs": 1000,
+      "runMs": 10000,
+      "traceBytes": 65536,
+      "eventsPerCase": 128,
+      "toolCallsPerCase": 8
+    }
+  },
+  "cancelProof": {
+    "hostEvent": 7,
+    "executorEvent": 8,
+    "providerEvent": 9,
+    "mcpEvent": 10,
+    "stateEvent": 11,
+    "commitState": "unknown"
+  },
+  "cancelledCase": {
+    "id": "read-cancelled",
+    "toolIds": [
+      "read"
+    ],
+    "prerequisites": [
+      "owned-workspace"
+    ],
+    "fixtureKind": "filesystem",
+    "expectedObservationHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "positiveRequired": false,
+    "timeoutMs": 1000,
+    "expectedCalls": [
+      {
+        "toolId": "read",
+        "fixtureNonceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observationHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "expectedOutcome": "cancelled",
+    "requiredObservations": [
+      "state_observed"
+    ],
+    "executorExpectation": "observe_if_started",
+    "cancellation": {
+      "host": true,
+      "executor": true,
+      "provider": true,
+      "mcp": true,
+      "completionRace": "mark_unverified"
+    }
+  },
+  "profile": {
+    "id": "preserve",
+    "evidenceRefs": [
+      "vectors/report-v1.json"
+    ],
+    "callIds": "preserve",
+    "names": "preserve",
+    "errors": "preserve",
+    "supportedToolMimeTypes": [
+      "text/plain"
+    ]
+  }
+}
