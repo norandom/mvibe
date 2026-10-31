@@ -29,7 +29,8 @@ async def test_service_retains_enabled_and_registration(monkeypatch):
                              client_id=service.client.config.client_id,
                              audience=service.client.config.audience,
                              expires_at=float('inf'))
-    service.store = SimpleNamespace(load=AsyncMock(return_value=tokens))
+    service.store = SimpleNamespace(coordinator=service.store.coordinator,
+                                    reload=AsyncMock(return_value=tokens))
     monkeypatch.setenv('VIBE_CLI_OIDC_ENABLED', 'false')
     monkeypatch.setenv('VIBE_CLI_OIDC_CLIENT_ID', 'new-client')
     assert await service.access_tokens() is tokens

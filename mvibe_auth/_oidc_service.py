@@ -200,11 +200,9 @@ class OidcService:
 
     async def access_tokens(self, *, force_refresh: bool = False) -> OidcTokens:
         self.config.require_enabled()
-        async with self._lock:
-            tokens = await self.store.load()
-            if force_refresh or tokens is None or tokens.expires_at <= time.time() + 30:
-                # The in-memory copy may predate another process's rotation.
-                tokens = await self.store.reload()
+        async with self.store.coordinator.hold_async():
+            # Another participating service/process may have rotated while we waited.
+            tokens = await self.store.reload()
             config = self.client.config
             if tokens is None:
                 raise OidcError("OIDC re-login required: no stored credentials")

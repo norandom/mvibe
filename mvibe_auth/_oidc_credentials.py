@@ -9,6 +9,7 @@ from typing import Literal, cast
 import keyring
 from keyring.errors import KeyringError, PasswordDeleteError
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, field_serializer
+from mvibe_auth._coordination import MutationCoordinator
 
 _KEYRING_SERVICE = "ai.mistral.vibe.oidc"
 _KEYRING_ENTRY = "cli-oidc:v1:tokens"
@@ -79,18 +80,21 @@ ABSENT = _SnapshotMarker.ABSENT
 
 
 class OidcCredentialStore:
-    """Conditionally mutate the Vibe keyring slot under the process-local lock.
+    """Conditionally mutate the Vibe keyring slot under native coordination.
 
     Reload-and-compare detects observed changes; external writers that do not
     share our lock can still race the backend read/write pair.
     """
 
+    def __init__(self, *, coordinator: MutationCoordinator | None = None) -> None:
+        self.coordinator = coordinator if coordinator is not None else MutationCoordinator()
+
     async def load(self) -> OidcTokens | None:
-        return await asyncio.to_thread(self._load)
+        return await self._wait_for_worker(asyncio.create_task(self.coordinator.worker(self._load)))
 
     async def reload(self) -> OidcTokens | None:
         """Read the keyring itself, e.g. before a refresh another process may have done."""
-        return await asyncio.to_thread(self._reload)
+        return await self._wait_for_worker(asyncio.create_task(self.coordinator.worker(self._reload)))
 
     async def save(
         self, tokens: OidcTokens, *, complete_on_cancel: bool = False,
@@ -102,11 +106,12 @@ class OidcCredentialStore:
         False means storage changed; callers must not report a persisted login.
         """
         tokens = tokens.model_copy(deep=True)
-        expected = await self._capture_expected(expected)
-        return await self._wait_for_worker(
-            asyncio.create_task(asyncio.to_thread(self._save_if_current, tokens, expected)),
-            complete_on_cancel=complete_on_cancel,
-        )
+        async with self.coordinator.hold_async():
+            expected = await self._capture_expected(expected)
+            return await self._wait_for_worker(
+                asyncio.create_task(self.coordinator.worker(self._save_if_current, tokens, expected)),
+                complete_on_cancel=complete_on_cancel,
+            )
 
     async def save_if_current(
         self, tokens: OidcTokens, *, expected: OidcTokens | _SnapshotMarker
@@ -116,10 +121,11 @@ class OidcCredentialStore:
     async def clear(
         self, *, expected: OidcTokens | _SnapshotMarker = _SnapshotMarker.CAPTURE_CURRENT
     ) -> bool:
-        expected = await self._capture_expected(expected)
-        return await self._wait_for_worker(
-            asyncio.create_task(asyncio.to_thread(self._clear_if_current, expected))
-        )
+        async with self.coordinator.hold_async():
+            expected = await self._capture_expected(expected)
+            return await self._wait_for_worker(
+                asyncio.create_task(self.coordinator.worker(self._clear_if_current, expected))
+            )
 
     async def clear_if_current(self, *, expected: OidcTokens | _SnapshotMarker) -> bool:
         return await self.clear(expected=expected)
@@ -140,7 +146,7 @@ class OidcCredentialStore:
         """Record ``tenant`` on the stored session, if it is still ``tokens``'s
         token revision: sign-out, sign-in and refresh are not overwritten.
         """
-        with _slot_lock:
+        with self.coordinator.hold(), _slot_lock:
             current = self._mutation_current()
             if current is None or not self._matches(current, tokens):
                 return False
@@ -159,7 +165,7 @@ class OidcCredentialStore:
         )
 
     def _save_if_current(self, tokens: OidcTokens, expected: OidcTokens | _SnapshotMarker) -> bool:
-        with _slot_lock:
+        with self.coordinator.hold(), _slot_lock:
             current = self._mutation_current()
             # The tenant is not token material: a tenant recorded during the
             # refresh is kept rather than failing it.
@@ -171,7 +177,7 @@ class OidcCredentialStore:
             return True
 
     def _clear_if_current(self, expected: OidcTokens | _SnapshotMarker) -> bool:
-        with _slot_lock:
+        with self.coordinator.hold(), _slot_lock:
             current = self._mutation_current()
             if not self._matches(current, expected):
                 return False

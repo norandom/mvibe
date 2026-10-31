@@ -69,7 +69,7 @@ The package version starts independently of the upstream Vibe source version; re
 | pyproject.toml | Installable library, optional proxy extra, dev dependencies and pytest configuration |
 | uv.lock | Resolved Python runtime/test dependency graph |
 | mvibe_auth/api.py | AuthSession facade, public result/error and login handle contracts |
-| mvibe_auth/coordination.py | Shared local lock and rotation-resolution budget |
+| mvibe_auth/_coordination.py | Shared local lock and rotation-resolution budget |
 | mvibe_auth/bridge.py | Validated protocol dispatcher and stdio lifecycle |
 | mvibe_auth/__main__.py | Explicit bridge entry point |
 | mvibe_proxy/streaming.py | Upstream response ownership across ASGI execution |
@@ -356,5 +356,6 @@ Introduce packaging and tests, expose facade, migrate proxy, then implement brid
 
 ## Review Result
 Inline design review passed for boundaries, typed contracts, lifecycle, test strategy and complete traceability. Design approval remains pending. No runtime correctness claim is made.
+
 
 

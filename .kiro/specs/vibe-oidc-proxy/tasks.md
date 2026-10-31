@@ -85,7 +85,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 3.1, 3.2, 3.3_
   - _Requirements: 3.4, 3.6, 3.7, 3.8, 5.8_
 
-- [ ] 4.2 Integrate cross-process mutation coordination
+- [x] 4.2 Integrate cross-process mutation coordination
   - Implement per-user native lock coordination with coordinator-before-slot ordering, bounded acquisition and no lock held during browser interaction.
   - Explicit integration: route tenant whole-bundle writes, login commits, refresh commits and clears through the same mutation boundary across store, service and tenant resolver; retain best-effort limitations for external Vibe.
   - Done when two synthetic consumer processes cannot overwrite each other's rotation with a stale tenant write and cancellation does not release a lock before its worker finishes.
@@ -266,4 +266,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 4.1: StoreABSENT sentinel distinctunreadable; conditional save/clear/tenant compare all tokenrevisionfields excludingtenant. Compatibilitysave/clear capture snapshot beforeworker;4.4must supply prebrowser snapshot. Shieldedworkersdrain repeatedcancel. Python627pass independentAPPROVED.
+
+
+- 4.2: Native coordinator in _coordination.py; activeowner leases and explicit worker delegation prevent childtask/stalecontext bypass. Storeworkersmustdrainbefore leaving scope. Allbundlewrites incltenantcoordinatebeforeslot; no browserwaitlock. Python642pass independentAPPROVED afterownershiprepair.
 

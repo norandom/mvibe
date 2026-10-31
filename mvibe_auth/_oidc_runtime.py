@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from mvibe_auth._auth_config import AuthConfig
 from mvibe_auth._auth_contracts import AuthError
+from mvibe_auth._coordination import CoordinationError
 from mvibe_auth._oidc_config import OidcError
 from mvibe_auth._oidc_credentials import (
     OidcCredentialStore,
@@ -187,7 +188,7 @@ def _tenant_headers(config: AuthConfig, token: str) -> dict[str, str]:
             return _tenant_header_values(tenant)
         try:
             selected = run_sync(_discover_workspace(config, token, workspace))
-        except OidcError:
+        except (OidcError, CoordinationError):
             raise
         except Exception:
             raise OidcError(
@@ -200,6 +201,8 @@ def _tenant_headers(config: AuthConfig, token: str) -> dict[str, str]:
         )
         if session is not None:
             try:
+                # save_tenant shares the native coordinator with login/refresh;
+                # it reloads and checks token revision before rewriting a bundle.
                 store.save_tenant(session, tenant)
             except OidcStorageError:
                 # Requests still carry the tenant; persistent caches stay
@@ -267,7 +270,7 @@ def _resolve_id_token(service: OidcService) -> str:
             if not token or not _id_token_is_fresh(tokens.id_token_expires_at):
                 raise OidcError("OIDC re-login required: ID token was not renewed")
             return token
-        except OidcError:
+        except (OidcError, CoordinationError):
             raise
         except Exception:
             raise OidcError(
