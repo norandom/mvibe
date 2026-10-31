@@ -24,3 +24,14 @@ Live execution is separate from the default offline implementation checks.
 - Fresh independent verification: 561 Bun tests / 1,680 assertions, typecheck
   and build passed, exit 0. Completion gate: VERIFIED for schema/identity scope.
 - Manifest authority, positive execution credit and live support remain later work.
+
+## 1.3 Authoritative cases
+
+- Implementer: READY_FOR_REVIEW; independent review: APPROVED.
+- RED flag OFF: 24 pass / 4 fail; flag ON: 28 pass; flag removed.
+- Fresh independent verification: 594 Bun tests / 1,852 assertions; typecheck
+  and build passed, exit 0. Completion gate: VERIFIED for case definitions.
+- Forty-five immutable recipes cover 24 observed tool IDs and owned fixture
+  families, with explicit positive/negative expectations and bounded limits.
+- Per-run trusted fixture material supplies expected hashes. These expectations
+  do not grant execution credit; applicability and runtime evidence remain scoped.

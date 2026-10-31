@@ -17,7 +17,7 @@ later coding task or grant positive tool coverage. Production corrections need
 recorded conformance failures. Live execution is a separate deliberate command,
 not a side effect of implementation or the default verifier.
 
-- [ ] 1. Establish prepared runtimes and shared contracts
+- [x] 1. Establish prepared runtimes and shared contracts
 - [x] 1.1 Prepare locked dependencies and test-runtime configuration
   - Prepare the reference host, fixture SDK and V3 type dependencies explicitly, preserving the working provider's pinned runtime and uv-managed Python constraint.
   - Keep pure checks separate from real-host/MCP process checks; default commands must not install dependencies or touch accounts.
@@ -30,7 +30,7 @@ not a side effect of implementation or the default verifier.
   - Completion is visible when valid vectors parse and malformed/unknown fields, unsafe values and inconsistent identities fail without exposing rejected contents.
   - _Boundary: EvidenceGate, shared contracts and vectors_
   - _Requirements: 3.2, 3.5, 4.2, 5.2, 5.3, 5.4, 5.5, 5.8, 5.10_
-- [ ] 1.3 Define authoritative cases, applicability and execution limits
+- [x] 1.3 Define authoritative cases, applicability and execution limits
   - Establish owned fixture objectives, expected calls/observations, prerequisite states, negative outcomes and required cancellation observations.
   - Validate case budgets and positive-versus-negative credit rules; record unavailable prerequisites without pretending that a tool executed.
   - Completion is visible when the default case manifest validates, contradictory expectations fail, and every later case can be assigned a scope and verifiable outcome.
