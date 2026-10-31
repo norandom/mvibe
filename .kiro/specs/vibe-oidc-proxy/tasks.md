@@ -195,7 +195,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: Provider models_
   - _Requirements: 12.5, 12.8_
 
-- [ ] 8. Integrated validation and reproducible operation
+- [x] 8. Integrated validation and reproducible operation
 - [x] 8.1 Verify public startup and provider-host integration
   - Explicit integration: start the proxy with injected boundaries and load the plugin in the isolated pinned host profile with synthetic provider/helper responses.
   - Verify real host propagation of custom fetch, auth marker, model discovery, first streaming chunk and cancellation.
@@ -225,7 +225,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Boundary: Verification tooling_
   - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7_
 
-- [ ] 8.5 Run final integrated offline acceptance
+- [x] 8.5 Run final integrated offline acceptance
   - Explicit integration: run the prepared locked offline pipeline, cross-process rotation/tenant cases, helper lifecycle and pinned-host smoke together.
   - Confirm all required artifacts, task coverage and regression cases match the final code; record dependency/runtime versions and unresolved external assumptions.
   - Done when all mandatory offline checks and local-startup evidence pass with no live activity, or completion remains blocked with exact failures; live compatibility is reported separately.
@@ -326,4 +326,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 8.4: Bothconsumerlivemanualprocedure+strictsanitized18scenarioevidencetemplate/validator; allinitialUNVERIFIED. Offlinevalidatorneverlaunchesaccountaction; structuralvaliditynotproofobservations. Fresh31checks+CLI18unverifiedPASS independent919Python/buildPASS. No liveperformed.
+
+
+- 8.5: Finalpreparedofflineacceptanceandindependentrerun bothEXIT0:919Python458Bun1432assert all10steps97criteriaPASSzero skips. ASGIstartup/nativehost2.2.5PASS; live18UNVERIFIED. docs/offline-acceptance.md andrun4868d4a5.../independentd91bf689...recordversions/hashes. Formalhandoffinputs captured; featurevalidate-implgate follows.
 
