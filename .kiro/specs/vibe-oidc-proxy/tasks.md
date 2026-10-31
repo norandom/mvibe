@@ -133,7 +133,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 5.1_
   - _Requirements: 2.8, 3.8, 3.9, 10.3, 10.4, 12.1, 12.10_
 
-- [ ] 6. Proxy and bridge adapters
+- [x] 6. Proxy and bridge adapters
 - [x] 6.1 Migrate proxy startup and routes to the public library
   - Explicit integration: inject public session/client factories, preserve CLI browser presentation and loopback settings, and replace private auth imports.
   - Move configuration and authentication failures inside the safe request boundary; retain supported operation allowlist and generic errors.
@@ -157,7 +157,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
   - _Depends: 1.4, 5.2_
   - _Requirements: 12.1, 12.2, 12.8, 12.10_
 
-- [ ] 6.4 Implement bridge shutdown and restart safety
+- [x] 6.4 Implement bridge shutdown and restart safety
   - Handle parent EOF and shutdown by stopping admission, cancelling pending activity and draining persistence workers before acknowledging graceful closure.
   - Treat forced host termination as unknown commit outcome; require authoritative reload on the next helper session.
   - Done when process-level fake-store tests cover graceful closure, abrupt death and restart without assuming the last write succeeded or failed.
@@ -295,4 +295,7 @@ File ownership follows design.md. Boundaries name components rather than repeat 
 
 
 - 6.3: PublicsessionNDJSONbridge 31ordinary+1cancel slot; malformedduplicateactiveIDs capturesstatebeforeawait, avoidssecondstartedreply andretires. Stdioincidentaloutputdiscarded originalbinarypipeprotocolonly. Python837pass independentAPPROVED aftercorrelationrepair.
+
+
+- 6.4: Actualmoduleprocess10lifecyclecases confirm gracefulworkerdrain/nativeexclusion and forcedkillbefore/aftercommit authoritative restart. Windowsuvvenvexe mayberedirectorparent;7.1mustterminateownedruntime/tree notlauncheronly. Synthetic harnessrecordsos.getpid. Python847pass independentAPPROVED no orphanworkers.
 
