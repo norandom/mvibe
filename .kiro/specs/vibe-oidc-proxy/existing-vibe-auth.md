@@ -64,3 +64,25 @@ the same contract without a local Vibe installation or skipped coverage.
 - Actual OpenCode quota attribution remains unverified until the user counter
   check. No release was published. Existing catalog warnings can still mention
   OIDC generically; source-specific request authentication/401 guidance is fixed.
+
+## Live acceptance and proxy default follow-up
+
+The user subsequently confirmed that the installed OpenCode existing-login mode
+works and consumes the expected Vibe quota. This supersedes the pending counter
+check above. It is account-specific acceptance, not universal entitlement.
+
+The user requested the proxy inherit that behavior, a COBESY technical writeup
+and project memories. The proxy default factory, module app and CLI now use
+`ExistingVibeSession`; explicit `--auth-source oidc` retains the prior experimental
+factory. Technical documentation is in `docs/vibe-authentication.md`; durable
+decisions are in `.kiro/steering/`. The proxy has no separately reported live
+quota check. Common native auth tests now mock the platform-neutral reader and
+explicitly test both OS credential boundaries, fixing the macOS CI mock mismatch.
+
+Follow-up verification: independent runtime review APPROVED with 1,172 full
+Python tests passing and scoped Ruff clean. Existing acceptance mappings were
+updated for the explicit OIDC test name and mode-neutral provider guide title;
+the verification gate remains unchanged. Documentation/memory review APPROVED
+after removing stale default and pending-quota claims. Local Markdown links in
+the operator guides and core steering passed. The actual native credential and
+whoami lookup also passed through the default proxy with inference intercepted.

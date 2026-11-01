@@ -610,7 +610,7 @@
         "kind": "test",
         "suite": "python",
         "file": "tests/test_startup.py",
-        "name": "test_proxy_default_opt_in_respects_explicit_disablement"
+        "name": "test_proxy_explicit_oidc_opt_in_respects_explicit_disablement"
       }
     ],
     "8.3": [

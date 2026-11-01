@@ -1,5 +1,11 @@
 # Current Implementation: Vibe OIDC Proxy
 
+This is the historical inspection from 2026-10-31. Its authentication description
+predates the user-confirmed existing Vibe login integration. Current guidance is
+in [authentication memory](../../steering/authentication.md) and the
+[technical writeup](../../../docs/vibe-authentication.md). Preserve this snapshot
+as evidence of the starting implementation, not as the current default.
+
 ## Evidence and Limits
 Static inspection on 2026-10-31; no imports, test execution, login, keyring access or upstream requests. README's Vibe 3.0.4 provenance is a repository claim, not an independently verified upstream diff. `LICENSE.vibe` contains Apache License 2.0.
 

@@ -7,8 +7,10 @@ library. Sign in through normal Vibe first; there is no manual API-key entry.
 The user observed Vibe quota usage with normal Vibe and API counter usage with
 the experimental direct OIDC ID-token route. The existing-login mode reuses the
 credential stored by normal Vibe. A keyring entry alone does not prove how the
-credential was issued or which budget will be charged. The first release remains
-held pending the user's live quota check of the integrated provider.
+credential was issued or which budget will be charged. The user confirmed that
+the installed OpenCode existing-login integration consumes the expected Vibe
+quota. Read the [authentication technical writeup](docs/vibe-authentication.md)
+for the two browser flows, implementation boundaries and verification limits.
 
 For a prebuilt install on Linux, Windows or macOS, download the ZIP and
 `SHA256SUMS` from [GitHub Releases](https://github.com/norandom/mvibe/releases),
@@ -84,12 +86,11 @@ Setup may download Python and dependencies. Use uv-managed Python throughout;
 there is no need to install Windows Store Python. Bun is needed only for the
 direct TypeScript plugin and its tests.
 
-## 2. Start the experimental OIDC proxy and finish browser sign-in
+## 2. Start the proxy with your existing Vibe login
 
-The sequence below explicitly describes the legacy OIDC ID-token route, which
-uses a separate encrypted store and refresh flow. It is separate from the
-recommended existing-login provider above. See `proxy.py --help` for the optional
-existing-login proxy mode.
+Complete normal Vibe browser sign-in first. The proxy defaults to the same
+`ExistingVibeSession` used by the provider and rereads the native keyring
+credential for each request. No second login or manual API key is required.
 
 In terminal A:
 
@@ -97,19 +98,19 @@ In terminal A:
 uv run --locked --offline -- python proxy.py
 ```
 
-Keep this terminal open. Startup reuses matching credentials or opens the Vibe
-OIDC sign-in in your default browser. Complete sign-in there. The browser's
-"Sign-in received. Return to Vibe." message confirms receipt of the callback;
-wait for `Application startup complete` in terminal A before continuing.
+Keep this terminal open and wait for `Application startup complete`. If the
+credential is absent or rejected, sign in through normal Vibe and retry. The
+default proxy does not open the experimental OIDC browser flow.
 
-`--offline` applies to dependencies. The proxy still contacts the issuer and
-Mistral. The explicit `python` after `--` uses the uv project environment and its
+`--offline` applies to dependencies. The proxy still contacts Mistral; explicit
+OIDC mode also contacts its issuer. The `python` after `--` uses the uv project environment and its
 lockfile. `uv run --locked --offline proxy.py` instead selects the script's
 separate inline dependency metadata and requires a separate script lockfile.
 
-Stop with Ctrl+C. Force another browser sign-in with
-`uv run --locked --offline -- python proxy.py --login`. Use `--port 8766` for
-another port and update client URLs accordingly.
+Stop with Ctrl+C. `--login` validates the existing native credential; it does not
+renew it. Use `--port 8766` for another port and update client URLs accordingly.
+To deliberately test the separate ID-token route, pass `--auth-source oidc`.
+Only that mode uses the experimental browser login and encrypted OIDC store.
 
 ## 3. Check health, models and a chat response with curl
 
@@ -154,7 +155,8 @@ try {
 
 Success means a chat-completion JSON response containing an assistant answer.
 No caller Authorization header is required. Client SDKs that require an `apiKey`
-can use `local`; the proxy derives upstream authentication from OIDC.
+can use `local`; the proxy obtains upstream authentication from the selected
+shared session, normally the existing Vibe login.
 
 ## 4. Run OpenCode through the proxy
 
@@ -192,7 +194,7 @@ Use the native executable's full path if `opencode` is not on PATH. The desktop
 installation here provides
 `C:/Users/mariu/AppData/Local/Programs/OpenCode/resources/opencode-cli.exe`.
 The `local` value enables the client adapter; it is a placeholder, and upstream
-authentication still uses Vibe OIDC. This checks the proxy route. The direct
+authentication still comes from the proxy's selected shared session. This checks the proxy route. The direct
 `vibe-oidc` provider has its own
 [configuration and model-metadata requirements](docs/opencode-provider.md).
 
@@ -215,9 +217,10 @@ citations, errors and tests. Responses API is also unsupported.
 
 | Last successful step | Next action |
 | --- | --- |
-| Browser callback only | Read terminal A; token validation and persistence must finish before startup. |
+| Missing native credential | Finish normal Vibe sign-in, then retry; there is no automatic environment API-key fallback. |
+| Explicit OIDC callback only | Read terminal A; token validation and persistence must finish before startup. |
 | Proxy startup | Check the configured port and `/health`. |
-| Health | Check discovery status, account entitlement and OIDC/tenant configuration. |
+| Health | Check discovery, the selected auth source and native credential availability; OIDC tenant settings apply only to explicit OIDC mode. |
 | Model discovery | Use an exact chat-capable ID and inspect the chat HTTP response. |
 | curl chat | Check OpenCode version, configuration, model ID and proxy access log. |
 | Forwarding returns 502 after stream cleanup failure | Restart the proxy; health can still report OK. |

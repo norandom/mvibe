@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.parametrize("name,heading", [
     ("vibe-provenance.md", "# Vibe source provenance"),
-    ("opencode-provider.md", "# OpenCode Vibe OIDC provider"),
+    ("opencode-provider.md", "# OpenCode Mistral-Vibe provider"),
 ])
 def test_required_operator_artifact(name, heading):
     assert (ROOT / "docs" / name).read_text(encoding="utf-8").startswith(heading)

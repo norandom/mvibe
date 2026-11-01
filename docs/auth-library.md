@@ -1,5 +1,26 @@
 # Shared authentication library
 
+## Recommended existing-login session
+
+`ExistingVibeSession` reuses the credential stored by normal Vibe browser
+sign-in. The direct provider and default proxy use it through the same Python
+implementation. It reads the native keyring freshly, performs no credential
+writes or refresh, and never falls back to an environment API key. Normal Vibe
+owns renewal. `resolve` accepts only the supported HTTPS Mistral inference paths.
+Its `vibe_credential` snapshot uses the native `/api/vibe/whoami` plan lookup.
+
+The user confirmed correct Vibe quota usage in OpenCode after the integration.
+This account-specific result supersedes the older pending statements below;
+it does not establish quota equivalence for direct ID-token OIDC. See
+[the technical writeup](vibe-authentication.md) for architecture and evidence.
+
+Import `ExistingVibeSession` from `mvibe_auth`, await `resolve` with a supported
+inference URL, and always await `close` when finished. Apply the snapshot headers
+only to its validated target and never log them. Unlike the experimental session
+below, this session delegates browser sign-in and renewal to normal Vibe.
+
+## Experimental OIDC session reference
+
 `mvibe_auth` exposes `AuthConfig`, `AuthSession`, immutable `AuthSnapshot` and
 typed login/error results. Both Python consumers and the provider's Python helper
 use this implementation for login, validation, refresh, storage and tenant
@@ -66,8 +87,9 @@ Both consumers send this resolved header with the authoritative credentials.
 Native completion-body attribution is built separately by
 `mvibe_auth.request_metadata`, keeping AuthSession authentication-only. This adds
 native request identification;
-subscription/quota attribution remains unverified and cannot be inferred from
-an HTTP success. No plan, session or telemetry body fields are synthesized.
+the expected Vibe quota attribution for this direct ID-token route failed on
+the tested account despite HTTP success. Session context and account-derived
+plan metadata belong to the separate request metadata builder.
 The snapshot also contains
 `expires_at`, an opaque `revision` and the validated `target`. It contains no
 refresh token. Use the headers only for that target; do not forward them after
@@ -168,9 +190,10 @@ bytes. Response streams remain unbuffered.
 Unknown launch/session/account fields are omitted. OpenCode reports its actual
 client version and name rather than claiming to be `vibe_cli`; unavailable plan
 labels are never synthesized. Before chat forwarding, both adapters use the
-shared optional OIDC account resolver to query `/api/vibe/account-context` on
-the configured issuer registration's trusted console origin with the already
-resolved ID token and tenant headers. Native Vibe's plan mapping derives
+shared optional account resolver on the trusted console origin. Snapshot kind
+selects `/api/vibe/whoami` for the native Vibe credential, without external tenant
+headers, or `/api/vibe/account-context` for an ID token with its resolved tenant
+headers. Native Vibe's plan mapping derives
 `user_plan` from the returned plan type/name; callers cannot supply that field
 through private request context. Account attribution owns caller metadata's
 `user_plan`: a known server result replaces it, and an unavailable result omits
@@ -178,7 +201,7 @@ it. Other metadata remains preserved.
 
 The lookup has a three-second total deadline, a 64 KiB response limit, no
 redirects and no retries. Its adapter-session memory cache holds at most 32
-entries keyed by credential revision and resolved organization/workspace,
+entries keyed by credential kind, revision and resolved organization/workspace,
 for five minutes on success or 30 seconds on failure, capped by credential
 lifetime. Concurrent lookups coalesce; cancellation of the final waiter cancels
 the request. Shutdown drains lookups and closes the owned client. Unknown
@@ -192,5 +215,5 @@ Vibe builder from commit `338ad4bf0f73c4dd879d667cf7ab011555ae1751` with synthet
 inputs; its source hashes allow provenance checks. Maintainers can refresh it
 with `uv run scripts/capture_native_metadata.py ../mistral-vibe`; ordinary tests
 never import the sibling checkout. Offline request parity does not establish
-live subscription quota attribution. Publication remains held for the user's
-quota-counter check.
+live subscription quota attribution. The later user confirmation concerns the
+existing-login credential source, not this direct ID-token route.

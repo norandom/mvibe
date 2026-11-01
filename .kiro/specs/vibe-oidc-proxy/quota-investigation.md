@@ -2,6 +2,16 @@
 
 ## Latest outcome
 
+The user confirmed correct Vibe quota attribution after OpenCode switched to
+the existing normal Vibe credential at `6fd0853`. Normal Vibe and the neutral
+native capture launcher also use the correct quota. The proxy now inherits the
+same shared session by default; its real-credential integration smoke intercepted
+inference, so separate live proxy quota acceptance is still unreported.
+Read [the technical writeup](../../../docs/vibe-authentication.md) and
+[durable auth memory](../../steering/authentication.md) for the current decision.
+
+## Earlier direct-ID-token results
+
 The user retested the installed account-context change (`d3554be`) and again
 reported API allowance consumption. The plan lookup did not resolve the quota
 issue. Treat this as an unresolved live acceptance failure, not merely an
@@ -132,4 +142,6 @@ The user approved the existing-auth integration. It is implemented, independentl
 reviewed and locally installed with `authSource=existing-vibe`; see
 [existing-vibe-auth.md](existing-vibe-auth.md). The actual helper and account
 lookup produced Pro in an intercepted outgoing request without inference.
-This is a pending live counter check, not a confirmed OpenCode quota fix.
+The user subsequently confirmed correct quota usage in OpenCode. That resolves
+the observed account-specific existing-login integration issue. It does not
+establish direct ID-token quota equivalence or separate live proxy acceptance.

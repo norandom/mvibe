@@ -128,3 +128,80 @@ async def test_upstream_application_status_is_preserved_without_replay(status):
     assert response.status_code == status
     assert response.content == b'{"result":"synthetic"}'
     assert len(sent) == 1
+
+
+@pytest.mark.parametrize('source', [None, 'existing-vibe', 'oidc'])
+def test_cli_selects_native_by_default_and_oidc_only_explicitly(monkeypatch, source):
+    selected = []
+    served = []
+    monkeypatch.setattr(proxy, 'create_app', lambda **kwargs: selected.append(kwargs) or 'app')
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *args, **kwargs: served.append((args, kwargs)))
+    args = ['--login'] + (['--auth-source', source] if source else [])
+    proxy.main(args)
+    factory = selected[0].get('auth_factory', proxy._default_auth_factory)
+    from mvibe_auth.existing_vibe import ExistingVibeSession
+    if source == 'oidc':
+        assert factory is proxy._oidc_auth_factory
+    else:
+        assert isinstance(factory(), ExistingVibeSession)
+    assert selected[0]['force_login'] is True
+    assert served[0][1]['host'] == '127.0.0.1'
+
+
+@pytest.mark.parametrize('setting,enabled', [(None, True), ('false', False), ('true', True)])
+def test_explicit_oidc_factory_preserves_enablement_override(monkeypatch, setting, enabled):
+    if setting is None:
+        monkeypatch.delenv('VIBE_CLI_OIDC_ENABLED', raising=False)
+    else:
+        monkeypatch.setenv('VIBE_CLI_OIDC_ENABLED', setting)
+    monkeypatch.setattr(proxy, 'AuthSession', lambda config: config)
+    assert proxy._oidc_auth_factory().enabled is enabled
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('app_kind', ['factory', 'module'])
+async def test_default_native_missing_never_falls_back_or_opens_browser(monkeypatch, app_kind):
+    from mvibe_auth import existing_vibe
+    monkeypatch.setattr(existing_vibe, '_read_native_credential', lambda: None)
+    monkeypatch.setattr(proxy, 'AuthSession', lambda *_: pytest.fail('experimental OIDC selected'))
+    monkeypatch.setattr(proxy.webbrowser, 'open', lambda *_: pytest.fail('browser opened'))
+    app = proxy.create_app() if app_kind == 'factory' else proxy.app
+    with pytest.raises(AuthError) as error:
+        async with app.router.lifespan_context(app):
+            pytest.fail('missing native credential must stop startup')
+    assert error.value.failure.code == 'missing'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('force', [False, True])
+async def test_default_native_startup_and_requests_share_fresh_session(monkeypatch, force):
+    from mvibe_auth import existing_vibe
+    values = iter(['startup', 'validated', 'request-one', 'request-two'] if force
+                  else ['startup', 'request-one', 'request-two'])
+    reads = []
+    def read():
+        value = next(values)
+        reads.append(value)
+        return value
+    monkeypatch.setattr(existing_vibe, '_read_native_credential', read)
+    monkeypatch.setattr(proxy, 'AuthSession', lambda *_: pytest.fail('experimental OIDC selected'))
+    monkeypatch.setattr(proxy.webbrowser, 'open', lambda *_: pytest.fail('browser opened'))
+    sent = []
+    def client_factory(**kwargs):
+        def upstream(request):
+            sent.append(request)
+            return httpx2.Response(200, json={'data': []})
+        return httpx2.AsyncClient(transport=httpx2.MockTransport(upstream))
+    app = proxy.create_app(client_factory=client_factory, force_login=force)
+    async with app.router.lifespan_context(app):
+        session = app.state.auth
+        assert isinstance(session, existing_vibe.ExistingVibeSession)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            for _ in range(2):
+                assert (await client.get('/v1/models')).status_code == 200
+                assert app.state.auth is session
+    assert reads == (['startup', 'validated', 'request-one', 'request-two'] if force
+                     else ['startup', 'request-one', 'request-two'])
+    assert [request.headers['authorization'] for request in sent] == [
+        'Bearer request-one', 'Bearer request-two']
+    assert session._closed

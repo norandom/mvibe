@@ -1,4 +1,8 @@
-# OpenCode Vibe OIDC provider
+# OpenCode Mistral-Vibe provider
+
+The user confirmed correct Vibe quota usage with `authSource: "existing-vibe"`.
+The [authentication writeup](vibe-authentication.md) explains the working path,
+the experimental OIDC distinction and the scope of that live result.
 
 For opt-in direct-provider diagnostics, set `"diagnostics": true` in the plugin's
 `options` and restart OpenCode. With the native CLI, add `--print-logs` to see
@@ -39,7 +43,7 @@ the three credential/tenant headers; it replaces a caller User-Agent only when
 the helper supplies one. Other helper headers remain excluded. This metadata
 does not establish subscription/quota attribution. The user observed native Vibe
 quota usage and experimental direct OIDC API counter usage. The integrated
-existing-login provider still requires the user's live quota check; no quota
+existing-login provider now has the user's successful live quota check; no quota
 guarantee follows from a keyring entry or request metadata. Chat requests receive the shared native metadata defaults,
 plus actual OpenCode session/message/client context when available. Unknown
 plan fields are omitted. See the [metadata contract](auth-library.md#native-completion-request-metadata).
@@ -149,21 +153,25 @@ check the tested OpenCode 2 SDK pair and rerun compatibility. Auth failures:
 reconnect deliberately; model 401/403 also requires checking account access.
 These errors give setup/reconnection guidance and never offer API-key fallback.
 
-## Experimental OIDC loopback proxy route
+## Loopback proxy uses the same existing Vibe login
 
 Prepare `uv sync --locked --python 3.12 --extra proxy`, then run
-`uv run --locked --offline -- python proxy.py`. This starts live browser/account activity
-when stored matching credentials are absent. Force browser re-login with
-`uv run --locked --offline -- python proxy.py --login`; select another loopback port with
+`uv run --locked --offline -- python proxy.py`. The default reads the existing
+normal Vibe credential through the shared Python session. Complete normal Vibe
+sign-in first; `--login` validates that credential without a browser. Select a loopback port with
 `--port`. The script form `uv run --script proxy.py` has separate PEP 723
 dependencies and may download them on first use. Copy **both** `mvibe_auth/` and
 `mvibe_proxy/` alongside `proxy.py`; include `LICENSE.vibe` when redistributing.
+Explicit `--auth-source oidc` retains the experimental ID-token login/refresh
+flow. See [the authentication writeup](vibe-authentication.md) for why the two
+browser paths differ and what the user confirmed about quota attribution.
 
 Diagnostic logging defaults to off for both consumers. Add `"diagnostics": true`
 to the direct plugin's `options` object for safe JSON `provider_request` events
 on stderr. Add `--log` to the proxy command for safe structlog `proxy_request`
 events on stdout. Status 422 hints point to tool schema and reasoning history
-serialization; 401 hints direct Vibe OIDC sign-in. Neither mode logs request or
+serialization; provider 401 guidance follows its configured authentication source.
+Neither mode logs request or
 response bodies, credentials, URLs or exception text, nor automatically retries
 inference. Plugin events end at response headers, so they do not establish SSE
 completion. See [diagnostic fields and limitations](tool-compatibility.md#diagnose-the-proxy-route)

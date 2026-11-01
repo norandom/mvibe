@@ -1,5 +1,10 @@
 # Portable releases
 
+The user has confirmed correct Vibe quota attribution for the locally installed
+OpenCode existing-login route. See [authentication and evidence](vibe-authentication.md).
+This does not replace native OS package checks or establish live proxy quota
+acceptance. The proxy now defaults to the same shared existing-login session.
+
 Release archives contain the version-matched universal Python wheel and bundled
 JavaScript provider/installer. The provider shares OpenCode's plugin SDK and
 Effect runtime, which remain external to its bundle. Install prerequisites explicitly: native

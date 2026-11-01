@@ -1,5 +1,17 @@
 # Live verification evidence
 
+## Existing Vibe authentication accepted, 2026-11-01
+
+The user confirmed that OpenCode after the existing-login integration at
+`6fd0853` works and consumes the expected Vibe quota. Normal Vibe and the corrected
+native capture launcher also consumed Vibe quota. The launcher preserves native
+auth by default; its earlier forced-OIDC mode was a different baseline.
+
+This is live acceptance for the tested account and requests. The proxy inherits
+the same shared session and defaults, but a separate live proxy quota check has
+not been reported. See [the technical writeup](vibe-authentication.md). The older
+failures below describe direct ID-token OIDC and remain historical evidence.
+
 ## Quota attribution report, 2026-11-01
 
 Latest user retest after installed commit `d3554be`, including server-derived

@@ -1,16 +1,28 @@
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import httpx2
 import pytest
 
 from mvibe_auth import AuthError, AuthSnapshot
 from mvibe_auth.existing_vibe import ExistingVibeSession
+from mvibe_auth import existing_vibe
 from mvibe_auth.account_plan import AccountPlanResolver
 
 
+@pytest.fixture(autouse=True)
+def guard_native_command(monkeypatch):
+    # Common session tests patch the reader. OS branch tests explicitly replace
+    # this guard; an omitted mock must never access the user's macOS Keychain.
+    def denied(*_args, **_kwargs):
+        pytest.fail('unexpected native credential command')
+    monkeypatch.setattr(existing_vibe, 'subprocess', SimpleNamespace(run=denied))
+
+
 @pytest.mark.anyio
-async def test_native_source_is_fresh_isolated_and_opaque(monkeypatch):
+@pytest.mark.parametrize('platform', ['win32', 'darwin'])
+async def test_native_source_is_fresh_isolated_and_opaque(monkeypatch, platform):
     calls = []
     values = iter(['opaque-one', 'opaque-two', None])
     def read(service, entry):
@@ -19,7 +31,18 @@ async def test_native_source_is_fresh_isolated_and_opaque(monkeypatch):
     monkeypatch.setenv('MISTRAL_API_KEY', 'environment-must-not-be-used')
     monkeypatch.setenv('VIBE_CLI_OIDC_ENABLED', 'false')
     monkeypatch.setenv('VIBE_CLI_OIDC_AUDIENCE', 'https://evil.invalid')
-    monkeypatch.setattr('keyring.get_password', read)
+    monkeypatch.setattr(existing_vibe, 'sys', SimpleNamespace(platform=platform))
+    if platform == 'darwin':
+        def command(argv, **kwargs):
+            assert argv == ['/usr/bin/security', 'find-generic-password', '-s',
+                            'ai.mistral.vibe', '-a', 'MISTRAL_API_KEY', '-w']
+            assert kwargs == dict(capture_output=True, text=True, timeout=60, check=False)
+            value = read('ai.mistral.vibe', 'MISTRAL_API_KEY')
+            return SimpleNamespace(returncode=44 if value is None else 0,
+                                   stdout='' if value is None else value + '\n')
+        monkeypatch.setattr(existing_vibe.subprocess, 'run', command)
+    else:
+        monkeypatch.setattr('keyring.get_password', read)
     session = ExistingVibeSession()
     first = await session.resolve('https://api.mistral.ai/v1/models')
     second = await session.resolve('https://api.mistral.ai/v1/models')
@@ -43,7 +66,7 @@ async def test_native_source_is_fresh_isolated_and_opaque(monkeypatch):
     'https://api.mistral.ai/v1/models#fragment', 'https://console.mistral.ai/api/vibe/whoami', 'https://api.mistral.ai/admin',
     'https://api.mistral.ai/v1/models/../admin', 'https://api.mistral.ai'])
 async def test_native_destinations_rejected_before_storage(url, monkeypatch):
-    monkeypatch.setattr('keyring.get_password', lambda *_: pytest.fail('storage read'))
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', lambda *_: pytest.fail('storage read'))
     session = ExistingVibeSession()
     with pytest.raises(AuthError):
         await session.resolve(url)
@@ -53,7 +76,7 @@ async def test_native_destinations_rejected_before_storage(url, monkeypatch):
 @pytest.mark.anyio
 async def test_errors_are_secret_safe_and_missing_never_logs_in(monkeypatch):
     session = ExistingVibeSession()
-    monkeypatch.setattr('keyring.get_password', lambda *_: None)
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', lambda *_: None)
     with pytest.raises(AuthError) as error:
         await session.resolve(session.config.audience + '/v1/models')
     assert error.value.failure.code == 'missing'
@@ -61,7 +84,7 @@ async def test_errors_are_secret_safe_and_missing_never_logs_in(monkeypatch):
         await session.start_login()
     def bad(*_):
         raise RuntimeError('opaque-super-secret')
-    monkeypatch.setattr('keyring.get_password', bad)
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', bad)
     with pytest.raises(AuthError) as error:
         await session.status()
     assert error.value.failure.code == 'transient'
@@ -71,7 +94,7 @@ async def test_errors_are_secret_safe_and_missing_never_logs_in(monkeypatch):
 
 @pytest.mark.anyio
 async def test_native_account_endpoint_and_kind_cache_isolation(monkeypatch):
-    monkeypatch.setattr('keyring.get_password', lambda *_: 'opaque')
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', lambda *_: 'opaque')
     session = ExistingVibeSession()
     native = await session.resolve(session.config.audience + '/v1/models')
     sent = []
@@ -97,7 +120,7 @@ async def test_cancel_and_close_drain_native_worker(monkeypatch):
         started.set()
         release.wait(3)
         return 'discarded-opaque'
-    monkeypatch.setattr('keyring.get_password', read)
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', read)
     session = ExistingVibeSession()
     request = asyncio.create_task(session.resolve(session.config.audience + '/v1/models'))
     await asyncio.to_thread(started.wait, 2)
@@ -117,18 +140,18 @@ async def test_cancel_and_close_drain_native_worker(monkeypatch):
 @pytest.mark.anyio
 async def test_login_existing_is_local_and_marker_safe(monkeypatch, capsys):
     from mvibe_auth import login_cli
-    monkeypatch.setattr('keyring.get_password', lambda *_: 'opaque')
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', lambda *_: 'opaque')
     monkeypatch.setattr('webbrowser.open', lambda *_: pytest.fail('browser opened'))
     await login_cli.login_existing()
 
 
 def test_login_existing_command_marker_and_missing(monkeypatch, capsys):
     from mvibe_auth import __main__, login_cli
-    monkeypatch.setattr('keyring.get_password', lambda *_: 'opaque')
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', lambda *_: 'opaque')
     monkeypatch.setattr('sys.argv', ['mvibe_auth', 'login-vibe'])
     assert __main__.main() == 0
     assert capsys.readouterr() == (login_cli.CONNECTION_MARKER, '')
-    monkeypatch.setattr('keyring.get_password', lambda *_: None)
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', lambda *_: None)
     assert __main__.main() == 1
     output = capsys.readouterr()
     assert not output.out
@@ -139,7 +162,7 @@ def test_macos_native_storage_is_single_read_only_command(monkeypatch):
     from types import SimpleNamespace
     from mvibe_auth import existing_vibe
     calls = []
-    monkeypatch.setattr(existing_vibe.sys, 'platform', 'darwin')
+    monkeypatch.setattr(existing_vibe, 'sys', SimpleNamespace(platform='darwin'))
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
         return SimpleNamespace(returncode=0, stdout='opaque\n')
@@ -159,7 +182,7 @@ def test_macos_native_storage_is_single_read_only_command(monkeypatch):
 async def test_macos_timeout_is_sanitized(monkeypatch):
     import subprocess
     from mvibe_auth import existing_vibe
-    monkeypatch.setattr(existing_vibe.sys, 'platform', 'darwin')
+    monkeypatch.setattr(existing_vibe, 'sys', SimpleNamespace(platform='darwin'))
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired('opaque-secret', 60, output='opaque-secret')
     monkeypatch.setattr(existing_vibe.subprocess, 'run', timeout)
@@ -175,7 +198,7 @@ async def test_macos_timeout_is_sanitized(monkeypatch):
 async def test_bridge_native_factory_retains_v1_and_safe_missing(monkeypatch):
     import json
     from mvibe_auth.bridge import serve
-    monkeypatch.setattr('keyring.get_password', lambda *_: 'opaque')
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', lambda *_: 'opaque')
     inbound, outbound = asyncio.Queue(), asyncio.Queue()
     async def read(_limit):
         return await inbound.get()
@@ -191,7 +214,7 @@ async def test_bridge_native_factory_retains_v1_and_safe_missing(monkeypatch):
         assert response['result']['headers']['Authorization'] == 'Bearer opaque'
         assert 'kind' not in response['result']
         assert 'opaque' not in response['result']['revision']
-        monkeypatch.setattr('keyring.get_password', lambda *_: None)
+        monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', lambda *_: None)
         response = await request('resolve', target_url='https://api.mistral.ai/v1/models')
         assert response['error']['code'] == 'missing'
         assert 'normal Vibe' in response['error']['message']
@@ -204,7 +227,7 @@ async def test_bridge_native_factory_retains_v1_and_safe_missing(monkeypatch):
 @pytest.mark.anyio
 async def test_proxy_explicit_native_source_never_starts_browser(monkeypatch):
     import proxy
-    monkeypatch.setattr('keyring.get_password', lambda *_: 'opaque')
+    monkeypatch.setattr('mvibe_auth.existing_vibe._read_native_credential', lambda *_: 'opaque')
     monkeypatch.setattr('webbrowser.open', lambda *_: pytest.fail('browser opened'))
     session = ExistingVibeSession()
     await proxy.login(session, force=True)

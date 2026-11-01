@@ -62,12 +62,12 @@ async def test_reused_current_login_is_successful_without_claiming_browser_ident
 
 
 @pytest.mark.parametrize('enabled', [None, '0', 'false', '1'])
-def test_proxy_default_opt_in_respects_explicit_disablement(monkeypatch, enabled):
+def test_proxy_explicit_oidc_opt_in_respects_explicit_disablement(monkeypatch, enabled):
     if enabled is not None:
         monkeypatch.setenv('VIBE_CLI_OIDC_ENABLED', enabled)
     captured = []
     monkeypatch.setattr(proxy, 'AuthSession', captured.append)
-    proxy._default_auth_factory()
+    proxy._oidc_auth_factory()
     assert captured[0].enabled == (enabled in (None, '1'))
     assert __import__('os').environ.get('VIBE_CLI_OIDC_ENABLED') == enabled
 

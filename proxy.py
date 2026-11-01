@@ -26,16 +26,18 @@ from urllib.parse import urlencode
 from mvibe_proxy.streaming import ProxyStreamOwner
 from mvibe_proxy.diagnostics import ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
+from mvibe_auth.existing_vibe import ExistingVibeSession
 from mvibe_auth.http import VibeAsyncHTTPClient
 import uvicorn
 
 _API_DESCRIPTION = (
-    'Local Vibe OIDC proxy supporting models, chat/completions and embeddings. '
+    'Local Vibe proxy supporting models, chat/completions and embeddings. '
     'Raw request payloads are forwarded without local OpenAI body validation. '
     'The agent executes tools and sends correlated tool results in subsequent messages; '
     'the proxy is neither a tool executor nor an MCP server. The direct OpenCode plugin '
     'bypasses this proxy. Responses and other OpenAI APIs are unsupported. '
-    'Caller API keys are not required or used: the local proxy owns Vibe OIDC authentication. '
+    'Caller API keys are not required or used: the proxy reads existing native Vibe credentials by default. '
+    'Experimental OIDC authentication requires explicit selection. '
     'Responses include a generated X-Request-ID for local diagnostic correlation.'
 )
 _OBJECT = {'type': 'object', 'additionalProperties': True}
@@ -56,7 +58,7 @@ def _operation(kind: str) -> dict:
     result = {'responses': {
         '200': {'description': 'Upstream response forwarded without replay.', 'content': {
             'application/json': {'schema': _OBJECT}}},
-        '401': {'description': 'Local OIDC failure: Vibe authentication failed; run proxy.py --login. Upstream 401 is forwarded.',
+        '401': {'description': 'Local authentication failure: sign in through normal Vibe for the default source; for explicit OIDC run proxy.py --auth-source oidc --login. Upstream 401 is forwarded.',
                 'content': {'application/json': {'schema': _ERROR}}},
         '502': {'description': 'Local acquisition failure: Upstream connection failed. Upstream 502 is forwarded.',
                 'content': {'application/json': {'schema': _ERROR}}},
@@ -92,17 +94,20 @@ def _operation(kind: str) -> dict:
         'content': {'application/json': {'schema': {**_OBJECT, 'properties': properties}}}}
     return result
 
-def _default_auth_factory() -> AuthSession:
-    # Choosing the OIDC-only proxy opts in, while explicit disablement wins.
+def _default_auth_factory() -> ExistingVibeSession:
+    return ExistingVibeSession()
+
+
+def _oidc_auth_factory() -> AuthSession:
+    # Explicit OIDC selection opts in, while explicit disablement wins.
     config = AuthConfig.from_env()
     if 'VIBE_CLI_OIDC_ENABLED' not in os.environ:
         config = replace(config, enabled=True)
     return AuthSession(config)
 
 
-async def login(session: AuthSession, *, force: bool = False) -> None:
-    """The caller presents URLs; the shared library owns the login lifecycle."""
-    from mvibe_auth.existing_vibe import ExistingVibeSession
+async def login(session: AuthSession | ExistingVibeSession, *, force: bool = False) -> None:
+    """Validate native credentials, or present URLs for explicit OIDC login."""
     if isinstance(session, ExistingVibeSession):
         await session.resolve(session.config.audience.rstrip('/') + '/v1/models')
         return
@@ -116,7 +121,7 @@ async def login(session: AuthSession, *, force: bool = False) -> None:
 
 
 def create_app(
-    auth_factory: Callable[[], AuthSession] = _default_auth_factory,
+    auth_factory: Callable[[], AuthSession | ExistingVibeSession] = _default_auth_factory,
     client_factory: Callable[..., VibeAsyncHTTPClient] = VibeAsyncHTTPClient,
     *, force_login: bool = False,
     account_plan_factory: Callable[[AuthConfig], AccountPlanResolver] = AccountPlanResolver,
@@ -219,19 +224,18 @@ def _port(value: str) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description='Local OpenAI-compatible proxy using Vibe OIDC')
-    parser.add_argument('--auth-source', choices=['oidc', 'existing-vibe'], default='oidc', help='Select experimental OIDC or existing native Vibe credentials')
+    parser = argparse.ArgumentParser(description='Local OpenAI-compatible proxy using existing Vibe authentication by default')
+    parser.add_argument('--auth-source', choices=['oidc', 'existing-vibe'], default='existing-vibe', help='Read existing native Vibe credentials (default), or explicitly select experimental OIDC')
     parser.add_argument('--port', type=_port, default=8765)
-    parser.add_argument('--login', action='store_true', help='Sign in again before serving')
+    parser.add_argument('--login', action='store_true', help='Validate existing native Vibe credentials before serving; with --auth-source oidc, sign in again')
     parser.add_argument('--log', action='store_true', help='Emit safe structured request diagnostics to stdout (default: off)')
     args = parser.parse_args(argv)
     if args.log:
         configure_stdout()
     else:
         disable_stdout()
-    if args.auth_source == 'existing-vibe':
-        from mvibe_auth.existing_vibe import ExistingVibeSession
-        selected_app = create_app(auth_factory=ExistingVibeSession, force_login=args.login)
+    if args.auth_source == 'oidc':
+        selected_app = create_app(auth_factory=_oidc_auth_factory, force_login=args.login)
     else:
         selected_app = create_app(force_login=args.login)
     uvicorn.run(selected_app, host='127.0.0.1', port=args.port, access_log=False)
