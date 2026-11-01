@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import { readFileSync, writeFileSync } from "node:fs";
 import { setupVibe } from "../../src/index.js";
 import { fixtureHash, DEFAULT_CASE_MANIFEST } from "./cases.js";
-import { createWorkspaceQueries, createWorkspaceMutations, inspectOwnedWorkspace, inspectMutationTransition, type WorkspaceQuery, type WorkspaceMutation } from "./fixtures/workspace.js";
+import { createWorkspaceQueries, createWorkspaceMutations, createWorkspaceCommands, inspectOwnedWorkspace, inspectMutationTransition, type WorkspaceQuery, type WorkspaceMutation, type WorkspaceCommand } from "./fixtures/workspace.js";
 import { createSyntheticInference } from "./synthetic-inference.js";
 import { createRoundTripRecorder, hashOwnedFixture, tapOwnedResponse } from "./observe.js";
 import type { CallCorrelation, ToolIdentity, TraceEvent } from "./contracts.js";
@@ -12,10 +12,12 @@ import type { CallCorrelation, ToolIdentity, TraceEvent } from "./contracts.js";
 export default Plugin.define({id:"tool-workspace",async setup(ctx){
   const original=globalThis.fetch, registrations:{dispose():Promise<void>}[]=[];
   const mutation=ctx.options.mutation===true, mutations=mutation?createWorkspaceMutations(ctx.location.directory):undefined;
-  const fixture=mutation?{directory:mutations!.directory,queries:[...mutations!.mutations,mutations!.invalid]}:createWorkspaceQueries(ctx.location.directory);
+  const command=ctx.options.command===true,commands=command?createWorkspaceCommands(ctx.location.directory,String(ctx.options.bun),String(ctx.options.commandNonce),true):undefined;
+  const fixture=command?{directory:commands!.directory,queries:commands!.commands}:mutation?{directory:mutations!.directory,queries:[...mutations!.mutations,mutations!.invalid]}:createWorkspaceQueries(ctx.location.directory);
   const profiles=mutation?[...mutations!.mutations,mutations!.invalid].map(q=>({caseId:q.spec.id,model:q.model,disabledToolIds:q.name==="patch"?["write","edit"]:["patch"]})):undefined;
-  const scopeHash=fixtureHash({fixture:mutation?"workspace-mutation":"workspace-query",profiles:profiles??null,permission:JSON.parse(readFileSync(ctx.location.directory+"/opencode.json","utf8")).permission});
-  type Case={q:WorkspaceQuery|WorkspaceMutation;sessionId:string;requests:number;final:boolean;inputObserved:boolean;state?:string;result?:string;tool?:ToolIdentity;call?:CallCorrelation;driver?:ReturnType<typeof createSyntheticInference>;recorder:ReturnType<typeof createRoundTripRecorder>};
+  const scopeHash=fixtureHash({fixture:command?"workspace-command":mutation?"workspace-mutation":"workspace-query",profiles:profiles??null,permission:JSON.parse(readFileSync(ctx.location.directory+"/opencode.json","utf8")).permission});
+  const runId=command?"workspace-commands":mutation?"workspace-mutations":"workspace-queries";
+  type Case={q:WorkspaceQuery|WorkspaceMutation|WorkspaceCommand;sessionId:string;requests:number;final:boolean;inputObserved:boolean;idle?:boolean;native?:unknown;state?:string;result?:string;tool?:ToolIdentity;call?:CallCorrelation;driver?:ReturnType<typeof createSyntheticInference>;recorder:ReturnType<typeof createRoundTripRecorder>};
   const cases=new Map<string,Case>();
   const inventory:{id:string;name:string;schemaHash:string}[]=[], offered:{caseId:string;definitions:{name:string;schemaHash:string}[]}[]=[], permissions:{caseId:string;action:string;effect:string;resourceHash:string}[]=[];
   let sequence=0,repositoryState:Readonly<Record<string,string>>|undefined;
@@ -25,12 +27,12 @@ export default Plugin.define({id:"tool-workspace",async setup(ctx){
   const callId=(c:Case)=>"workspace-"+c.q.spec.id;
   const trace=(c:Case,kind:TraceEvent["kind"],next=false)=>{
     if(!c.tool)throw new Error("HOST_DEFINITION");
-    c.recorder.record({sequence:++sequence,runId:mutation?"workspace-mutations":"workspace-queries",caseId:c.q.spec.id,scopeHash,sessionId:c.sessionId,chainId:"chain-"+c.q.spec.id,requestId:next?"request-2":"request-1",requestKind:"primary",kind,
+    c.recorder.record({sequence:++sequence,runId,caseId:c.q.spec.id,scopeHash,sessionId:c.sessionId,chainId:"chain-"+c.q.spec.id,requestId:next?"request-2":"request-1",requestKind:"primary",kind,
       payloadHash:fixtureHash({kind,input:c.q.spec.expectedCalls[0]!.inputHash}),
       ...(kind!=="final_response"?{toolId:c.tool.registryId,toolSchemaHash:c.tool.schemaHash,originHash:c.tool.originHash}:{}),
-      ...(["model_call","executor_started","executor_completed","error","next_model_request"].includes(kind)?{call:c.call}:{}),
+      ...(["model_call","executor_started","executor_completed","denied","error","next_model_request"].includes(kind)?{call:c.call}:{}),
       ...(["model_call","next_model_request"].includes(kind)?{wireCallId:callId(c)}:{}),
-      ...(["executor_completed","error","next_model_request"].includes(kind)?{observationHash:c.result}:{}),
+      ...(["executor_completed","denied","error","next_model_request"].includes(kind)?{observationHash:c.result}:{}),
       ...(kind==="state_observed"?{observationHash:c.state}:{})});
   };
   registrations.push(await ctx.session.hook("context",e=>{
@@ -48,7 +50,7 @@ export default Plugin.define({id:"tool-workspace",async setup(ctx){
     const c=cases.get(e.sessionID);
     if(!c||!c.inputObserved||e.tool!==c.q.name||e.id!==callId(c)||hashOwnedFixture(e.input,c.q.input)!==c.q.spec.expectedCalls[0]!.inputHash)throw new Error("HOST_TOOL_DENIED");
     c.call={hostMessageId:e.messageID,hostCallId:e.id,upstreamCallId:callId(c),inputHash:c.q.spec.expectedCalls[0]!.inputHash,link:"host_exposed"};
-    trace(c,"model_call");if(c.q.spec.positiveRequired)trace(c,"executor_started");
+    trace(c,"model_call");if(c.q.spec.executorExpectation==="must_complete")trace(c,"executor_started");
   }));
   registrations.push(await ctx.permission.hook("evaluate",e=>{
     const c=cases.get(e.sessionID);if(!c||e.action!==(mutation?"edit":c.q.name)||e.effect!=="allow"||permissions.length>=8)throw new Error("HOST_PERMISSION");
@@ -57,13 +59,24 @@ export default Plugin.define({id:"tool-workspace",async setup(ctx){
     hashOwnedFixture(e.resources,resources);permissions.push({caseId:c.q.spec.id,action:safe(e.action),effect:e.effect,resourceHash:fixtureHash(resources)});
   }));
   registrations.push(await ctx.tool.hook("execute.after",e=>{
-    const c=cases.get(e.sessionID);if(!c||e.tool!==c.q.name||e.id!==c.call?.hostCallId||e.status!==(c.q.spec.positiveRequired?"completed":"error"))throw new Error("HOST_RESULT");
+    const c=cases.get(e.sessionID);if(!c||e.tool!==c.q.name||e.id!==c.call?.hostCallId||e.status!==(c.q.spec.executorExpectation==="must_complete"?"completed":"error"))throw new Error("HOST_RESULT");
     if(e.status==="error"){if(!("errorMessage" in c.q)||!c.q.errorMessage)throw new Error("HOST_RESULT");hashOwnedFixture(e.error.message,c.q.errorMessage);}
-    const content=e.status==="error"?c.q.expected:Array.isArray(e.result.content)&&e.result.content.length===1&&e.result.content[0]?.type==="text"?e.result.content[0].text:e.result.content;
-    c.result=hashOwnedFixture(content,c.q.expected);trace(c,c.q.spec.positiveRequired?"executor_completed":"error");
+    if(command&&"kind" in c.q&&c.q.kind==="denied"&&e.status==="error"){
+      const cause=e.error.error as {_tag?:unknown;permission?:unknown;resources?:unknown};
+      if(cause?._tag!=="Permission.BlockedError"||cause.permission!=="shell")throw new Error("HOST_DENIAL");hashOwnedFixture(cause.resources,c.q.permissionResources);
+    }
+    if(command&&e.status==="completed"&&"exit" in c.q){
+      const output={output:c.q.stdout+c.q.stderr,truncated:false,exit:c.q.exit,status:"completed"};
+      hashOwnedFixture(e.result.output,output);hashOwnedFixture(e.result.metadata,{status:"completed",truncated:false,exit:c.q.exit});c.native=e.result.output;
+    }
+    const content=e.status==="error"?c.q.expected:command&&Array.isArray(e.result.content)&&e.result.content.length!==1?JSON.stringify(e.result.content):Array.isArray(e.result.content)&&e.result.content.length===1&&e.result.content[0]?.type==="text"?e.result.content[0].text:e.result.content;
+    c.result=hashOwnedFixture(content,c.q.expected);trace(c,c.q.spec.executorExpectation==="must_complete"?"executor_completed":c.q.spec.expectedOutcome==="denied"?"denied":"error");
+    if(command&&c.q.spec.expectedOutcome==="error"&&c.q.spec.executorExpectation==="must_complete")trace(c,"error");
     if("expectedDiff" in c.q){if(!repositoryState)throw new Error("HOST_STATE");repositoryState=inspectMutationTransition(ctx.location.directory,repositoryState,c.q);}
+    if(command&&fixtureHash(inspectOwnedWorkspace(ctx.location.directory))!==fixtureHash(repositoryState))throw new Error("HOST_STATE");
     c.state="inspect" in c.q?c.q.inspect():(fixture as ReturnType<typeof createWorkspaceQueries>).inspect();if(c.state!==c.q.spec.expectedObservationHash)throw new Error("HOST_STATE");trace(c,"state_observed");
   }));
+  if(command)registrations.push(await ctx.session.hook("experimental.idle",e=>{const c=cases.get(e.sessionID);if(!c||e.background.length)throw new Error("HOST_PROCESS");c.idle=true;}));
   // Install before production setup because the pinned custom SDK captures fetch.
   globalThis.fetch=Object.assign(async(input:RequestInfo|URL,init?:RequestInit)=>{
     const request=new Request(input,init),url=new URL(request.url);
@@ -99,11 +112,11 @@ export default Plugin.define({id:"tool-workspace",async setup(ctx){
         if(inventory.length>=256)throw new Error("HOST_CAPTURE");
         inventory.push({id:safe(t.id),name:safe(t.name),schemaHash:fixtureHash({description:t.description,inputSchema:Schema.isSchema(t.input)?Schema.toJsonSchemaDocument(t.input).schema:t.input})});
       }
-      if(mutation)repositoryState=inspectOwnedWorkspace(ctx.location.directory);
+      if(mutation||command)repositoryState=inspectOwnedWorkspace(ctx.location.directory);
       for(const q of fixture.queries){
         stage=q.name;
         const session=await ctx.session.create({title:"owned workspace "+q.name,model:{providerID:"vibe-oidc",id:"model" in q?q.model:"synthetic-model"}});
-        const c:Case={q,sessionId:session.id,requests:0,final:false,inputObserved:false,recorder:createRoundTripRecorder({runId:mutation?"workspace-mutations":"workspace-queries",cases:[q.spec],limits:DEFAULT_CASE_MANIFEST().limits,cancelOwnedTurn:()=>{void ctx.session.interrupt({sessionID:session.id});}})};cases.set(session.id,c);
+        const c:Case={q,sessionId:session.id,requests:0,final:false,inputObserved:false,recorder:createRoundTripRecorder({runId,cases:[q.spec],limits:DEFAULT_CASE_MANIFEST().limits,cancelOwnedTurn:()=>{void ctx.session.interrupt({sessionID:session.id});}})};cases.set(session.id,c);
         const abort=new AbortController();
         const observation=(async()=>{for await(const e of ctx.event.subscribe({signal:abort.signal})){
           if(e.type==="session.tool.input.ended"&&e.data.sessionID===session.id){if(e.data.id!==callId(c)||e.data.text.length>2048)throw new Error("HOST_CORRELATION");hashOwnedFixture(JSON.parse(e.data.text),q.input);c.inputObserved=true;}
@@ -112,13 +125,15 @@ export default Plugin.define({id:"tool-workspace",async setup(ctx){
         }})();
         try{await ctx.session.prompt({sessionID:session.id,text:"owned-"+q.spec.id});await wait(()=>c.final,q.spec.timeoutMs);await observation;}finally{abort.abort();await observation.catch(()=>{});await ctx.session.interrupt({sessionID:session.id});}
         if("inspect" in q)q.inspect();else (fixture as ReturnType<typeof createWorkspaceQueries>).inspect();const proof=c.recorder.finish(q.spec.id);if(c.q.spec.positiveRequired&&"status" in proof)throw new Error("HOST_CORRELATION");
-        if(permissions.filter(p=>p.caseId===q.spec.id).length!==(q.spec.positiveRequired?1:0))throw new Error("HOST_PERMISSION");
+        if(command)await wait(()=>c.idle===true);
+        if(permissions.filter(p=>p.caseId===q.spec.id).length!==(q.spec.executorExpectation==="must_complete"?1:0))throw new Error("HOST_PERMISSION");
       }
       stage="complete";ready=true;
     }catch(e){failureCode=e instanceof Error&&/^HOST_[A-Z_]+$/.test(e.message)?e.message:"HOST_FAILURE";}
     const bindings=mutation?[...cases.values()].map(c=>({caseId:c.q.spec.id,model:"model" in c.q?c.q.model:"synthetic-model",runId:"workspace-mutations",sessionId:c.sessionId,chainId:"chain-"+c.q.spec.id,toolId:c.q.name,toolSchemaHash:c.tool?.schemaHash??null,originHash:c.tool?.originHash??null,call:c.call??null,inputHash:c.q.spec.expectedCalls[0]!.inputHash,resultHash:fixtureHash(c.q.expected),stateHash:c.q.spec.expectedObservationHash})):undefined;
     const records=[...cases.values()].map(c=>({caseId:c.q.spec.id,expectedInputHash:c.q.spec.expectedCalls[0]!.inputHash,expectedResultHash:fixtureHash(c.q.expected),actualResultHash:c.result??null,expectedStateHash:c.q.spec.expectedObservationHash,actualStateHash:c.state??null,requests:c.requests,events:c.recorder.events(),proof:c.recorder.finish(c.q.spec.id)}));
-    writeFileSync(String(ctx.options.readiness),JSON.stringify({ready,stage,failureCode,scopeHash,inventory,offered,permissions,records:mutation?records.filter(r=>r.caseId!=="filesystem.invalid-input"):records,...(mutation?{profiles,bindings,negative:records.find(r=>r.caseId==="filesystem.invalid-input")??null}:{}),live:"unverified",allToolCompatibility:"unverified"}));
+    const commandBindings=command?[...cases.values()].map(c=>({caseId:c.q.spec.id,model:"synthetic-model",runId,sessionId:c.sessionId,chainId:"chain-"+c.q.spec.id,toolId:c.q.name,toolSchemaHash:c.tool?.schemaHash??null,originHash:c.tool?.originHash??null,call:c.call??null,inputHash:c.q.spec.expectedCalls[0]!.inputHash,resultHash:fixtureHash(c.q.expected),stateHash:c.q.spec.expectedObservationHash,nativeHash:c.native?fixtureHash(c.native):null,expectedNativeHash:"exit" in c.q&&(c.q.kind==="success"||c.q.kind==="nonzero")?fixtureHash({output:c.q.stdout+c.q.stderr,truncated:false,exit:c.q.exit,status:"completed"}):null,idle:c.idle===true})):undefined;
+    writeFileSync(String(ctx.options.readiness),JSON.stringify({ready,stage,failureCode,scopeHash,inventory,offered,permissions,records:mutation?records.filter(r=>r.caseId!=="filesystem.invalid-input"):records,...(mutation?{profiles,bindings,negative:records.find(r=>r.caseId==="filesystem.invalid-input")??null}:{}),...(command?{commandBindings}:{}),live:"unverified",allToolCompatibility:"unverified"}));
   })();},50);
   return async()=>{for(const r of registrations.reverse())await r.dispose();await cleanup();globalThis.fetch=original;};
 }});

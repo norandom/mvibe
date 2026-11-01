@@ -14,8 +14,8 @@ baseline below; do not resume the superseded queue. Historical completed work is
   - _Boundary: Python test infrastructure_
   - _Requirements: 3.1, 3.2_
 
-- [ ] 2. Complete the native-tools baseline
-- [ ] 2.1 Finish commands and retain the verified file workflows
+- [x] 2. Complete the native-tools baseline
+- [x] 2.1 Finish commands and retain the verified file workflows
   - Reuse read/glob/grep, write/edit and scoped patch evidence without rebuilding the harness.
   - Apply the confirmed Windows environment/exit-code fixture fix; verify real shell output, nonzero outcome, denied/invalid cases and bounded cleanup.
   - Complete when native query, mutation and command probes pass with actual result continuations and independent state checks; untested profiles remain explicit.

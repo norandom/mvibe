@@ -9,6 +9,8 @@ import { WINDOWS_JOB_SOURCE } from "../../src/windows-job.js";
 import { requireReferenceHostVersion, checkPreparedDependencies } from "./preparation.js";
 import { parseWorkspaceQueryProbe, parseWorkspaceMutationProbe } from "./workspace-query-report.js";
 import { parseCapabilityReport } from "./capability.js";
+import { createWorkspaceCommands } from "./fixtures/workspace.js";
+import { parseWorkspaceCommandProbe } from "./workspace-command-report.js";
 
 export function requireOwnedPath(root: string, target: string): string {
   const part = relative(root, target);
@@ -19,7 +21,7 @@ export function requireLocation(expected: string, actual: string): void {
   if (resolve(expected) !== resolve(actual)) throw new Error("HOST_LOCATION");
 }
 export function offlineEnvironment(root: string, inherited: NodeJS.ProcessEnv): Record<string, string> {
-  return { PATH: inherited.PATH ?? "", SystemRoot: inherited.SystemRoot ?? "C:\\Windows", HOME: root, USERPROFILE: root,
+  return { PATH: inherited.PATH ?? "", PATHEXT: ".EXE", SystemRoot: inherited.SystemRoot ?? "C:\\Windows", HOME: root, USERPROFILE: root,
     APPDATA: join(root, "roaming"), LOCALAPPDATA: join(root, "local"), TEMP: join(root, "tmp"), TMP: join(root, "tmp"), TMPDIR: join(root, "tmp"),
     XDG_DATA_HOME: join(root, "data"), XDG_CONFIG_HOME: join(root, "config"), XDG_CACHE_HOME: join(root, "cache"), XDG_STATE_HOME: join(root, "state"),
     OPENCODE_TEST_HOME: root, OPENCODE_DISABLE_AUTOUPDATE: "true", OPENCODE_DISABLE_MODELS_FETCH: "true" };
@@ -64,11 +66,11 @@ function verifyRemoval(root: string): void {
   };
   inspect(root);
 }
-export type OfflineHostOptions = { host: string; bun: string; python: string; startupMs: number; executionMs: number; cleanupMs: number; capabilityProbe?: boolean; workspaceProbe?: boolean; workspaceMutationProbe?:boolean };
+export type OfflineHostOptions = { host: string; bun: string; python: string; startupMs: number; executionMs: number; cleanupMs: number; capabilityProbe?: boolean; workspaceProbe?: boolean; workspaceMutationProbe?:boolean; workspaceCommandProbe?:boolean };
 /** Default readiness has no tool claims; the explicit capability probe adds its
  * bounded native observations, without granting all-tool compatibility. */
 export async function smokeOfflineHost(options: OfflineHostOptions, signal?: AbortSignal) {
-  if ([options.capabilityProbe, options.workspaceProbe,options.workspaceMutationProbe].filter(Boolean).length>1) throw new Error("HOST_PREFLIGHT");
+  if ([options.capabilityProbe, options.workspaceProbe,options.workspaceMutationProbe,options.workspaceCommandProbe].filter(Boolean).length>1) throw new Error("HOST_PREFLIGHT");
   if (signal?.aborted) throw new Error("HOST_CANCELLED");
   for (const ms of [options.startupMs, options.executionMs, options.cleanupMs]) requireBudget(ms);
   for (const binary of [options.host, options.bun, options.python]) if (!isAbsolute(binary) || !lstatSync(binary).isFile()) throw new Error("HOST_RUNTIME");
@@ -113,9 +115,10 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
     validateDebugPaths(root, paths);
     for (const value of Object.values(paths as Record<string, string>)) if (resolve(value) !== root) verifyTree(root, value);
     const readiness = join(root, "ready.json");
-    const plugin = resolve(import.meta.dir, (options.workspaceProbe||options.workspaceMutationProbe) ? "workspace-host-plugin.ts" : options.capabilityProbe ? "host-plugin.ts" : "readiness-plugin.ts").replaceAll("\\", "/");
+    const commandFixture=options.workspaceCommandProbe?createWorkspaceCommands(cwd,options.bun):undefined;
+    const plugin = resolve(import.meta.dir, (options.workspaceProbe||options.workspaceMutationProbe||options.workspaceCommandProbe) ? "workspace-host-plugin.ts" : options.capabilityProbe ? "host-plugin.ts" : "readiness-plugin.ts").replaceAll("\\", "/");
     writeFileSync(join(root, "plugins/readiness/index.ts"), `export { default } from ${JSON.stringify(plugin)};`);
-    writeFileSync(join(cwd, "opencode.json"), JSON.stringify({ permission: options.workspaceMutationProbe?{"*":"deny",edit:{"*":"deny","mutations-*/write/created.txt":"allow","mutations-*/edit/edited.txt":"allow","mutations-*/patch/first.txt":"allow","mutations-*/patch/second.txt":"allow"}}:options.workspaceProbe ? {"*":"deny",read:{"*":"deny","queries-*/*.match.txt":"allow"},glob:{"*":"deny","**/*.match.txt":"allow"},grep:{"*":"deny","needle_*":"allow"}} : options.capabilityProbe ? { "*":"deny", read: { "*":"deny", "capability-allowed.txt":"allow" } } : { "*": "deny" }, plugins: [{ package: "../plugins/readiness", options: { readiness,...(options.workspaceMutationProbe?{mutation:true}:{}), helperCommand: { executable: options.python, args: ["-m", "mvibe_auth", "bridge"] }, audience: "https://inference.example.test" } }] }));
+    writeFileSync(join(cwd, "opencode.json"), JSON.stringify({ permission: commandFixture?{"*":"deny",shell:commandFixture.permissions}:options.workspaceMutationProbe?{"*":"deny",edit:{"*":"deny","mutations-*/write/created.txt":"allow","mutations-*/edit/edited.txt":"allow","mutations-*/patch/first.txt":"allow","mutations-*/patch/second.txt":"allow"}}:options.workspaceProbe ? {"*":"deny",read:{"*":"deny","queries-*/*.match.txt":"allow"},glob:{"*":"deny","**/*.match.txt":"allow"},grep:{"*":"deny","needle_*":"allow"}} : options.capabilityProbe ? { "*":"deny", read: { "*":"deny", "capability-allowed.txt":"allow" } } : { "*": "deny" }, plugins: [{ package: "../plugins/readiness", options: { readiness,...(commandFixture?{command:true,bun:options.bun,commandNonce:commandFixture.nonce}:{}),...(options.workspaceMutationProbe?{mutation:true}:{}), helperCommand: { executable: options.python, args: ["-m", "mvibe_auth", "bridge"] }, audience: "https://inference.example.test" } }] }));
     const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 403 }) });
     const port = reservation.port!; await reservation.stop(true);
     const args = [options.host, "serve", "--hostname", "127.0.0.1", "--port", String(port)];
@@ -140,9 +143,9 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
     }
     if(lstatSync(readiness).size>65536)throw new Error("HOST_CAPTURE");
     const ready: unknown = JSON.parse(readFileSync(readiness, "utf8"));
-    if (!options.capabilityProbe && !options.workspaceProbe && !options.workspaceMutationProbe && JSON.stringify(ready) !== '{"ready":true}') throw new Error("HOST_MODEL");
+    if (!options.capabilityProbe && !options.workspaceProbe && !options.workspaceMutationProbe && !options.workspaceCommandProbe && JSON.stringify(ready) !== '{"ready":true}') throw new Error("HOST_MODEL");
     const capability = options.capabilityProbe ? parseCapabilityReport(ready) : undefined;
-    return { hostVersion, bunVersion: "1.4.4", pythonVersion, hashes, model: options.workspaceMutationProbe?"fixture-owned-per-case-profiles":"vibe-oidc/synthetic-model", ready: capability ? capability.ready === true : true, live: "unverified", ...(capability ? { capability } : {}), ...(options.workspaceMutationProbe?{workspace:parseWorkspaceMutationProbe(ready),ready:(ready as {ready?:boolean}).ready===true}:{}), ...(options.workspaceProbe ? {workspace:parseWorkspaceQueryProbe(ready),ready:(ready as {ready?:boolean}).ready===true} : {}) };
+    return { hostVersion, bunVersion: "1.4.4", pythonVersion, hashes, model: options.workspaceMutationProbe?"fixture-owned-per-case-profiles":"vibe-oidc/synthetic-model", ready: capability ? capability.ready === true : true, live: "unverified", ...(capability ? { capability } : {}), ...(options.workspaceCommandProbe?{workspace:parseWorkspaceCommandProbe(ready),ready:(ready as {ready?:boolean}).ready===true}:{}), ...(options.workspaceMutationProbe?{workspace:parseWorkspaceMutationProbe(ready),ready:(ready as {ready?:boolean}).ready===true}:{}), ...(options.workspaceProbe ? {workspace:parseWorkspaceQueryProbe(ready),ready:(ready as {ready?:boolean}).ready===true} : {}) };
   } finally {
     const cleanupDeadline = Date.now() + options.cleanupMs;
     clearTimeout(timer); abort.abort(); signal?.removeEventListener("abort", cancel);

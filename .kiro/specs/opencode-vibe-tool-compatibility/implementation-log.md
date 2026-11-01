@@ -180,3 +180,18 @@ revision-review.md for commands/results and evidence paths. No live tests ran.
 Remaining work is three deliverables: native command completion, one MCP tool
 workflow, and verification/operator integration. Revised phase approvals are
 pending; do not resume the superseded queue. Existing code/tests are retained.
+
+## Revision 2 task 2.1: native baseline complete
+
+- Implementer READY_FOR_REVIEW; independent reviewer APPROVED.
+- RED: missing PATHEXT, missing explicit PowerShell exit propagation, then crossed
+  native-hash evidence regression. Fixed fixture configuration and expected
+  pinned multi-text JSON serialization; no executor/provider rewrite.
+- Fresh independent verification: 960 Bun tests passed, typecheck/build exit 0;
+  command/query/mutation native probes ready with verified cleanup on 2.2.5.
+- Command cases: stdout/stderr, exits 0/7, denial and malformed input, exact next
+  model requests, independent unchanged state. Only success earns positive proof.
+- 147 built-in and 66 independent native-artifact corruptions rejected.
+- Completion gate VERIFIED for prepared Windows synthetic offline baseline;
+  live, other versions/platforms and all-tool support remain unverified.
+- Artifact: packages/opencode-vibe-oidc/.host/workspace-command-proof.json.
