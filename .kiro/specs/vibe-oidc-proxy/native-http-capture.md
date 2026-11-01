@@ -22,3 +22,28 @@ PowerShell wrapper passed actual installed Rust CLI `--help`. Windows directory
 and file ACL inspection showed current user, SYSTEM, Administrators and OWNER
 RIGHTS, without general-user access. Documentation reflects those permissions.
 No live native inference or quota result is claimed.
+
+## Login diagnostic amendment
+
+- [x] Preserve capture across native app-server restarts with exclusive private
+  per-process child directories. Record safe exception class chains and a
+  certificate-verification-failure boolean for failed auth-host HTTP requests,
+  without login payloads, URLs, exception text, claims or credentials. Include
+  only the exception type in capture initialization warnings. Preserve original
+  exceptions and transport behavior; do not weaken TLS or change persistent auth.
+
+The user reports login failure, possibly SSL. Public discovery GETs from the
+installed native runtime returned 200 with both certificate stores. Existing
+native logs show capture initialization failure, but no specific login failure.
+No SSL root cause is established yet.
+
+The user supplied the generic issuer/registration/keyring error. Include safe
+exception-type diagnostics for failed native `keyring.set_password` calls,
+without examining or recording arguments or changing storage behavior. Previous
+Windows CredWrite failure is recorded in implementation-log.md; it is a relevant
+hypothesis, not proof of this failure.
+
+Amendment verification: independent review APPROVED; 16 focused offline tests
+and Ruff passed. Installed uv Python synthetic capture smoke and PowerShell
+native `--version` passed. No inference or keyring writes performed. The user
+must retry native sign-in to produce failure evidence; login is not claimed fixed.

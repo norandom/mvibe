@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import os
 import sys
+import ssl
 from types import ModuleType
 from unittest.mock import patch
 
@@ -212,3 +213,132 @@ def test_capture_file_is_exclusive_with_private_mode(tmp_path):
     flags, mode = calls[0]
     assert flags & os.O_EXCL and flags & os.O_CREAT
     assert mode == 0o600
+
+
+def test_app_server_restart_uses_new_private_child_directory(tmp_path):
+    trace = load_trace()
+    server = ModuleType("vibe.app_server.stdio")
+    server.main = lambda args: None
+    sinks = []
+    run_root = tmp_path / "run"
+    with patch.dict(sys.modules, {"vibe.app_server.stdio": server}), \
+            patch.object(trace, "install_capture", side_effect=sinks.append), \
+            patch.object(trace, "install_keyring_diagnostics"):
+        for _ in range(2):
+            trace.main(["--app-server", "--capture-dir", str(run_root)])
+    assert len(sinks) == 2
+    assert sinks[0].directory != sinks[1].directory
+    assert all(sink.directory.parent == run_root for sink in sinks)
+
+
+def test_auth_tls_failure_records_types_only_and_preserves_exception(tmp_path):
+    trace = load_trace()
+    sink = trace.CaptureSink(tmp_path / "private")
+    tls = ssl.SSLCertVerificationError("CERTIFICATE_VERIFY_FAILED private-token private-url")
+    failure = httpx2.ConnectError("private-login-payload")
+    failure.__cause__ = tls
+    original = httpx2.AsyncClient._send_single_request
+    calls = []
+    def fail(request):
+        calls.append(True)
+        raise failure
+    async def run():
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(fail)) as client:
+            with pytest.raises(httpx2.ConnectError) as observed:
+                await client.post("https://auth.mistral.ai/private-registration?token=private-query",
+                                  json={"password": "private-login-payload"})
+            assert observed.value is failure
+    try:
+        trace.install_capture(sink, modules=[httpx2])
+        asyncio.run(run())
+    finally:
+        httpx2.AsyncClient._send_single_request = original
+    assert calls == [True]
+    raw = next(sink.directory.glob("*.json")).read_text()
+    record = json.loads(raw)
+    assert record["auth_transport_failure"]["exception_types"] == ["ConnectError", "SSLCertVerificationError"]
+    assert record["auth_transport_failure"]["certificate_verify_failed"] is True
+    assert "private-" not in raw
+    assert "request" not in record
+
+
+def test_auth_failure_context_fallback_and_cycle_bound(tmp_path):
+    trace = load_trace()
+    sink = trace.CaptureSink(tmp_path / "private")
+    failure = RuntimeError("private-top")
+    tls = ssl.SSLCertVerificationError("private-inner")
+    failure.__context__ = tls
+    tls.__context__ = failure
+    sink.write_auth_failure(failure)
+    record = json.loads(next(sink.directory.glob("*.json")).read_text())
+    assert record["auth_transport_failure"] == {
+        "exception_types": ["RuntimeError", "SSLCertVerificationError"],
+        "certificate_verify_failed": True}
+
+
+def test_auth_success_and_other_host_failures_are_not_captured(tmp_path):
+    trace = load_trace()
+    sink = trace.CaptureSink(tmp_path / "private")
+    original = httpx2.AsyncClient._send_single_request
+    def handler(request):
+        if request.url.host == "auth.mistral.ai":
+            return httpx2.Response(200, json={"access_token": "private-response"})
+        raise httpx2.ConnectError("private-unrelated")
+    async def run():
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as client:
+            response = await client.get("https://auth.mistral.ai/private")
+            assert response.status_code == 200
+            with pytest.raises(httpx2.ConnectError):
+                await client.get("https://unrelated.example/private")
+    try:
+        trace.install_capture(sink, modules=[httpx2])
+        asyncio.run(run())
+    finally:
+        httpx2.AsyncClient._send_single_request = original
+    assert list(sink.directory.glob("*.json")) == []
+
+
+def test_keyring_failure_records_type_without_secret_arguments(tmp_path):
+    trace = load_trace()
+    sink = trace.CaptureSink(tmp_path / "private")
+    module = ModuleType("keyring")
+    class SyntheticWinVaultError(RuntimeError):
+        pass
+    failure = SyntheticWinVaultError("private-token private-service private-account")
+    calls = []
+    def fail(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise failure
+    module.set_password = fail
+    with patch.dict(sys.modules, {"keyring": module}):
+        trace.install_keyring_diagnostics(sink)
+        with pytest.raises(SyntheticWinVaultError) as observed:
+            module.set_password("private-service", "private-account", "private-token")
+    assert observed.value is failure
+    assert calls == [(("private-service", "private-account", "private-token"), {})]
+    raw = next(sink.directory.glob("*.json")).read_text()
+    record = json.loads(raw)
+    assert record["auth_storage_failure"] == {"exception_types": ["SyntheticWinVaultError"]}
+    assert "private-" not in raw
+
+
+def test_keyring_success_and_diagnostic_failure_preserve_behavior(tmp_path):
+    trace = load_trace()
+    sink = trace.CaptureSink(tmp_path / "private")
+    module = ModuleType("keyring")
+    result = object()
+    module.set_password = lambda *args, **kwargs: result
+    with patch.dict(sys.modules, {"keyring": module}):
+        trace.install_keyring_diagnostics(sink)
+        assert module.set_password("private-service", "private-account", "private-token") is result
+    assert list(sink.directory.glob("*.json")) == []
+    failure = RuntimeError("private-token")
+    def fail(*args, **kwargs):
+        raise failure
+    module.set_password = fail
+    with patch.dict(sys.modules, {"keyring": module}), \
+            patch.object(sink, "write_storage_failure", side_effect=OSError("disk full")):
+        trace.install_keyring_diagnostics(sink)
+        with pytest.raises(RuntimeError) as observed:
+            module.set_password("private-service", "private-account", "private-token")
+    assert observed.value is failure

@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import ssl
 import subprocess
 import sys
 import threading
@@ -171,6 +172,29 @@ class CaptureSink:
                   "request": snapshot, "response": response_info}
         if error is not None:
             record["transport_error"] = type(error).__name__  # Never exception text.
+        self._write_record(record)
+
+    def write_auth_failure(self, error):
+        types = []
+        seen = set()
+        certificate_failure = False
+        current = error
+        while current is not None and id(current) not in seen and len(types) < 8:
+            seen.add(id(current))
+            types.append(type(current).__name__)
+            certificate_failure |= isinstance(current, ssl.SSLCertVerificationError)
+            # Inspect for a fixed marker only; no exception message is persisted.
+            certificate_failure |= "CERTIFICATE_VERIFY_FAILED" in str(current)
+            current = current.__cause__ or current.__context__
+        self._write_record({"schema": 1, "captured_at": datetime.now(timezone.utc).isoformat(),
+                            "auth_transport_failure": {"exception_types": types,
+                                                       "certificate_verify_failed": certificate_failure}})
+
+    def write_storage_failure(self, error):
+        self._write_record({"schema": 1, "captured_at": datetime.now(timezone.utc).isoformat(),
+                            "auth_storage_failure": {"exception_types": [type(error).__name__]}})
+
+    def _write_record(self, record):
         encoded = (json.dumps(record, ensure_ascii=True, indent=2) + "\n").encode("utf-8")
         with self.lock:
             if self.requests >= self.max_requests or self.total_bytes + len(encoded) > self.max_total_bytes:
@@ -182,6 +206,15 @@ class CaptureSink:
             descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(encoded)
+
+
+def create_run_sink(run_root):
+    if not run_root.is_absolute() or run_root.is_symlink():
+        raise ValueError("Capture root must be an absolute directory without a symlink")
+    run_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    secure_directory(run_root)
+    child = run_root / ("app-server-" + str(os.getpid()) + "-" + secrets.token_hex(8))
+    return CaptureSink(child)
 
 
 def _in_scope(request):
@@ -217,6 +250,12 @@ def install_capture(sink, *, modules=None):
                             sink.write(snapshot, error=error)
                         except Exception:
                             pass
+                    try:
+                        if (request.url.scheme == "https" and request.url.host == "auth.mistral.ai"
+                                and request.url.port in (None, 443)):
+                            sink.write_auth_failure(error)
+                    except Exception:
+                        pass
                     raise
                 if snapshot is not None:
                     try:
@@ -231,6 +270,26 @@ def install_capture(sink, *, modules=None):
         module.AsyncClient._send_single_request = wrapper(original)
 
 
+def install_keyring_diagnostics(sink):
+    """Observe storage failures without inspecting service/account/password arguments."""
+    import keyring
+
+    original = keyring.set_password
+
+    @functools.wraps(original)
+    def set_password(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except Exception as error:
+            try:
+                sink.write_storage_failure(error)
+            except Exception:
+                pass
+            raise
+
+    keyring.set_password = set_password
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture-dir", type=Path, help="New absolute private directory; never reused")
@@ -240,10 +299,12 @@ def main(argv=None):
         passthrough = passthrough[1:]
     if args.app_server:
         try:
-            sink = CaptureSink(args.capture_dir)
+            sink = create_run_sink(args.capture_dir)
             install_capture(sink)
-        except Exception:
-            print("Native HTTP capture unavailable; Vibe continues without capture.", file=sys.stderr)
+            install_keyring_diagnostics(sink)
+        except Exception as error:
+            print(f"Native HTTP capture unavailable ({type(error).__name__}); "
+                  "Vibe continues without capture.", file=sys.stderr)
         from vibe.app_server.stdio import main as server_main
         server_main(passthrough)
         return
