@@ -67,3 +67,27 @@ application request before TLS; it does not claim packet-level transport headers
 or server billing classification. No new inference is sent by instrumentation.
 Compare a subsequent user request against the native source/SDK evidence before
 changing attribution fields again. Release publication remains held.
+
+### User retest captured — 2026-11-01 11:09–11:10 UTC
+
+The user reports API usage again. Actual local HTTP capture contains 14 request/
+response pairs: two model-list requests and 12 completions (one main call, ten
+continuations classified secondary, one title generation), all HTTP 200. Every
+completion selected `mistral-large-4` and included `user_plan=Pro`,
+`call_source=vibe_code`, `host_kind=local`, and exact User-Agent
+`mistral-client-python/Mistral-Vibe/3.0.4`. Tenant header pseudonyms were consistent.
+This verifies final application request values, not backend quota classification.
+No prompts, account identifiers or credentials are included in this report.
+
+Observed differences remain: OpenCode client/entrypoint identities and additional
+OpenCode/session headers; native affinity uses `x-affinity`. There is no evidence
+that these differences determine billing. Do not change them speculatively.
+The existing synthetic native SDK capture does not establish that the official
+CLI with this same account/model consumes Vibe quota.
+
+Capture limitation: upstream returned `mistral-correlation-id` and
+`x-kong-request-id`, both redacted by the current header allowlist. Existing
+captures cannot recover those IDs. A future bounded capture amendment should
+preserve those actual server trace headers. HTTP 200 itself carries no recorded
+proof of Vibe billing. Root cause remains unresolved; a native CLI comparison
+under the same account/model or server-side attribution evidence is required.
