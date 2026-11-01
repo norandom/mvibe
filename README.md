@@ -1,276 +1,120 @@
-# mvibe
+# mvibe: use your Vibe login in OpenCode
 
-Use an existing normal Vibe login from the direct OpenCode 2 provider or the
-optional local OpenAI-compatible proxy. Both use the same Python authentication
-library. Sign in through normal Vibe first; there is no manual API-key entry.
+Add Mistral models to OpenCode Desktop or the OpenCode CLI using your normal
+Vibe browser sign-in. The provider appears as `Mistral-Vibe` and connects
+directly to Mistral. You do not need to run a proxy.
 
-The user observed Vibe quota usage with normal Vibe and API counter usage with
-the experimental direct OIDC ID-token route. The existing-login mode reuses the
-credential stored by normal Vibe. A keyring entry alone does not prove how the
-credential was issued or which budget will be charged. The user confirmed that
-the installed OpenCode existing-login integration consumes the expected Vibe
-quota. Read the [authentication technical writeup](docs/vibe-authentication.md)
-for the two browser flows, implementation boundaries and verification limits.
+This gives Windows users an OpenCode interface for their Vibe-backed models.
+Mistral says Vibe works on Windows while official support targets Unix
+environments. mvibe still needs the initial Vibe login. See
+[Mistral's platform statement](https://github.com/mistralai/mistral-vibe).
 
-For a prebuilt install on Linux, Windows or macOS, download the ZIP and
-`SHA256SUMS` from [GitHub Releases](https://github.com/norandom/mvibe/releases),
-verify the checksum and extract to a permanent directory. With native uv,
-Bun 1.4.4 and OpenCode 2 installed, run `bash ./install.sh` on Linux/macOS or
-`./install.ps1` in PowerShell on Windows. The release installers use the bundled
-wheel/JavaScript; they do not compile the project. uv may download managed Python
-and locked runtime dependencies. See [release installation](docs/release.md).
+The existing-login route consumed the expected Vibe quota on the tested account
+in OpenCode. That is not a guarantee for every credential, model or plan.
+The [authentication writeup](docs/vibe-authentication.md) explains the evidence
+and why experimental direct OIDC behaved differently.
 
-For OpenCode, install the direct provider below. For curl and protocol checks,
-use the proxy sequence afterward. These examples use PowerShell on Windows.
+## Before installing
 
-## Install Mistral-Vibe directly in OpenCode
+- Install OpenCode Desktop, the OpenCode 2 CLI, or both.
+- Prepare native uv and Bun 1.4.4. The installer uses uv-managed Python, not Windows Store Python.
+- Complete normal Vibe browser sign-in on the same OS and user account that runs
+  OpenCode. A WSL login does not automatically populate the Windows keyring.
 
-The direct provider does not use the proxy. It calls Mistral through the shared
-Python authentication library. New installs select `authSource: "existing-vibe"`
-and read the normal Vibe credential freshly for each request. Normal Vibe owns
-sign-in and credential renewal; this mode does not open another browser flow.
-Prepare native uv, Bun 1.4.4 and OpenCode 2, then run from this checkout:
+If you need Vibe, follow its [official setup guide](https://docs.mistral.ai/vibe/code/cli/install-setup).
+With uv installed, `uv tool install mistral-vibe` prepares the CLI. Run `vibe`
+and complete normal browser sign-in. Do not enable experimental OIDC for this setup.
+
+Extract a release when available, or use a checkout of this repository. Keep
+that directory after installation: OpenCode loads its plugin and helper from
+there. See [release installation](docs/release.md) for checksum verification.
+
+## Guided installation
+
+Open a terminal in the extracted directory or checkout.
+
+Windows PowerShell:
 
 ```powershell
-./install.ps1
+./install.ps1 -Interactive
 ```
 
-On macOS or Linux:
+Linux or macOS:
 
 ```bash
-bash ./install.sh
+bash ./install.sh --interactive
 ```
 
-If tools are not on PATH, pass `-Bun`, `-Uv` and `-OpenCode` executable paths to
-PowerShell, or `--bun`, `--uv` and `--opencode` to Bash. The installer prepares
-locked dependencies, builds the plugin and adds it to your user config. Existing
-JSONC comments and unrelated settings are retained; changed configs get a backup.
-Running it again updates the same entry and preserves its authentication choice.
-Existing entries without `authSource` retain experimental OIDC compatibility;
-set `"authSource": "existing-vibe"` in their plugin options to migrate deliberately.
-Use `-ConfigPath` / `--config-path` for
-another configuration file. Setup can download dependencies and does not start
-the proxy or sign in automatically.
+Choose Desktop, CLI or both, select the existing Vibe login, then decide whether
+to set a default model, restart the service and connect. The installer backs up
+changed configuration and preserves unrelated settings. It does not install
+OpenCode or complete Vibe browser sign-in for you.
 
-Finish normal Vibe browser sign-in, restart OpenCode, then connect using
-**Use existing Vibe login** (or the stable CLI method below):
+Desktop and CLI share global server configuration. The target selects a setup
+workflow; it does not isolate provider credentials or model defaults by interface.
+
+## Unattended Desktop setup
+
+These examples set Large 4 as the global default, restart the background service
+and connect using the existing Vibe login. They send no inference request.
+Restarting the service can interrupt active OpenCode work.
 
 ```powershell
-opencode auth login vibe-oidc --method vibe-browser --standalone
+./install.ps1 -Auto -Target Desktop -AuthSource existing-vibe -Model vibe-oidc/mistral-large-4 -Connect -Restart
 ```
 
-Open `/models` and choose **Mistral-Vibe**. Its saved provider ID remains
-`vibe-oidc`, so CLI model names use `vibe-oidc/<model-id>`. Connection verifies the
-existing Vibe credential and saves only a non-secret OpenCode marker. The provider exposes
-authenticated model IDs with complete metadata from OpenCode's Mistral catalog
-or your explicit overrides; incomplete entries are omitted. Keep this checkout
-and its prepared dependencies in place. See the
-[provider guide](docs/opencode-provider.md) for configuration and recovery.
+```bash
+bash ./install.sh --yes --target desktop --auth-source existing-vibe --model vibe-oidc/mistral-large-4 --connect --restart
+```
 
-The Windows PowerShell installation, provider label, 18-model inventory and a
-direct CLI response were verified on OpenCode 2.2.5. See
-[live results](docs/live-results.md). Native file/command tools and one owned MCP
-tool have a [prepared offline baseline](docs/tool-compatibility.md);
-their live round trips remain unverified.
+Use `-Target Cli` / `--target cli` or `Both` / `both` for the other workflows.
+Omit the model flag to preserve the current default. Connect and restart are
+opt-in. Existing auth choices are preserved unless the auth-source flag changes
+them explicitly. If the CLI is not on PATH, supply `-OpenCode` / `--opencode`.
 
-## 1. Prepare this checkout
+The [Desktop guide](docs/desktop-setup.md) includes the Windows bundled CLI path,
+backend checks and the local setup command. Use `./install.ps1 -Help` or
+`bash ./install.sh --help` for all flags.
 
-Install uv, then open a terminal in the checkout:
+## Start using Mistral-Vibe
+
+Open a new Desktop session and choose `Mistral-Vibe` with your model. A draft or
+session that already selected another model can keep that choice after a global
+default change. See [Desktop model precedence](docs/desktop-setup.md#new-sessions-and-existing-drafts).
+
+In the CLI, use `/models` or specify the provider explicitly:
 
 ```powershell
-Set-Location D:/Source/mvibe
-uv sync --locked --python 3.12 --extra proxy
+opencode run --model vibe-oidc/mistral-large-4 "Say hello in one sentence"
 ```
 
-Setup may download Python and dependencies. Use uv-managed Python throughout;
-there is no need to install Windows Store Python. Bun is needed only for the
-direct TypeScript plugin and its tests.
+This makes a live model request. The historical internal provider ID remains
+`vibe-oidc`; its display name and auth mode are separate. Use an exact model ID
+available to your account, then check the usage counter after the first request.
 
-## 2. Start the proxy with your existing Vibe login
+## If setup stops
 
-Complete normal Vibe browser sign-in first. The proxy defaults to the same
-`ExistingVibeSession` used by the provider and rereads the native keyring
-credential for each request. No second login or manual API key is required.
+| Symptom | Next action |
+|---|---|
+| Missing Vibe credential | Finish normal Vibe sign-in under the same native OS/user, then reconnect. |
+| Desktop shows another model | Start a new session or change that session's selection; an existing draft can override the global default. |
+| Provider missing | Check the global config and Desktop's server using the [Desktop guide](docs/desktop-setup.md). |
+| Helper is disposed | Finish any build, then restart the OpenCode service. Avoid rebuilding the loaded checkout during a request. |
+| Model unavailable | List models available to your account; the example name does not grant access. |
+| API usage increases | Verify `authSource: "existing-vibe"` and preserve that sign-in path when collecting evidence. |
 
-In terminal A:
+See the [provider guide](docs/opencode-provider.md) for manual configuration,
+model metadata and diagnostics. Ordinary logging is off by default. Payload
+capture requires separate opt-in and can contain sensitive conversation content.
 
-```powershell
-uv run --locked --offline -- python proxy.py
-```
+## Other uses and project details
 
-Keep this terminal open and wait for `Application startup complete`. If the
-credential is absent or rejected, sign in through normal Vibe and retry. The
-default proxy does not open the experimental OIDC browser flow.
+- [Desktop setup and backend verification](docs/desktop-setup.md)
+- [Optional proxy and curl checks](docs/proxy-guide.md)
+- [Authentication internals and quota evidence](docs/vibe-authentication.md)
+- [Prebuilt releases](docs/release.md)
+- [Build, tests and compatibility work](docs/development.md)
 
-`--offline` applies to dependencies. The proxy still contacts Mistral; explicit
-OIDC mode also contacts its issuer. The `python` after `--` uses the uv project environment and its
-lockfile. `uv run --locked --offline proxy.py` instead selects the script's
-separate inline dependency metadata and requires a separate script lockfile.
-
-Stop with Ctrl+C. `--login` validates the existing native credential; it does not
-renew it. Use `--port 8766` for another port and update client URLs accordingly.
-To deliberately test the separate ID-token route, pass `--auth-source oidc`.
-Only that mode uses the experimental browser login and encrypted OIDC store.
-
-## 3. Check health, models and a chat response with curl
-
-Open terminal B. Use `curl.exe` to avoid the PowerShell curl alias:
-
-```powershell
-curl.exe --fail-with-body --silent --show-error --max-time 10 http://127.0.0.1:8765/health
-```
-
-Expected: `{"status":"ok"}`. This proves local liveness only. Discover the
-models your signed-in account can actually access:
-
-```powershell
-$inventory = curl.exe --fail-with-body --silent --show-error --max-time 60 http://127.0.0.1:8765/v1/models
-if ($LASTEXITCODE -ne 0) { throw 'Model discovery failed; stop here.' }
-$models = ($inventory | ConvertFrom-Json).data
-$models | Select-Object id, capabilities
-$model = Read-Host 'Paste an exact chat-capable model ID from this list'
-if ($model -notin $models.id) { throw 'Choose an ID returned by this account.' }
-```
-
-Choose a chat model, not an embedding-only model. Send a small public prompt:
-
-```powershell
-$body = @{
-    model = $model
-    messages = @(@{ role = 'user'; content = 'Reply with exactly OK.' })
-    max_tokens = 32
-    stream = $false
-} | ConvertTo-Json -Depth 6
-$requestFile = Join-Path $env:TEMP ('mvibe-chat-' + [guid]::NewGuid() + '.json')
-[IO.File]::WriteAllText($requestFile, $body, [Text.UTF8Encoding]::new($false))
-try {
-    curl.exe --fail-with-body --silent --show-error --max-time 120 `
-        http://127.0.0.1:8765/v1/chat/completions `
-        -H 'Content-Type: application/json' --data-binary "@$requestFile"
-    if ($LASTEXITCODE -ne 0) { throw 'Chat failed; inspect the HTTP response.' }
-} finally {
-    Remove-Item -LiteralPath $requestFile -ErrorAction SilentlyContinue
-}
-```
-
-Success means a chat-completion JSON response containing an assistant answer.
-No caller Authorization header is required. Client SDKs that require an `apiKey`
-can use `local`; the proxy obtains upstream authentication from the selected
-shared session, normally the existing Vibe login.
-
-## 4. Run OpenCode through the proxy
-
-Keep terminal A running. Open a fresh PowerShell terminal for this test; close
-it afterward to discard temporary environment overrides. These OpenCode 2
-configuration fields were checked against the local 2.2.5 CLI. Record your
-version because OpenCode updates independently.
-
-```powershell
-$probeRoot = Join-Path $env:TEMP ('mvibe-opencode-' + [guid]::NewGuid())
-New-Item -ItemType Directory -Path $probeRoot | Out-Null
-$env:OPENCODE_TEST_HOME = $probeRoot
-$env:OPENCODE_DISABLE_AUTOUPDATE = 'true'
-$env:OPENCODE_DISABLE_MODELS_FETCH = 'true'
-foreach ($name in @('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME')) {
-    Set-Item "env:$name" (Join-Path $probeRoot $name)
-}
-$env:MISTRAL_API_KEY = 'local'
-$config = @{
-    update = 'disable'
-    share = 'disabled'
-    providers = @{
-        mistral = @{ settings = @{ baseURL = 'http://127.0.0.1:8765/v1'; apiKey = 'local' } }
-    }
-} | ConvertTo-Json -Depth 6
-[IO.File]::WriteAllText((Join-Path $probeRoot 'opencode.json'), $config)
-Set-Location $probeRoot
-opencode --version
-opencode models --standalone
-$model = Read-Host 'Enter a chat ID in BOTH proxy discovery and OpenCode, without mistral/'
-opencode run --standalone --model "mistral/$model" 'Reply with exactly OK. Do not use tools or read files.'
-```
-
-Use the native executable's full path if `opencode` is not on PATH. The desktop
-installation here provides
-`C:/Users/mariu/AppData/Local/Programs/OpenCode/resources/opencode-cli.exe`.
-The `local` value enables the client adapter; it is a placeholder, and upstream
-authentication still comes from the proxy's selected shared session. This checks the proxy route. The direct
-`vibe-oidc` provider has its own
-[configuration and model-metadata requirements](docs/opencode-provider.md).
-
-Require an assistant answer from OpenCode and the corresponding chat request in
-terminal A. A visible model list alone does not prove inference. Stop on failure;
-repeated sign-ins will not resolve an endpoint or model mismatch.
-
-## What about searches?
-
-The proxy supports models, chat completions (including streaming and tool-call
-payloads) and embeddings. It has no search endpoint or search executor. Forwarding
-a model's tool call does not execute the tool. Embeddings do not perform a web search.
-
-OpenCode can execute a separately configured search tool or MCP server and send
-its results back through chat. Proxying a Vibe-specific authenticated search
-service needs a follow-up spec covering the endpoint, permissions, result shape,
-citations, errors and tests. Responses API is also unsupported.
-
-## If a check fails
-
-| Last successful step | Next action |
-| --- | --- |
-| Missing native credential | Finish normal Vibe sign-in, then retry; there is no automatic environment API-key fallback. |
-| Explicit OIDC callback only | Read terminal A; token validation and persistence must finish before startup. |
-| Proxy startup | Check the configured port and `/health`. |
-| Health | Check discovery, the selected auth source and native credential availability; OIDC tenant settings apply only to explicit OIDC mode. |
-| Model discovery | Use an exact chat-capable ID and inspect the chat HTTP response. |
-| curl chat | Check OpenCode version, configuration, model ID and proxy access log. |
-| Forwarding returns 502 after stream cleanup failure | Restart the proxy; health can still report OK. |
-
-The 2026-10-31 Windows smoke test passed browser OIDC login, encrypted credential
-persistence and reuse, curl health/models/chat, and an OpenCode 2.2.5 CLI prompt
-through the proxy. The initial `CredWrite` failure was fixed by storing the
-encrypted bundle in a file and only a short key in the OS keyring. See
-[the live results](docs/live-results.md) for the tested scope. Live refresh,
-embeddings and tool execution remain unverified. The direct provider was
-subsequently verified separately as described above.
-
-The server binds to loopback and has no local caller authentication. Any local
-process that can reach the port can use it. Keep tokens, callback URLs and raw
-credential exports out of logs, issues and test evidence.
-
-## Repeatable checks and engineering reference
-
-The offline suite uses synthetic boundaries. It does not establish real account
-entitlement, browser registration or inference. Once dependencies and a native
-host are prepared, run the full pipeline from the checkout root:
-
-```powershell
-pwsh -NoProfile -File scripts/verify.ps1 -Bun C:/Users/mariu/.bun/bin/bun.exe -HostBinary D:/Source/mvibe/packages/opencode-vibe-oidc/.host/opencode.exe
-```
-
-Use absolute paths to prepared Bun 1.4.4 and OpenCode 2 executables. Reports go
-to `reports/verification/<run-id>/acceptance.json`. Focused Python checks use
-`uv run --locked --offline pytest`; it uses two xdist workers with scope-based
-scheduling. Each worker retains the offline guards and isolated state. Use
-`uv run --locked --offline pytest -n 0 tests/test_refresh.py` for serial debugging,
-or pass `-n 4` for a different worker count. The full PowerShell runner accepts
-`-PythonWorkers 0` for serial execution (default: 2). Packaging uses
-`uv build --offline --no-build-isolation`.
-
-Run the [prepared native/MCP baseline and update checks](docs/tool-compatibility.md)
-for native files/commands, one MCP tool workflow, contract drift and actual host evidence.
-Broader tool families remain explicit follow-ups, not an all-tool support claim.
-
-- [Shared auth API and lifecycle](docs/auth-library.md)
-- [Direct OpenCode plugin setup, build and compatibility](docs/opencode-provider.md)
-- [Tool baseline, candidate updates and diagnostics](docs/tool-compatibility.md) — logging defaults off; enable proxy `--log` (stdout) or plugin `options.diagnostics: true` (stderr).
-- [Live procedure and evidence checklist](docs/live-verification.md)
-- [Live results](docs/live-results.md)
-- [Offline acceptance](docs/offline-acceptance.md)
-- [Synthetic native host evidence](docs/consumer-integration.md)
-- [Vibe source attribution and deviations](docs/vibe-provenance.md)
-
-For the runtime-only library, prepare with
-`uv sync --locked --python 3.12 --no-dev --no-editable`; add `--extra proxy` when
-running the proxy. `uv run --script proxy.py` uses separate inline dependencies
-and may download them. When copying that script, retain `mvibe_auth/`,
-`mvibe_proxy/` and `LICENSE.vibe`. See `uv.lock` for dependency versions.
+OpenCode executes its own native and MCP tools. The proxy forwards tool-call
+payloads but adds no search executor or Responses API. See the
+[tested tool scope](docs/tool-compatibility.md).

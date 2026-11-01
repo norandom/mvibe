@@ -29,3 +29,16 @@ OpenCode auto-updates. Record actual host versions and hashes separately from
 the pinned SDK/CLI reference. Do not treat a user-reported version as verified.
 Do not run paid inference solely to satisfy an offline test gate. Keep live
 counter checks distinct from transport and offline regression evidence.
+
+Use configuration files, CLI and supported service APIs for local setup and
+verification. The user forbids computer/UI automation for this work; do not
+resume it without a new explicit request. Desktop and CLI share the server's
+global plugin/config. A global model default applies to fresh selections;
+saved draft/session choices can override it. Do not edit opaque Desktop stores.
+The adopter installers offer terminal prompts and unattended `--yes` / `-Auto`
+flags. Restart/connect require explicit choices; model changes are global and
+opt-in. Local Desktop backend setup was verified with Mistral-Vibe Large 4.
+
+OpenCode orchestrates context compaction and calls the provider for its summary.
+The adapter forwards that request using shared auth. Reusing Vibe authentication
+does not import Vibe's agent runtime, compaction policy or tool executor.

@@ -63,6 +63,8 @@ def test_builder_stages_wheel_and_bundles_without_shipping_build_inputs(tmp_path
         wrapper = bundle.read(prefix + "install.sh").decode()
         assert 'scripts/install.js' in wrapper
         assert prefix + "LICENSE.vibe" in names
+        for guide in ("desktop-setup.md", "proxy-guide.md", "development.md", "vibe-authentication.md"):
+            assert prefix + "docs/" + guide in names
     assert sum(command[0] == "native-bun" for command in calls) == 2
     assert ["native-uv", "lock"] == calls[-1][:2]
     provider_command = next(command for command in calls if any(arg.replace("\\", "/").endswith("src/index.ts") for arg in command))

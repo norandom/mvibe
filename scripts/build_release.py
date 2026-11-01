@@ -77,8 +77,10 @@ def build(output: Path, uv: str, bun: str) -> Path:
         for name in ["install.sh", "install.ps1", "proxy.py", "README.md", "LICENSE.vibe"]:
             shutil.copy2(ROOT / name, stage / name)
         (stage / "docs").mkdir()
-        for name in ["release.md", "opencode-provider.md", "auth-library.md", "vibe-provenance.md"]:
-            shutil.copy2(ROOT / "docs" / name, stage / "docs" / name)
+        # Ship the public guides linked from README, including adopter setup.
+        # Reports, specifications and source trees are outside this allowlist.
+        for guide in sorted((ROOT / "docs").glob("*.md")):
+            shutil.copy2(guide, stage / "docs" / guide.name)
         # Preserve third-party notices for bundled JavaScript dependencies.
         for path in sorted((source / "node_modules").rglob("*")):
             if path.is_file() and path.name.lower().split(".")[0] in {"license", "licence", "notice", "notices"}:

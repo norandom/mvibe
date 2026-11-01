@@ -84,6 +84,7 @@ jobs:
           uv run --locked --offline pytest
           cd packages/opencode-vibe-oidc
           bun test
+          bun run test/install-wrapper-smoke.ts
       - name: Native prebuilt archive installation
         shell: bash
         run: |

@@ -25,8 +25,20 @@ Run `bash ./install.sh` on Linux/macOS or `./install.ps1` on Windows. Both suppo
 explicit executable paths (`--uv`, `--bun`, `--opencode` or `-Uv`, `-Bun`,
 `-OpenCode`) and an explicit config file (`--config-path` or `-ConfigPath`). Use
 `--help` / `-Help` for details. uv may download Python 3.12 and locked runtime
-dependencies during setup. No source compilation, Bun dependency installation,
-login, keyring access or browser launch occurs during release installation.
+dependencies during setup. Release preparation performs no source compilation
+or Bun dependency installation. Native login validation and service restart
+are explicit installer choices; unattended runs need `--connect` / `--restart`
+or `-Connect` / `-Restart` to request them. Without connect, configuration setup
+does not access the keyring or start a browser. Explicit OIDC connection may
+open its separate browser flow.
+
+Use `--interactive` / `-Interactive` for guided terminal setup or `--yes` /
+`-Auto` for unattended setup. `--target desktop|cli|both` (`-Target`) selects the
+workflow; all targets share the server's global plugin and model settings.
+An explicit `--model` / `-Model` sets the global default, and an explicit
+`--auth-source` / `-AuthSource` changes the owned plugin's selection. Omit those
+options to preserve an existing choice. See the bundled
+[Desktop guide](desktop-setup.md) for commands and existing-draft precedence.
 
 The installer preserves JSONC comments, unrelated settings and plugin options,
 creates a backup before modifying existing configuration, and can be rerun.

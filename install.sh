@@ -7,7 +7,7 @@ args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[i]}" in
     --help|-h)
-      printf '%s\n' 'Install direct Mistral-Vibe: ./install.sh [--config-path FILE] [--uv EXECUTABLE] [--bun EXECUTABLE] [--opencode EXECUTABLE] [--skip-prepare]' 'Requires native uv, Bun 1.4.4 and OpenCode 2. Preparation may download locked dependencies; no login or restart is performed.'
+      printf '%s\n' 'Install direct Mistral-Vibe: ./install.sh [--target cli|desktop|both] [--interactive | --yes] [--auth-source existing-vibe|oidc] [--model vibe-oidc/<model-id>] [--connect] [--restart] [--config-path FILE] [--uv EXECUTABLE] [--bun EXECUTABLE] [--opencode EXECUTABLE] [--skip-prepare]' 'Requires native uv, Bun 1.4.4 and OpenCode 2. Preparation may download locked dependencies. Terminal-only prompts default on; --yes disables them. CLI/Desktop share global config. Restart/connect require opt-in; OIDC connection may open a browser.'
       exit 0 ;;
     --bun)
       ((i+=1))

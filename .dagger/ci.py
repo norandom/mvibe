@@ -63,6 +63,7 @@ async def main() -> None:
                 .with_exec(["bun", "run", "typecheck"])
                 .with_exec(["bun", "run", "build"])
                 .with_exec(["bun", "test"])
+                .with_exec(["bun", "run", "test/install-wrapper-smoke.ts"])
                 .with_workdir("/src")
                 .with_exec(["uv", "run", "--locked", "--offline", "pytest"])
             )

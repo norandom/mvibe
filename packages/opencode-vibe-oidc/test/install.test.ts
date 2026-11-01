@@ -83,3 +83,48 @@ test("prepares locked dependencies and validates helper before editing explicitl
  expect(f.calls.map(c=>c.slice(1))).toEqual([["--version"],["--version"],["--version"],["sync","--locked","--python","3.12"],["install","--frozen-lockfile","--ignore-scripts"],["run","typecheck"],["run","build"],["run","--offline","--no-sync","--project",expect.any(String),"python","-c",expect.any(String)]]);
  expect(JSON.parse(readFileSync(f.config,"utf8")).plugins).toHaveLength(1);
 });
+
+test("explicit auth and model selection migrate only owned settings", async () => {
+ const dir=fixture(), file=join(dir,"opencode.jsonc");
+ writeFileSync(file,JSON.stringify({model:"other/model",plugins:[{package:options.packagePath,options:{authSource:"oidc",custom:true}}]}));
+ await installConfig(file,{...options,authSource:"existing-vibe",model:"vibe-oidc/mistral-large-latest"});
+ const config=JSON.parse(readFileSync(file,"utf8")); expect(config.model).toBe("vibe-oidc/mistral-large-latest"); expect(config.plugins[0].options).toMatchObject({authSource:"existing-vibe",custom:true});
+});
+test("unattended Desktop uses shared global config and optional actions run in order", async () => {
+ const f=commandFixture(); await runInstaller(["--skip-prepare","--yes","--target","both","--auth-source","existing-vibe","--model","vibe-oidc/large-4","--restart","--connect"],f.runtime);
+ expect(JSON.parse(readFileSync(f.config,"utf8")).model).toBe("vibe-oidc/large-4");
+ expect(f.calls.slice(-2).map(c=>c.slice(1))).toEqual([["service","restart"],["auth","login","vibe-oidc","--method","vibe-browser"]]);
+});
+test.each([[["--interactive"]],[["--interactive","--yes"]],[["--target","invalid"]],[["--auth-source","invalid"]],[["--model","other/model"]],[["--model","vibe-oidc/"]]])("invalid modes fail before dependencies or mutation: %j",async args=>{
+ const f=commandFixture(); await expect(runInstaller(args,f.runtime)).rejects.toThrow(); expect(f.calls).toEqual([]); expect(readdirSync(f.dir)).toEqual(["native.exe"]);
+});
+test("TTY prompts are injectable, show summary and can cancel without mutation", async () => {
+ const f=commandFixture(), prompts:string[]=[]; const answers=["desktop","existing-vibe","","n","n","n"];
+ await runInstaller(["--skip-prepare"],{...f.runtime,isTTY:()=>true,prompt:message=>{prompts.push(message);return answers.shift()!;}});
+ expect(prompts.join(" ")).toContain("Save"); expect(readdirSync(f.dir)).toEqual(["native.exe"]);
+});
+test("non-TTY default never prompts or performs post-install actions and preserves model",async()=>{
+ const f=commandFixture(); writeFileSync(f.config,JSON.stringify({model:"other/model"}));
+ await runInstaller(["--skip-prepare"],{...f.runtime,prompt:()=>{throw new Error("must not prompt");}});
+ expect(JSON.parse(readFileSync(f.config,"utf8")).model).toBe("other/model"); expect(f.calls.some(c=>c.includes("restart")||c.includes("login"))).toBe(false);
+});
+test("post-install failure acknowledges saved configuration",async()=>{
+ const f=commandFixture(undefined,"restart"); await expect(runInstaller(["--skip-prepare","--yes","--restart"],f.runtime)).rejects.toThrow("Configuration was saved"); expect(JSON.parse(readFileSync(f.config,"utf8")).plugins).toHaveLength(1);
+});
+test("Desktop can discover its bundled CLI when a separate CLI is missing",async()=>{
+ const f=commandFixture(); await runInstaller(["--target","desktop","--yes","--skip-prepare"],{...f.runtime,which:requested=>requested==="opencode"?null:f.executable,bundledCLI:()=>f.executable});
+ expect(f.calls[2]![0]).toBe(f.executable); expect(JSON.parse(readFileSync(f.config,"utf8")).plugins).toHaveLength(1);
+});
+test("unsupported Desktop discovery requests an explicit CLI before writes",async()=>{
+ const f=commandFixture(); await expect(runInstaller(["--target","desktop","--yes","--skip-prepare"],{...f.runtime,which:requested=>requested==="opencode"?null:f.executable,bundledCLI:()=>null})).rejects.toThrow("--opencode"); expect(f.calls).toEqual([]);
+});
+test("interactive confirmation writes requested selections without implicit actions",async()=>{
+ const f=commandFixture(), answers=["both","oidc","vibe-oidc/mistral-large-4","n","n","yes"];
+ await runInstaller(["--interactive","--skip-prepare"],{...f.runtime,isTTY:()=>true,prompt:()=>answers.shift()!});
+ const config=JSON.parse(readFileSync(f.config,"utf8")); expect(config.model).toBe("vibe-oidc/mistral-large-4"); expect(config.plugins[0].options.authSource).toBe("oidc"); expect(f.calls.some(c=>c.includes("restart")||c.includes("login"))).toBe(false);
+});
+test("invalid interactive answers and interrupted input leave configuration untouched",async()=>{
+ for (const answer of ["invalid",null]) {
+  const f=commandFixture(); await expect(runInstaller(["--interactive"],{...f.runtime,isTTY:()=>true,prompt:()=>answer})).rejects.toThrow(); expect(f.calls).toEqual([]); expect(readdirSync(f.dir)).toEqual(["native.exe"]);
+ }
+});
