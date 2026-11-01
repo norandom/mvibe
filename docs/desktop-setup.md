@@ -160,8 +160,8 @@ from a checkout you edit or build. Finish preparation before loading it, and
 restart the service after an upgrade. A local recovery on 2026-11-01 moved the
 plugin and helper to a packaged snapshot outside the checkout, preserved the
 existing-login configuration and restarted the actual service. The new server
-loaded that snapshot and exposed all 18 Vibe models; inference recovery remained
-for the user's next prompt to confirm. This avoids the observed development-build
+loaded that snapshot and exposed all 18 Vibe models. The user then confirmed
+inference worked again. This avoids the observed development-build
 trigger; it is not a host cache-invalidation fix or an idle-duration guarantee.
 
 ## Context compression belongs to the client

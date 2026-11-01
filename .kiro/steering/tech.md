@@ -46,6 +46,7 @@ Never rebuild a checkout while the user's service loads its plugin. On OpenCode
 Ctrl+C and `opencode -c` do not necessarily replace that service; use an explicit
 service restart after preparing an upgrade. Local installation now uses a stable
 packaged snapshot outside this checkout. Keep it immutable during development.
+The user confirmed inference recovered after that migration and service restart.
 Do not resurrect disposed bridges or replay requests to mask stale host caches.
 
 OpenCode orchestrates context compaction and calls the provider for its summary.

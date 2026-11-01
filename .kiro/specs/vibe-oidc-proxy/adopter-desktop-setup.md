@@ -101,5 +101,7 @@ An independently reviewed one-off migration changed only the owned package and
 helper project paths, preserved existing-vibe auth and made a JSONC backup.
 Explicit service restart replaced run `2b27445f` with `37b4f031`; logs confirmed
 the stable snapshot loaded, and supported APIs reported 18 Vibe models and the
-Large 4 default. No paid inference was sent. User inference recovery is pending;
-host hot-reload cache invalidation remains outside this operational correction.
+Large 4 default. No paid inference was sent by the agent. The user subsequently
+confirmed inference worked again. This confirms recovery for that retry, not
+long-duration stability or a new quota-counter check. Host hot-reload cache
+invalidation remains outside this operational correction.
