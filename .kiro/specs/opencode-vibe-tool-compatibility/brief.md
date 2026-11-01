@@ -15,8 +15,9 @@ with no claim that all tools or future versions have been tested.
 Twelve legacy implementation tasks through 4.2 were independently reviewed and
 committed. Legacy 4.3 is an uncommitted draft; its Windows environment issue is
 identified in task-4.3-debug.md. Preserve that work and finish only what the
-baseline needs after revised-spec review. Python parallel testing is explicitly
-authorized now; the remaining feature implementation is not resumed by this edit.
+baseline needs after revised-spec review. The user subsequently approved continuation, prioritizing E2E, and requested
+OpenCode contract comparisons, proxy API docs and structured diagnostics. The
+observability follow-up is initialized separately.
 
 See requirements.md, design.md and tasks.md for the current plan;
 scope-revision.md explains what replaced the original 36-task plan. Historical

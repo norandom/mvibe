@@ -31,3 +31,5 @@ The current request authorizes introducing xdist and reshaping the specification
 Revised requirements, design and remaining tasks are presented together for human
 review. Do not resume the former autonomous 36-task queue. The explicitly requested
 xdist implementation is verified now without starting live native/MCP runs.
+
+Subsequent user approval resumes revision 2. The same instruction adds HTTP/plugin contract comparison and proxy OpenAPI/structured logging; current tasks now have five deliverables. Distributed tracing/export remains a separate initialized observability follow-up. See api-observability-notes.md.

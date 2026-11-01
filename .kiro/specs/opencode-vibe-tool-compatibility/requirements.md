@@ -3,7 +3,7 @@
 ## Revision and scope
 
 Revision 2 replaces the 33-criterion all-tool certification scope at commit
-42f1fc1. The user requested this reduction on 2026-11-01. These ten criteria
+42f1fc1. The user requested this reduction on 2026-11-01. These baseline criteria
 cover a practical baseline; historical criteria and approvals do not transfer
 automatically. Shared auth/proxy requirements remain in vibe-oidc-proxy.
 
@@ -48,6 +48,12 @@ automatically. Shared auth/proxy requirements remain in vibe-oidc-proxy.
    Default tests shall not access live accounts or launch sign-in. Instructions
    shall state prerequisites and leave unexecuted live cases unverified.
 
+5. When checking an OpenCode update, verification shall compare a reviewed HTTP
+   OpenAPI snapshot and relevant plugin declarations with an explicitly prepared
+   candidate, report structural drift, and compile/run the E2E baseline for that
+   pair. It shall record actual versions/hashes and never silently bless a new
+   baseline or infer behavioral compatibility from schema equality alone.
+
 ## 4. Provider boundary
 
 1. If baseline execution reveals a provider protocol defect, a minimal adapter fix
@@ -55,8 +61,22 @@ automatically. Shared auth/proxy requirements remain in vibe-oidc-proxy.
    Vibe OIDC auth and existing no-replay behavior shall remain intact. Unproven
    content or capabilities shall be explicit limitations rather than guessed codecs.
 
+## 5. Proxy API and diagnostic foundation
+
+1. When proxy API documentation is requested, the proxy shall expose OpenAPI JSON
+   and Swagger UI describing its actual models/chat-completions/embeddings routes,
+   streaming, error envelopes and agent-owned tool execution. Documentation shall
+   not narrow runtime payload passthrough or imply the proxy is an MCP executor.
+2. When an agent request fails or its stream is interrupted, the proxy shall emit
+   structured stdout diagnostics with a correlation ID, phase/outcome and safe
+   actionable hint. Logs shall exclude credentials, headers, raw prompts/tool
+   arguments/results and upstream exceptions; logging shall preserve stream
+   ownership and no replay. Use a logging library with an OpenTelemetry path;
+   distributed traces/metrics/export remain the observability follow-up.
+
 ## Approval
 
-This revision is ready for review. Its requirements, design and remaining tasks
-have not yet received human approval. The requested xdist change is authorized
-and verified separately; this does not approve the remaining implementation queue.
+The user approved revision 2 and continuation on 2026-11-01, explicitly adding
+update/schema checks, proxy API documentation and diagnostic foundations.
+Observability tracing/export is captured as a follow-up specification rather
+than a prerequisite for completing the E2E baseline.

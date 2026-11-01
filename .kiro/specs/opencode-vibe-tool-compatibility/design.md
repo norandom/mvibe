@@ -97,5 +97,27 @@ behavior change, then implement and run the relevant checks. Review each complet
 deliverable once; rerun broader checks after fixes or at final integration, not
 between every documentation/helper edit. Preserve any uncommitted legacy draft.
 
-This revised feature design awaits review; xdist implementation is authorized by
-the current request. No live account tests are part of this revision work.
+The user approved this revision and continuation on 2026-11-01. The API and
+observability extension is recorded in api-observability-notes.md; distributed
+traces/export remain the follow-up in ../proxy-observability/.
+
+## Approved API/update extension
+
+Compare two complementary contracts: OpenAPI generated from the prepared
+@opencode/protocol ClientApi and normalized plugin declaration surfaces used by
+the provider. Record SDK/protocol/CLI versions and binary hash, retain a reviewed
+baseline, and emit structural differences on candidate reruns. Type compilation
+and actual native/MCP E2E runs remain necessary; HTTP schemas do not cover hook
+ordering, streaming or subprocess behavior. Candidate setup is explicit/isolated;
+default checks are offline. Do not equate the docs site's latest schema with the
+installed binary or require exact 2.2.5 when an explicit candidate pair is selected.
+
+Proxy documentation should enumerate the three supported operations rather than
+the opaque catch-all. Keep fallback routing and raw payload forwarding unchanged.
+Add structlog as a proxy extra and development dependency, with PEP 723 parity;
+configure proxy stdout only at explicit startup. Library/helper imports remain
+inert. Use bounded allowlisted fields, generated correlation IDs and fixed hints;
+never print raw request/response content or exception strings. Request/stream
+completion, cancellation and error paths need concise events without consuming
+or buffering the SSE stream. OTel context/export comes later through the chosen
+logging library. See api-observability-notes.md and the follow-up brief.

@@ -1,9 +1,10 @@
 # Practical implementation plan
 
 Revision 2 replaces the 36-subtask queue. The user requested a pragmatic baseline
-on 2026-11-01. Three implementation deliverables remain after parallel pytest.
-Requirements/design/remaining-task approval is pending; do not automatically
-resume the old queue. Historical completed work is retained below.
+on 2026-11-01. The E2E baseline is approved. The current request also adds contract drift checks,
+proxy API docs and diagnostic foundations; tracing/export is a follow-up.
+The user approved revision 2 and continuation on 2026-11-01. Implement the
+baseline below; do not resume the superseded queue. Historical completed work is retained below.
 
 - [x] 1. Make Python regression runs parallel and repeatable
 - [x] 1.1 Enable and verify pytest-xdist
@@ -29,14 +30,22 @@ resume the old queue. Historical completed work is retained below.
   - _Boundary: MCP baseline integration_
   - _Requirements: 1.2, 1.3, 2.1, 2.2, 3.3, 4.1_
 
-- [ ] 4. Deliver the repeatable baseline and operator guide
-- [ ] 4.1 Integrate verification, report the subset and document live testing
-  - Reuse existing reports/validators and retain mandatory parent regression/build checks; add one prepared offline baseline command.
+- [ ] 4. Deliver API diagnostics and the repeatable baseline
+- [ ] 4.1 Publish proxy API docs and structured diagnostic logs
+  - Expose accurate OpenAPI/Swagger for supported routes, passthrough tool conversations, streaming and errors.
+  - Add structlog-based safe stdout events with request IDs, failure phases and actionable hints, without changing helper protocol stdout or buffering responses.
+  - Complete when offline route/schema and failure/stream tests pass, secret-bearing inputs never appear in logs, and existing proxy behavior is retained.
+  - _Boundary: Proxy API and diagnostic integration_
+  - _Requirements: 3.2, 3.3, 3.4, 4.1, 5.1, 5.2_
+
+- [ ] 4.2 Integrate E2E reruns, compare update contracts and document operation
+  - Reuse existing reports/validators and retain parent regression/build checks; add one prepared offline baseline command.
+  - Capture and compare the prepared OpenCode HTTP OpenAPI plus plugin declaration contracts, compile against a prepared candidate SDK and rerun actual native/MCP workflows. Report drift/failures; never automatically refresh the reviewed baseline.
   - Report actual versions/profiles, tested cases and deferred tools, with artifact links and no blanket all-tool claim.
-  - Document direct-provider setup and an explicit live native/MCP procedure using Vibe OIDC; leave unexecuted live cases unverified.
-  - Complete when the fresh offline pipeline passes, the guide's commands match the runner, and a single final review finds no baseline blocker.
+  - Document proxy Swagger/logging, direct-provider setup and explicit live native/MCP tests using Vibe OIDC; leave unexecuted live cases unverified.
+  - Complete when the fresh offline pipeline passes and a separate candidate can be checked without changing the reference pair, global installation or private config.
   - _Boundary: Verification and operator integration_
-  - _Requirements: 1.1, 1.2, 1.3, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 4.1_
+  - _Requirements: 1.1, 1.2, 1.3, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 5.1, 5.2_
 
 ## Preserved implementation history
 

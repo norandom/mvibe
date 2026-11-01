@@ -30,3 +30,15 @@ skills/subagents, session/worktree tools, web/search, resource helpers, paginati
 media codecs and private plugin services need separately justified follow-up work.
 No all-tool compatibility claim is made. Host updates require rerunning the
 baseline and recording changed versions before carrying forward its results.
+
+## Update and proxy checks
+
+Capture reference HTTP/plugin contracts from prepared packages, compare an
+explicitly prepared candidate, then compile and rerun the same native/MCP E2E
+cases. Keep drift results separate from execution failures and record exact
+versions/hashes. No automatic downloads or baseline rewrites during offline runs.
+
+Proxy checks cover OpenAPI JSON/Swagger routes and structured stdout events for
+endpoint/auth/upstream/stream failures, correlation and secret exclusion. Preserve
+byte streaming, status passthrough and helper protocol stdout. Trace export and
+metrics are deferred to proxy-observability; logging foundations are implemented now.
