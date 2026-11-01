@@ -47,6 +47,26 @@ baseline below; do not resume the superseded queue. Historical completed work is
   - _Boundary: Verification and operator integration_
   - _Requirements: 1.1, 1.2, 1.3, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 5.1, 5.2_
 
+## Live failure follow-up (2026-11-01)
+
+The user requested repair of the actual Large 4 hello-world 422, opt-in logging
+for both consumers, and continuation after a short handover. This is a focused
+extension of the approved baseline, not a new all-tool certification queue.
+
+- [x] 5.1 Repair the demonstrated reasoning replay incompatibility
+  - Reproduce the rejected assistant `reasoning_content` in an installed-SDK regression.
+  - Preserve reasoning as Mistral thinking chunks, text and correlated tool calls/results.
+  - Verify package regressions and an actual native OpenCode Large 4 hello-world continuation.
+  - _Boundary: Direct provider request serialization_
+  - _Requirements: 1.2, 3.3, 3.4, 4.1_
+
+- [ ] 5.2 Add explicit diagnostic logging controls for both consumers
+  - Add an opt-in proxy CLI flag and plugin option with safe correlated status/phase/hints.
+  - Keep helper protocol stdout clean, payloads and credentials excluded, streaming and no replay intact.
+  - Document enablement, diagnostic destinations and the observed live outcome.
+  - _Boundary: Consumer diagnostics and operator guide_
+  - _Requirements: 3.3, 5.2_
+
 ## Preserved implementation history
 
 Twelve original subtasks (1.1-1.3, 2.1-2.3, 3.1-3.4 and 4.1-4.2) were

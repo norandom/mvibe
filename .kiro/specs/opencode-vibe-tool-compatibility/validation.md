@@ -1,5 +1,22 @@
 # Practical baseline validation
 
+## Live Large 4 repair (2026-11-01)
+
+The user-reported PowerShell hello-world failure was traced to an actual 422:
+`body.messages[2].assistant.reasoning_content`, `extra_forbidden`. The direct
+SDK now replays reasoning as Mistral thinking chunks, retaining tool calls/results.
+Installed-SDK generate/stream and provider-registration regressions cover the fix.
+Independent review ran all 974 Bun tests, typecheck and build successfully.
+
+An explicit live native CLI run used OpenCode 2.2.5, `vibe-oidc/mistral-large-4`,
+existing Vibe OIDC credentials and isolated OpenCode paths/workspace. It observed
+one `tool_use`, the exact requested `hello.ps1`, final `DONE`, exit 0 and no 422.
+The generated script independently ran under PowerShell and printed
+`Hello, World!`. This proves the exercised file-write/continuation scenario;
+live MCP, other models/tools, refresh and newer host versions remain unverified.
+Safe local summary: `reports/live-large4-result.json`. No prompts from the user's
+original conversation or credentials were exported.
+
 ## Validation Report
 - DECISION: GO
 - SCOPE: Prepared Windows x64 / OpenCode 2.2.5 synthetic offline baseline and proxy API/diagnostic foundations. Live accounts, future versions, other platforms and all-tool compatibility are not claimed.

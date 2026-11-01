@@ -4,6 +4,7 @@ import plugin, { setupVibe } from "../src/index.js";
 import type { RegistrationContext } from "../src/index.js";
 import { StdioBridge } from "../src/bridge.js";
 import { ControlledHTTP } from "./preload.js";
+import type { LanguageModelV3 } from "@ai-sdk/provider";
 
 test("direct provider appears as Mistral-Vibe while retaining the credential ID", async () => {
   const f = fixture();
@@ -64,6 +65,27 @@ test("V2 SDK hook is provider-scoped and replaces host key options with V3 custo
   const model = (sdk as (id: string) => { specificationVersion: string; provider: string })("synthetic-model");
   expect(model.specificationVersion).toBe("v3"); expect(model.provider).toContain("vibe-oidc");
   await cleanup();
+});
+
+test("registered SDK rewrites Mistral reasoning history before authenticated transport", async () => {
+  const f = fixture();
+  let cleanup: (() => Promise<void>) | undefined;
+  type SDKEvent = Extract<Parameters<Parameters<RegistrationContext["aisdk"]["hook"]>[1]>[0], { package: string }>;
+  const event = { model: undefined, package: "@ai-sdk/openai-compatible", options: {}, sdk: undefined } as unknown as SDKEvent;
+  const http = new ControlledHTTP();
+  const target = "https://inference.example.test/v1/chat/completions";
+  http.queue("POST", target, Response.json({ choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "Done" } }] }));
+  const request = spyOn(StdioBridge.prototype, "request").mockImplementation((async () => ({ target, revision: "synthetic", expires_at: Date.now() / 1000 + 60, headers: { authorization: "Bearer synthetic" } })) as StdioBridge["request"]);
+  const transport = spyOn(globalThis, "fetch").mockImplementation(Object.assign(http.fetch, { preconnect: () => {} }));
+  try {
+    cleanup = await setupVibe(f.ctx);
+    await (f.hooks[0]!.callback as (event: SDKEvent) => Promise<void>)(event);
+    const sdk = event.sdk as unknown as (id: string) => LanguageModelV3;
+    await sdk("mistral-large-4").doGenerate({ prompt: [{ role: "assistant", content: [{ type: "reasoning", text: "Retain this reasoning" }, { type: "text", text: "Answer" }] }] });
+    expect(http.requests).toHaveLength(1);
+    expect((await http.requests[0]!.json()).messages).toEqual([{ role: "assistant", content: [{ type: "thinking", thinking: [{ type: "text", text: "Retain this reasoning" }] }, { type: "text", text: "Answer" }] }]);
+    expect(http.requests[0]!.headers.get("authorization")).toBe("Bearer synthetic");
+  } finally { request.mockRestore(); transport.mockRestore(); await cleanup?.(); }
 });
 
 test.each([{}, { helperCommand: { executable: "python", args: [] }, audience: "x" }, { helperCommand: { executable: "uv", args: ["run", "-m", "mvibe_auth", "bridge"] }, audience: "x" }])("missing/unsafe runtime is actionable before registration %j", async options => {

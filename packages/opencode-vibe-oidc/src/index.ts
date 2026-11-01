@@ -5,6 +5,7 @@ import type { HelperCommand } from "./bridge.js";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createProviderFetch, providerBaseURL } from "./provider.js";
 import { createModelCatalog, metadataFromHostCatalog } from "./models.js";
+import { mistralRequestBody } from "./reasoning.js";
 
 export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options" | "aisdk" | "event">;
 
@@ -49,7 +50,7 @@ export async function setupVibe(ctx: RegistrationContext) {
     registrations.push(await ctx.aisdk.hook("sdk", async event => {
       event.options.maxRetries = 0;
       event.options.fetch = fetch;
-      event.sdk = createOpenAICompatible({ name: "vibe-oidc", baseURL, fetch });
+      event.sdk = createOpenAICompatible({ name: "vibe-oidc", baseURL, fetch, transformRequestBody: mistralRequestBody });
     }, { providerID }));
     const updates = ctx.event.subscribe({ types: ["integration.updated", "credential.updated", "credential.switched"], signal: events.signal });
     void (async () => {
