@@ -78,6 +78,11 @@ backend checks and the local setup command. Use `./install.ps1 -Help` or
 
 ## Start using Mistral-Vibe
 
+**Fully quit and reopen OpenCode Desktop after setup.** Restarting its background
+service alone can leave an open window with an outdated model list. If the CLI
+shows Vibe models but Desktop does not, reopen Desktop and clear the model
+picker's search/filter. No separate Desktop plugin installation is needed.
+
 Open a new Desktop session and choose `Mistral-Vibe` with your model. A draft or
 session that already selected another model can keep that choice after a global
 default change. See [Desktop model precedence](docs/desktop-setup.md#new-sessions-and-existing-drafts).
@@ -97,6 +102,7 @@ available to your account, then check the usage counter after the first request.
 | Symptom | Next action |
 |---|---|
 | Missing Vibe credential | Finish normal Vibe sign-in under the same native OS/user, then reconnect. |
+| CLI lists Vibe models but Desktop does not | Fully quit and reopen Desktop, then clear the model picker's search/filter. Restarting the service alone may not refresh the window. |
 | Desktop shows another model | Start a new session or change that session's selection; an existing draft can override the global default. |
 | Provider missing | Check the global config and Desktop's server using the [Desktop guide](docs/desktop-setup.md). |
 | Helper is disposed | Finish any build, then restart the OpenCode service. Avoid rebuilding the loaded checkout during a request. |
