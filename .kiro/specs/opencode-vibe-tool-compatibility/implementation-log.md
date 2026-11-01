@@ -195,3 +195,19 @@ pending; do not resume the superseded queue. Existing code/tests are retained.
 - Completion gate VERIFIED for prepared Windows synthetic offline baseline;
   live, other versions/platforms and all-tool support remain unverified.
 - Artifact: packages/opencode-vibe-oidc/.host/workspace-command-proof.json.
+
+## Revision 2 task 3.1: real MCP baseline
+
+- Implementer READY_FOR_REVIEW; independent reviewer APPROVED.
+- RED: missing mcp-recipe module, focused test exit 1 before implementation.
+- Fresh independent verification: 962 Bun tests, typecheck/build exit 0;
+  actual MCP probe exit 0 with 60 crossed-evidence corruptions rejected.
+- OpenCode 2.2.5 initializes/discovers the official SDK 1.32.2 fixture using
+  protocol 2025-11-25 and codemode:false. Actual registry metadata supplies the
+  offered tool identity. Nested/Unicode structured success and deliberate error
+  each reach the next primary request; only success receives a positive proof.
+- Cancellation reaches the SDK AbortSignal, produces no final/positive proof,
+  and the owned MCP process retires within the cleanup budget (review PID 16588).
+- Completion gate VERIFIED for this Windows/synthetic/stdin-stdout fixture.
+  Private MCP config, live calls and other capabilities remain unverified.
+- Artifact: packages/opencode-vibe-oidc/.host/mcp-proof.json.

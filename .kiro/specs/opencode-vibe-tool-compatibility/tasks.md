@@ -22,8 +22,8 @@ baseline below; do not resume the superseded queue. Historical completed work is
   - _Boundary: Native workspace integration_
   - _Requirements: 1.1, 1.2, 1.3, 3.3, 4.1_
 
-- [ ] 3. Prove one real MCP tool workflow
-- [ ] 3.1 Add the owned local fixture and exercise the host client
+- [x] 3. Prove one real MCP tool workflow
+- [x] 3.1 Add the owned local fixture and exercise the host client
   - Use the prepared official SDK and real OpenCode MCP discovery/execution for a nested/Unicode structured-result tool.
   - Exercise one deliberate tool error and cancellation, preserving call association and owned cleanup.
   - Complete when real server calls/results reach the next model turn, failures remain failures, and no private MCP config is used.
