@@ -162,7 +162,10 @@ def test_response_ids_redact_echoed_request_credentials(tmp_path):
     assert "raw-private-tenant" not in raw
 
 
-def test_launcher_selects_installed_tui_and_child_only_oidc(tmp_path):
+@pytest.mark.parametrize("inherited_oidc", [None, "1"])
+def test_launcher_reuses_native_auth_without_environment_override(tmp_path, monkeypatch, inherited_oidc):
+    if inherited_oidc is not None:
+        monkeypatch.setenv("VIBE_CLI_OIDC_ENABLED", inherited_oidc)
     trace = load_trace()
     launcher = ModuleType("vibe.cli.launcher")
     calls = []
@@ -174,9 +177,24 @@ def test_launcher_selects_installed_tui_and_child_only_oidc(tmp_path):
     assert dict(os.environ) == before
     args, kwargs = calls[0]
     assert args == (["--help"],)
-    assert kwargs["extra_env"] == {"VIBE_CLI_OIDC_ENABLED": "1"}
+    assert kwargs["extra_env"] is None
     assert kwargs["app_server_cmd"] == [sys.executable, str(SCRIPT), "--app-server", "--capture-dir", str(directory)]
     assert not directory.exists()
+
+
+def test_experimental_oidc_and_portable_storage_require_explicit_opt_in(tmp_path):
+    trace = load_trace()
+    launcher = ModuleType("vibe.cli.launcher")
+    calls = []
+    launcher.exec_rust_cli = lambda *args, **kwargs: calls.append((args, kwargs))
+    with patch.dict(sys.modules, {"vibe.cli.launcher": launcher}):
+        with pytest.raises(SystemExit) as observed:
+            trace.main(["--portable-store"])
+        assert observed.value.code == 2
+        trace.main(["--oidc", "--portable-store", "--capture-dir", str(tmp_path / "capture")])
+    assert len(calls) == 1
+    assert calls[0][1]["extra_env"] == {"VIBE_CLI_OIDC_ENABLED": "1"}
+    assert calls[0][1]["app_server_cmd"][-2:] == ["--oidc", "--portable-store"]
 
 
 def test_native_organization_workspace_headers_and_token_counts(tmp_path):
@@ -224,9 +242,11 @@ def test_app_server_restart_uses_new_private_child_directory(tmp_path):
     run_root = tmp_path / "run"
     with patch.dict(sys.modules, {"vibe.app_server.stdio": server}), \
             patch.object(trace, "install_capture", side_effect=sinks.append), \
-            patch.object(trace, "install_keyring_diagnostics"):
+            patch.object(trace, "install_keyring_diagnostics"), \
+            patch.object(trace, "install_portable_store") as portable:
         for _ in range(2):
             trace.main(["--app-server", "--capture-dir", str(run_root)])
+    portable.assert_not_called()
     assert len(sinks) == 2
     assert sinks[0].directory != sinks[1].directory
     assert all(sink.directory.parent == run_root for sink in sinks)

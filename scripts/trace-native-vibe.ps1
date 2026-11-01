@@ -1,5 +1,7 @@
 param(
     [string]$CaptureDir,
+    [switch]$Oidc,
+    [switch]$PortableStore,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$VibeArgs
 )
@@ -11,7 +13,9 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     throw "Installed uv mistral-vibe Python not found: $python"
 }
 $launcher = Join-Path $PSScriptRoot 'trace-native-vibe.py'
-$arguments = @($launcher, '--portable-store')
+$arguments = @($launcher)
+if ($Oidc) { $arguments += '--oidc' }
+if ($PortableStore) { $arguments += '--portable-store' }
 if ($CaptureDir) { $arguments += @('--capture-dir', $CaptureDir) }
 if ($VibeArgs) { $arguments += '--'; $arguments += $VibeArgs }
 & $python @arguments

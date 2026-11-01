@@ -91,3 +91,19 @@ captures cannot recover those IDs. A future bounded capture amendment should
 preserve those actual server trace headers. HTTP 200 itself carries no recorded
 proof of Vibe billing. Root cause remains unresolved; a native CLI comparison
 under the same account/model or server-side attribution evidence is required.
+
+## Working native baseline supplied by user
+
+The user reports normal `vibe` uses Vibe quota, while the instrumented launcher
+uses API quota. The latter forced experimental CLI OIDC and separate storage;
+it was therefore not a neutral native capture. A read-only installed resolver
+check returned `oidc_enabled=False` and credential source `keyring`, without
+printing the credential. Normal native browser sign-in exchanges a browser
+session for a Vibe credential (`api_key` response field), whereas experimental
+CLI OIDC forwards an ID token. These are distinct auth paths. Do not assume that
+any browser login or direct OIDC token implies the same subscription attribution.
+
+Capture must preserve existing native authentication by default. The user asks
+to reuse the working Vibe auth. The existing proxy/provider direct OIDC contract
+has not yet been changed; request metadata parity alone is not a demonstrated
+quota solution.

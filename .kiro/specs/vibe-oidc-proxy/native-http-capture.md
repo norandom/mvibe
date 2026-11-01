@@ -77,3 +77,29 @@ store and short Windows keyring key, then loaded the signed-out state. The
 guard refused to initialize over an existing file. No browser login or inference
 was performed. The PowerShell launcher enables portable storage automatically;
 the installed native Vibe source and OpenCode credentials remain unchanged.
+
+## Corrected baseline: reuse existing native authentication
+
+The user reports normal Vibe consumes Vibe quota, but the diagnostic launcher
+consumes API quota. The launcher forced experimental `VIBE_CLI_OIDC_ENABLED=1`
+and isolated persistence, so it was not a neutral observation of normal Vibe.
+Native source has two distinct paths: normal browser sign-in exchanges through
+`/vibe/sign-in/{process_id}/exchange` and receives an `api_key` field; the
+experimental CLI OIDC registration instead obtains and forwards an ID token.
+A browser login alone does not make those credential types interchangeable.
+
+- [x] Make capture preserve inherited authentication, environment and native
+  persistence by default. Stop forcing OIDC or portable persistence in
+  PowerShell. Keep experimental OIDC/storage only behind explicit flags. Add
+  launch regression tests and independently review. No new login or inference
+  is required to install this correction.
+
+This supersedes the earlier assertion that the launcher was an unchanged native
+auth baseline. The user's normal CLI quota result is the working reference;
+direct OIDC quota attribution remains unresolved. Do not claim the proxy/plugin
+is fixed or silently replace its auth protocol based on display labels.
+
+Correction verification: independent review APPROVED; 20 focused tests and Ruff
+passed. Default launch tests reject forced OIDC and portable-store installation;
+explicit experimental options remain labeled and tested. PowerShell installed
+native `--version` smoke passed. No live inference or login was performed.

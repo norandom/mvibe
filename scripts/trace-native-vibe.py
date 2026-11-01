@@ -406,9 +406,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture-dir", type=Path, help="New absolute private directory; never reused")
     parser.add_argument("--app-server", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--oidc", action="store_true",
+                        help="Opt into the experimental direct-ID-token OIDC flow")
     parser.add_argument("--portable-store", action="store_true",
                         help="Use isolated encrypted native credential persistence")
     args, passthrough = parser.parse_known_args(argv)
+    if args.portable_store and not args.oidc:
+        parser.error("--portable-store requires explicit --oidc")
     if passthrough[:1] == ["--"]:
         passthrough = passthrough[1:]
     if args.app_server:
@@ -436,12 +440,16 @@ def main(argv=None):
         parser.error("--capture-dir must name a new absolute directory")
     from vibe.cli.launcher import exec_rust_cli
     print(f"Native Vibe HTTP capture: {directory}", file=sys.stderr)
-    print("Prompts/tool arguments are sensitive. Browser OIDC enabled for this child only.", file=sys.stderr)
+    print("Prompts/tool arguments are sensitive. Existing native authentication is preserved.", file=sys.stderr)
     server_command = [sys.executable, str(Path(__file__).resolve()), "--app-server", "--capture-dir", str(directory)]
+    if args.oidc:
+        server_command.append("--oidc")
+        print("Experimental direct-ID-token OIDC enabled for this child only.", file=sys.stderr)
     if args.portable_store:
         server_command.append("--portable-store")
         print("Native login uses isolated encrypted persistence in LOCALAPPDATA/mvibe-native-auth.", file=sys.stderr)
-    exec_rust_cli(passthrough, extra_env={"VIBE_CLI_OIDC_ENABLED": "1"}, app_server_cmd=server_command)
+    exec_rust_cli(passthrough, extra_env={"VIBE_CLI_OIDC_ENABLED": "1"} if args.oidc else None,
+                  app_server_cmd=server_command)
 
 
 if __name__ == "__main__":
