@@ -11,7 +11,9 @@ import { registerRequestContext } from "./request-context.js";
 
 export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options" | "aisdk" | "event" | "session" | "app">;
 
-function settings(options: Plugin.Context["options"]): { command: HelperCommand; audience: string } {
+function settings(options: Plugin.Context["options"]): { command: HelperCommand; audience: string; existingVibe: boolean } {
+  if (options.authSource !== undefined && options.authSource !== "oidc" && options.authSource !== "existing-vibe") throw new BridgeError("setup", "Configure authSource as existing-vibe or oidc.");
+  const existingVibe = options.authSource === "existing-vibe";
   const value = options.helperCommand;
   const audience = options.audience;
   if (!value || typeof value !== "object" || Array.isArray(value) || typeof audience !== "string" || !audience.trim()) throw new BridgeError("setup");
@@ -21,16 +23,16 @@ function settings(options: Plugin.Context["options"]): { command: HelperCommand;
   const name = basename(command.executable);
   const uv = /^uv(\.exe)?$/i.test(name);
   if (uv ? args[0] !== "run" || !args.includes("--offline") || !args.includes("--no-sync") : !isAbsolute(command.executable) || !/^python(?:\d+(?:\.\d+)*)?(\.exe)?$/i.test(name) || /windowsapps/i.test(command.executable)) throw new BridgeError("setup");
-  if (args.length < 3 || !["-m", "--module"].includes(args.at(-3)!) || args.at(-2) !== "mvibe_auth" || args.at(-1) !== "bridge") throw new BridgeError("setup", "Configure helperCommand with an installed uv-managed runtime ending in -m mvibe_auth bridge; browser sign-in uses the matching login command.");
-  return { command: { executable: command.executable, args: [...args] }, audience };
+  if (args.length < 3 || !["-m", "--module"].includes(args.at(-3)!) || args.at(-2) !== "mvibe_auth" || !(args.at(-1) === "bridge" || (existingVibe && args.at(-1) === "bridge-vibe"))) throw new BridgeError("setup", "Configure helperCommand with an installed uv-managed runtime ending in -m mvibe_auth bridge (or bridge-vibe with authSource existing-vibe).");
+  return { command: { executable: command.executable, args: [...args.slice(0, -1), existingVibe ? "bridge-vibe" : "bridge"] }, audience, existingVibe };
 }
 
 export async function setupVibe(ctx: RegistrationContext) {
-  const { command, audience } = settings(ctx.options);
+  const { command, audience, existingVibe } = settings(ctx.options);
   const baseURL = providerBaseURL(audience);
   const bridge = new StdioBridge({ command, audience });
   const providerID = Provider.ID.make("vibe-oidc");
-  const fetch = createProviderFetch(bridge, audience, globalThis.fetch, { diagnostics: ctx.options.diagnostics === true, ...(typeof ctx.options.captureDirectory === "string" ? { captureDirectory: ctx.options.captureDirectory } : {}), captureBody: ctx.options.captureBody === true });
+  const fetch = createProviderFetch(bridge, audience, globalThis.fetch, { authSource: existingVibe ? "existing-vibe" : "oidc", diagnostics: ctx.options.diagnostics === true, ...(typeof ctx.options.captureDirectory === "string" ? { captureDirectory: ctx.options.captureDirectory } : {}), captureBody: ctx.options.captureBody === true });
   let hostModels: ReadonlyMap<string, unknown> = new Map();
   const catalog = createModelCatalog({ active: () => ctx.integration.connection.active(providerID), reload: () => ctx.provider.reload(), bridge, fetch, baseURL, metadata: () => metadataFromHostCatalog(hostModels, ctx.options.modelMetadata ?? {}), report: message => console.warn(message) });
   const events = new AbortController();
@@ -48,7 +50,7 @@ export async function setupVibe(ctx: RegistrationContext) {
       editor.add({ info: { ...Provider.Info.empty(providerID), name: "Mistral-Vibe", activation: "enabled", package: "aisdk:@ai-sdk/openai-compatible" }, ...catalog.snapshot });
     }));
     registrations.push(await ctx.integration.transform(editor => {
-      editor.method.update({ integrationID: providerID, method: { id: "vibe-browser", type: "command", label: "Mistral-Vibe", command: [command.executable, ...command.args.slice(0, -1), "login"] } });
+      editor.method.update({ integrationID: providerID, method: { id: "vibe-browser", type: "command", label: existingVibe ? "Use existing Vibe login" : "Mistral-Vibe", command: [command.executable, ...command.args.slice(0, -1), existingVibe ? "login-vibe" : "login"] } });
     }));
     registrations.push(await ctx.aisdk.hook("sdk", async event => {
       event.options.maxRetries = 0;

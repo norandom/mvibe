@@ -1,12 +1,14 @@
 # mvibe
 
-Use Vibe browser OIDC from a local OpenAI-compatible
-proxy or the direct OpenCode 2 provider. Both use the same Python authentication
-library. No Mistral API key is needed.
+Use an existing normal Vibe login from the direct OpenCode 2 provider or the
+optional local OpenAI-compatible proxy. Both use the same Python authentication
+library. Sign in through normal Vibe first; there is no manual API-key entry.
 
-Vibe-versus-API quota attribution is under investigation after a reported API
-counter increase. A successful OIDC request does not establish which budget is
-charged. The first release is held pending this check.
+The user observed Vibe quota usage with normal Vibe and API counter usage with
+the experimental direct OIDC ID-token route. The existing-login mode reuses the
+credential stored by normal Vibe. A keyring entry alone does not prove how the
+credential was issued or which budget will be charged. The first release remains
+held pending the user's live quota check of the integrated provider.
 
 For a prebuilt install on Linux, Windows or macOS, download the ZIP and
 `SHA256SUMS` from [GitHub Releases](https://github.com/norandom/mvibe/releases),
@@ -22,7 +24,9 @@ use the proxy sequence afterward. These examples use PowerShell on Windows.
 ## Install Mistral-Vibe directly in OpenCode
 
 The direct provider does not use the proxy. It calls Mistral through the shared
-Python OIDC library, including the same encrypted credentials and refresh logic.
+Python authentication library. New installs select `authSource: "existing-vibe"`
+and read the normal Vibe credential freshly for each request. Normal Vibe owns
+sign-in and credential renewal; this mode does not open another browser flow.
 Prepare native uv, Bun 1.4.4 and OpenCode 2, then run from this checkout:
 
 ```powershell
@@ -39,19 +43,23 @@ If tools are not on PATH, pass `-Bun`, `-Uv` and `-OpenCode` executable paths to
 PowerShell, or `--bun`, `--uv` and `--opencode` to Bash. The installer prepares
 locked dependencies, builds the plugin and adds it to your user config. Existing
 JSONC comments and unrelated settings are retained; changed configs get a backup.
-Running it again updates the same entry. Use `-ConfigPath` / `--config-path` for
+Running it again updates the same entry and preserves its authentication choice.
+Existing entries without `authSource` retain experimental OIDC compatibility;
+set `"authSource": "existing-vibe"` in their plugin options to migrate deliberately.
+Use `-ConfigPath` / `--config-path` for
 another configuration file. Setup can download dependencies and does not start
 the proxy or sign in automatically.
 
-Restart OpenCode, then connect the provider:
+Finish normal Vibe browser sign-in, restart OpenCode, then connect using
+**Use existing Vibe login** (or the stable CLI method below):
 
 ```powershell
 opencode auth login vibe-oidc --method vibe-browser --standalone
 ```
 
 Open `/models` and choose **Mistral-Vibe**. Its saved provider ID remains
-`vibe-oidc`, so CLI model names use `vibe-oidc/<model-id>`. Existing matching OIDC
-credentials can be reused without another browser sign-in. The provider exposes
+`vibe-oidc`, so CLI model names use `vibe-oidc/<model-id>`. Connection verifies the
+existing Vibe credential and saves only a non-secret OpenCode marker. The provider exposes
 authenticated model IDs with complete metadata from OpenCode's Mistral catalog
 or your explicit overrides; incomplete entries are omitted. Keep this checkout
 and its prepared dependencies in place. See the
@@ -76,7 +84,12 @@ Setup may download Python and dependencies. Use uv-managed Python throughout;
 there is no need to install Windows Store Python. Bun is needed only for the
 direct TypeScript plugin and its tests.
 
-## 2. Start the proxy and finish browser sign-in
+## 2. Start the experimental OIDC proxy and finish browser sign-in
+
+The sequence below explicitly describes the legacy OIDC ID-token route, which
+uses a separate encrypted store and refresh flow. It is separate from the
+recommended existing-login provider above. See `proxy.py --help` for the optional
+existing-login proxy mode.
 
 In terminal A:
 

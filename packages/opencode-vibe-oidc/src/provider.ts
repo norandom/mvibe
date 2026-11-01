@@ -7,7 +7,7 @@ import { REQUEST_CONTEXT_HEADER } from "./request-context.js";
 import type { RequestContext } from "./protocol.js";
 
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-export type ProviderFetchOptions = CaptureOptions & { diagnostics?: boolean; capture?: ReturnType<typeof createHttpCapture> };
+export type ProviderFetchOptions = CaptureOptions & { diagnostics?: boolean; authSource?: "existing-vibe" | "oidc"; capture?: ReturnType<typeof createHttpCapture> };
 const credentialHeaders = new Set(["authorization", "x-external-organization-id", "x-external-workspace-id"]);
 const clientMetadataHeaders = new Set(["user-agent"]);
 
@@ -21,6 +21,7 @@ export function providerBaseURL(audience: string): string {
   } catch { throw new BridgeError("destination", "Invalid provider audience configuration."); }
 }
 export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audience: string, transport: ProviderFetch = globalThis.fetch, options: ProviderFetchOptions = {}): ProviderFetch & Pick<typeof globalThis.fetch, "preconnect"> {
+  const nativeSignInHint = "Sign in through normal Vibe, then retry; credentials are read from the native keyring.";
   const capture = options.capture ?? createHttpCapture(options);
   const base = new URL(providerBaseURL(audience));
   const paths = new Set(["models", "chat/completions", "embeddings"].map(path => base.pathname + "/" + path));
@@ -41,7 +42,7 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
       // Only names from the destination guard reach diagnostics, never URLs.
       diagnostic.endpoint = target.pathname.slice(base.pathname.length + 1);
       diagnostic.phase = "authentication";
-      diagnostic.hint = "Run OpenCode Vibe OIDC sign-in with the configured helper runtime; verify tenant access.";
+      diagnostic.hint = options.authSource === "existing-vibe" ? nativeSignInHint : "Run OpenCode Vibe OIDC sign-in with the configured helper runtime; verify tenant access.";
       const chat = target.pathname === base.pathname + "/chat/completions" && request.method === "POST";
       let requestContext: RequestContext = {};
       const encodedContext = request.headers.get(REQUEST_CONTEXT_HEADER);
@@ -100,7 +101,7 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
       diagnostic.outcome = response.status >= 400 ? "upstream_error" : "headers_received";
       diagnostic.hint = ({
         400: "Check tool schema and request fields against the selected model capabilities.",
-        401: "Run OpenCode Vibe OIDC sign-in again; verify account and tenant access.",
+        401: options.authSource === "existing-vibe" ? nativeSignInHint : "Run OpenCode Vibe OIDC sign-in again; verify account and tenant access.",
         403: "Check Vibe tenant and model access; OpenCode owns tool permissions.",
         422: "Check tool schema and reasoning history serialization against the selected model; update the provider before an explicit retry.",
         429: "Respect upstream rate limits before an explicit retry; no inference was replayed.",

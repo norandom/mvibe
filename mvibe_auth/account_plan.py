@@ -1,6 +1,6 @@
 """Optional account-derived attribution for one adapter/auth-session lifetime.
 
-The OIDC-only endpoint and plan labels follow Vibe 3.0.4
+The credential-specific endpoints and plan labels follow Vibe 3.0.4
 ``vibe/setup/auth/whoami.py`` (see LICENSE.vibe). No account response can change
 credential destinations. Nothing from the response or request is logged.
 """
@@ -28,7 +28,7 @@ _CACHE_TTL_SECONDS = 300.0
 _FAILURE_TTL_SECONDS = 30.0
 _MAX_ENTRIES = 32
 _TENANT_HEADERS = ('x-external-organization-id', 'x-external-workspace-id')
-type _Key = tuple[str, str, str]
+type _Key = tuple[str, str, str, str]
 
 
 class _AccountContext(BaseModel):
@@ -56,7 +56,7 @@ def _reject_constant(value: str) -> None:
 class AccountPlanResolver:
     """Bounded, memory-only cache; concurrent reads share one cancellable lookup.
 
-    Configuration and the resolved ID-token snapshot come from the same owner.
+    Configuration and the resolved authentication snapshot come from the same owner.
     Transport injection is Python-only and never selectable by wire input.
     Unknown registrations have no account destination and perform no HTTP.
     """
@@ -87,9 +87,9 @@ class AccountPlanResolver:
         headers = {name.lower(): value for name, value in snapshot.headers.items()}
         authorization = headers.get('authorization', '')
         lifetime = (snapshot.expires_at - datetime.now(timezone.utc)).total_seconds()
-        if snapshot.kind != 'id_token' or not authorization.startswith('Bearer ') or lifetime <= 0:
+        if snapshot.kind not in ('id_token', 'vibe_credential') or not authorization.startswith('Bearer ') or lifetime <= 0:
             return None
-        key = (snapshot.revision, *(headers.get(name, '') for name in _TENANT_HEADERS))
+        key = (snapshot.kind, snapshot.revision, *(headers.get(name, '') for name in _TENANT_HEADERS))
         cached = self._cache.get(key)
         if cached is not None and cached[0] > self._clock():
             self._cache.move_to_end(key)
@@ -98,9 +98,10 @@ class AccountPlanResolver:
         if task is None:
             if len(self._inflight) >= _MAX_ENTRIES:
                 return None
-            outbound = {name: headers[name] for name in ('authorization', 'user-agent', *_TENANT_HEADERS)
+            names = ('authorization', 'user-agent') + (_TENANT_HEADERS if snapshot.kind == 'id_token' else ())
+            outbound = {name: headers[name] for name in names
                         if name in headers}
-            task = asyncio.create_task(self._lookup(key, outbound, lifetime))
+            task = asyncio.create_task(self._lookup(key, outbound, lifetime, snapshot.kind))
             self._inflight[key] = task
         self._waiters[key] = self._waiters.get(key, 0) + 1
         try:
@@ -115,14 +116,15 @@ class AccountPlanResolver:
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
 
-    async def _lookup(self, key: _Key, headers: dict[str, str], lifetime: float) -> str | None:
+    async def _lookup(self, key: _Key, headers: dict[str, str], lifetime: float, kind: str) -> str | None:
         plan = None
         try:
             async with asyncio.timeout(ACCOUNT_TIMEOUT_SECONDS):
                 if self._client is None:
                     self._client = VibeAsyncHTTPClient(auth_config=self._config, transport=self._transport,
                         verify=build_ssl_context(), timeout=ACCOUNT_TIMEOUT_SECONDS, follow_redirects=False)
-                async with self._client.stream('GET', self._url, headers=headers,
+                url = self._url.replace('/account-context', '/whoami') if kind == 'vibe_credential' else self._url
+                async with self._client.stream('GET', url, headers=headers,
                                                follow_redirects=False) as response:
                     if response.status_code == 200:
                         body = bytearray()

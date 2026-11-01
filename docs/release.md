@@ -25,9 +25,17 @@ login, keyring access or browser launch occurs during release installation.
 
 The installer preserves JSONC comments, unrelated settings and plugin options,
 creates a backup before modifying existing configuration, and can be rerun.
-Restart OpenCode, connect Mistral-Vibe and select a model. Authentication uses the
-shared Python OIDC implementation and encrypted credential store; account access
-is a separate operator action. See opencode-provider.md in the source repository
+New plugin entries explicitly select `authSource: "existing-vibe"`. Complete
+normal Vibe browser sign-in, restart OpenCode, connect with **Use existing Vibe
+login** and select a model. The shared Python library reads the native Vibe
+keyring credential for each request; normal Vibe handles renewal. Connection
+verifies that credential without opening a new browser flow or accepting manual
+API keys. Keyring presence does not prove issuance or quota entitlement.
+Rerunning the installer preserves existing `authSource` choices; existing entries
+without this option keep the experimental OIDC ID-token route. Add
+`"authSource": "existing-vibe"` deliberately to migrate those entries. Explicit
+`"authSource": "oidc"` uses the separate encrypted OIDC store and refresh flow.
+See opencode-provider.md in the source repository
 for the complete operator and compatibility guide. Do not move/delete this
 release directory while its plugin reference remains in your OpenCode config.
 The optional proxy is included: run `uv run --offline --no-sync --project . python proxy.py --help`

@@ -43,7 +43,7 @@ class AuthError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class AuthSnapshot:
-    """ID-token inference/tenant authorization for one target and request.
+    """Opaque inference authorization for one target and request.
 
     UserInfo's access-token credential contract remains separate. No token bundle
     or refresh credential is part of this interface. Adapters must not serialize
@@ -55,7 +55,7 @@ class AuthSnapshot:
     revision: str
     target: str
     outcome: Literal['resolved', 'completed', 'reused_current'] = 'resolved'
-    kind: Literal['id_token'] = field(default='id_token', init=False)
+    kind: Literal['id_token', 'vibe_credential'] = 'id_token'
 
     def __post_init__(self) -> None:
         headers = dict(self.headers)

@@ -1,4 +1,4 @@
-"""Public Vibe ID-token authentication API; importing performs no I/O."""
+"""Public Vibe authentication API; importing performs no I/O."""
 __version__ = "3.0.4"
 
 from mvibe_auth.api import (
@@ -6,6 +6,8 @@ from mvibe_auth.api import (
     AuthStatus, LoginCompleted, LoginHandle, LoginOutcome, LoginReusedCurrent,
 )
 
-__all__ = ['AuthConfig', 'AuthError', 'AuthFailure', 'AuthFailureCode', 'AuthSession',
+from mvibe_auth.existing_vibe import ExistingVibeSession
+
+__all__ = ['ExistingVibeSession', 'AuthConfig', 'AuthError', 'AuthFailure', 'AuthFailureCode', 'AuthSession',
            'AuthSnapshot', 'AuthStatus', 'LoginCompleted', 'LoginHandle',
            'LoginOutcome', 'LoginReusedCurrent']

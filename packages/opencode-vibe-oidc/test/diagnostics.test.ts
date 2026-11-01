@@ -53,6 +53,31 @@ test.each([200, 401])("safe header outcome and OIDC hint for %s", async status =
   } finally { stderr.mockRestore(); }
 });
 
+test.each(["401", "resolve"])("existing Vibe login gives secret-safe native sign-in guidance for %s", async failure => {
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  const stdout = spyOn(console, "log").mockImplementation(() => {});
+  const response = new Response("secret-upstream-body", { status: 401, headers: { "x-request-id": "secret-response-header" } });
+  const source = failure === "resolve" ? { request: async () => { throw new BridgeError("auth", "secret-keyring-detail"); } } as Pick<StdioBridge, "request"> : bridge;
+  let sends = 0;
+  const fetch = createProviderFetch(source, audience, async () => { sends++; return response; }, { diagnostics: true, authSource: "existing-vibe" });
+  try {
+    const result = fetch(url, { method: "POST", body: '{"model":"secret-model","messages":"secret-prompt"}', headers: { "x-request-id": "secret-caller-header" } });
+    if (failure === "resolve") await expect(result).rejects.toBeInstanceOf(BridgeError);
+    else {
+      const returned = await result;
+      expect(returned.body).toBe(response.body); expect(response.bodyUsed).toBe(false);
+      await returned.body!.cancel();
+    }
+    expect(sends).toBe(failure === "resolve" ? 0 : 1);
+    expect(stdout).not.toHaveBeenCalled(); expect(stderr).toHaveBeenCalledTimes(1);
+    const row = JSON.parse(stderr.mock.calls[0]![0]);
+    expect(row).toMatchObject({ phase: failure === "resolve" ? "authentication" : "response_headers", status: failure === "resolve" ? null : 401 });
+    expect(row.hint).toBe("Sign in through normal Vibe, then retry; credentials are read from the native keyring.");
+    expect(JSON.stringify(row)).not.toMatch(/secret|private|example|OIDC/);
+    expect(Object.hasOwn(row, "headers")).toBe(false); expect(Object.hasOwn(row, "body")).toBe(false);
+  } finally { stderr.mockRestore(); stdout.mockRestore(); }
+});
+
 test.each(["resolve", "transport", "policy", "cancelled"])("safe failure diagnostics: %s", async failure => {
   const stderr = spyOn(console, "error").mockImplementation(() => {});
   let sends = 0;

@@ -17,6 +17,7 @@ import sys
 
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
 from mvibe_auth.account_plan import AccountPlanResolver
+from mvibe_auth.existing_vibe import ExistingVibeSession, NATIVE_SIGN_IN_MESSAGE
 from mvibe_auth._bridge_protocol import (
     AuthError as WireError, Failure, MAX_FRAME_BYTES, ProtocolError,
     Request, RESULT_MODELS, Success, parse_request,
@@ -48,7 +49,7 @@ def _correlation(frame: bytes) -> str | None:
 async def serve(
     read_frame: Callable[[int], Awaitable[bytes]],
     write_frame: Callable[[bytes], Awaitable[None]],
-    *, session_factory: Callable[[], AuthSession] | None = None,
+    *, session_factory: Callable[[], AuthSession | ExistingVibeSession] | None = None,
     account_plan_factory: Callable[[AuthConfig], AccountPlanResolver] | None = None,
 ) -> None:
     """Serve bounded frames with concurrent operations and serialized output.
@@ -60,7 +61,7 @@ async def serve(
     login.cancel. Shutdown stops admission and drains rather than adding work.
     """
     factory = session_factory or create_session
-    session: AuthSession | None = None
+    session: AuthSession | ExistingVibeSession | None = None
     account_plan: AccountPlanResolver | None = None
     active: dict[str, asyncio.Task[None]] = {}
     suppressed: set[str] = set()
@@ -87,7 +88,7 @@ async def serve(
         await emit(Failure(version=1, id=id, ok=False,
             error=WireError(code=code, message=message, retryable=retryable)), suppressible=suppressible)
 
-    def owner() -> AuthSession:
+    def owner() -> AuthSession | ExistingVibeSession:
         nonlocal session, account_plan
         if session is None:
             session = factory()
@@ -137,7 +138,10 @@ async def serve(
         except AuthError as error:
             safe = error.failure
             # Construction/configuration failures need actionable setup guidance.
-            await failure(request.id, safe.code, safe.message if session is not None else _SETUP_MESSAGE, safe.retryable, suppressible=True)
+            message = safe.message if session is not None else _SETUP_MESSAGE
+            if isinstance(session, ExistingVibeSession) and safe.code == 'missing':
+                message = NATIVE_SIGN_IN_MESSAGE
+            await failure(request.id, safe.code, message, safe.retryable, suppressible=True)
         except Exception:
             await failure(request.id, 'transient', _SETUP_MESSAGE if session is None else 'Vibe authentication is temporarily unavailable; retry.', True, suppressible=True)
         finally:
@@ -201,7 +205,7 @@ async def serve(
         await close()
 
 
-async def stdio() -> None:
+async def stdio(*, session_factory: Callable[[], AuthSession | ExistingVibeSession] | None = None) -> None:
     """Portable bounded pipe I/O, including Windows anonymous child pipes."""
     source, destination = sys.stdin.buffer, sys.stdout.buffer
 
@@ -218,4 +222,4 @@ async def stdio() -> None:
     # Keep the original binary pipe only in write(); discard incidental output
     # (including worker-thread prints) rather than buffering secret material.
     with open(os.devnull, 'w') as sink, redirect_stdout(sink), redirect_stderr(sink):
-        await serve(read, write)
+        await serve(read, write, session_factory=session_factory)

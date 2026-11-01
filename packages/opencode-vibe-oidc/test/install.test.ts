@@ -30,6 +30,28 @@ test("prefers existing JSONC, then JSON, then creates JSONC",() => {
 test("creates missing config with no backup and absolute offline helper",async () => {
  const dir=fixture(), file=join(dir,"nested","opencode.jsonc"); const result=await installConfig(file,options); expect(result.backup).toBeUndefined(); const parsed=JSON.parse(readFileSync(file,"utf8")); expect(parsed.plugins[0].options.helperCommand).toEqual({executable:options.uvPath,args:["run","--offline","--no-sync","--project",options.projectPath,"-m","mvibe_auth","bridge"]});
 });
+
+test("new plugin entries explicitly select existing Vibe login", async () => {
+ const dir=fixture(), file=join(dir,"opencode.jsonc");
+ await installConfig(file,options);
+ expect(JSON.parse(readFileSync(file,"utf8")).plugins[0].options.authSource).toBe("existing-vibe");
+});
+
+test.each([undefined,"oidc","existing-vibe"])("reinstall preserves existing authentication selection %s",async authSource => {
+ const dir=fixture(), file=join(dir,"opencode.jsonc");
+ writeFileSync(file,JSON.stringify({plugins:[{package:options.packagePath,options:{authSource}}]}));
+ await installConfig(file,options);
+ const selected=JSON.parse(readFileSync(file,"utf8")).plugins[0].options;
+ expect(selected.authSource).toBe(authSource);
+ expect(Object.hasOwn(selected,"authSource")).toBe(authSource!==undefined);
+});
+
+test("upgrading a preexisting string plugin retains legacy authentication", async () => {
+ const dir=fixture(), file=join(dir,"opencode.jsonc");
+ writeFileSync(file,JSON.stringify({plugins:[options.packagePath]}));
+ await installConfig(file,options);
+ expect(JSON.parse(readFileSync(file,"utf8")).plugins[0].options.authSource).toBeUndefined();
+});
 test("preserves comments within unrelated plugins and retained operator options",async () => {
  const dir=fixture(), file=join(dir,"opencode.jsonc");
  writeFileSync(file,`{"plugins":[\n// unrelated plugin\n{"package":"another", "options":{ /* private option */ "x":true}},\n{"package":${JSON.stringify(options.packagePath)},"options":{ /* keep catalog */ "modelMetadata":{} }}]}`);

@@ -53,6 +53,54 @@ test("distinct production V2 provider registers only browser command, preserves 
   expect(f.disposed).toEqual(["aisdk", "integration", "provider"]);
 });
 
+test.each(["bridge", "bridge-vibe"])("existing-vibe selects native helper from %s without mutating configured argv", async ending => {
+  const f = fixture();
+  Object.assign(f.ctx.options, { authSource: "existing-vibe" });
+  const configured = f.ctx.options.helperCommand as { executable: string; args: string[] };
+  configured.args[configured.args.length - 1] = ending;
+  const commands: unknown[] = [];
+  const request = spyOn(StdioBridge.prototype, "request").mockImplementation(async function (this: StdioBridge) {
+    commands.push((this as unknown as { options: { command: unknown } }).options.command);
+    return { signed_in: false, config_match: true };
+  } as StdioBridge["request"]);
+  let cleanup: (() => Promise<void>) | undefined;
+  try {
+    f.connect("initial");
+    cleanup = await setupVibe(f.ctx);
+    expect(commands).toEqual([{ executable: configured.executable, args: [...configured.args.slice(0, -1), "bridge-vibe"] }]);
+    expect(f.methods).toEqual([{ integrationID: "vibe-oidc", method: { id: "vibe-browser", type: "command", label: "Use existing Vibe login", command: [configured.executable, ...configured.args.slice(0, -1), "login-vibe"] } }]);
+    expect(configured.args.at(-1)).toBe(ending);
+  } finally { await cleanup?.(); request.mockRestore(); }
+});
+
+test("explicit oidc retains the original browser login", async () => {
+  const f = fixture(); Object.assign(f.ctx.options, { authSource: "oidc" });
+  const cleanup = await setupVibe(f.ctx);
+  try { expect(f.methods).toMatchObject([{ method: { label: "Mistral-Vibe", command: expect.arrayContaining(["login"]) } }]); }
+  finally { await cleanup(); }
+});
+
+test.each(["unknown", null, true])("rejects invalid authSource %j before registration", async authSource => {
+  const f = fixture(); Object.assign(f.ctx.options, { authSource });
+  await expect(setupVibe(f.ctx)).rejects.toThrow("authSource");
+  expect(f.providers).toEqual([]);
+});
+
+test.each([undefined, "oidc"])("native helper requires explicit existing-vibe selection (%s)", async authSource => {
+  const f = fixture(); Object.assign(f.ctx.options, { authSource });
+  const args = (f.ctx.options.helperCommand as { args: string[] }).args;
+  args[args.length - 1] = "bridge-vibe";
+  await expect(setupVibe(f.ctx)).rejects.toThrow();
+  expect(f.providers).toEqual([]);
+});
+
+test("existing-vibe rejects arbitrary helper suffixes", async () => {
+  const f = fixture(); Object.assign(f.ctx.options, { authSource: "existing-vibe" });
+  (f.ctx.options.helperCommand as { args: string[] }).args.push("--other");
+  await expect(setupVibe(f.ctx)).rejects.toThrow();
+  expect(f.providers).toEqual([]);
+});
+
 test("V2 SDK hook is provider-scoped and replaces host key options with V3 custom SDK", async () => {
   const f = fixture(); const cleanup = await setupVibe(f.ctx);
   expect(f.hooks).toHaveLength(1); const hook = f.hooks[0]!;

@@ -30,7 +30,7 @@ export async function installConfig(configPath: string, options: InstallOptions)
   const helperCommand = { executable: options.uvPath, args: ["run", "--offline", "--no-sync", "--project", options.projectPath, "-m", "mvibe_auth", "bridge"] };
   const index = matches[0] ?? plugins.length;
   if (matches.length === 0 || typeof plugins[index] === "string") {
-    edit(["plugins", index], { package: options.packagePath, options: { audience: "https://api.mistral.ai", helperCommand } });
+    edit(["plugins", index], { package: options.packagePath, options: { ...(matches.length === 0 ? { authSource: "existing-vibe" } : {}), audience: "https://api.mistral.ai", helperCommand } });
   } else {
     const entry = plugins[index] as Record<string, unknown>;
     if (entry.options === undefined) edit(["plugins", index, "options"], {});
@@ -60,6 +60,8 @@ const help = `Install the direct Mistral-Vibe provider into OpenCode 2.
 Options: --config-path FILE --uv EXECUTABLE --bun EXECUTABLE --opencode EXECUTABLE
          --skip-prepare (use an already prepared installation) --help
 Prerequisites: native uv, Bun 1.4.4, OpenCode 2. Preparation may download locked dependencies.
+New provider entries use existing Vibe login; sign in through normal Vibe first.
+Existing entries retain their authSource (absent means experimental OIDC).
 No login, proxy, tool installation or application restart is performed.`;
 
 export interface InstallerRuntime {
@@ -119,6 +121,7 @@ export async function runInstaller(args: string[], runtime: InstallerRuntime = n
   run([uv, "run", "--offline", "--no-sync", "--project", root, "python", "-c", "import sys, mvibe_auth; assert sys.version_info >= (3, 12)"]);
   const result = await installConfig(configPath, { packagePath, projectPath: root, uvPath: uv });
   console.log(result.changed ? "Installed Mistral-Vibe direct provider. Configuration backup created when replacing an existing file." : "Mistral-Vibe direct provider is already installed; configuration unchanged.");
+  console.log("New entries use existing Vibe login: sign in through normal Vibe first. Existing entries retain their authentication selection; absent authSource uses experimental OIDC.");
   console.log("Restart OpenCode to load the plugin. Connect Mistral-Vibe, then open /models. CLI: opencode auth login vibe-oidc --method vibe-browser --standalone");
 }
 if (import.meta.main) runInstaller(process.argv.slice(2)).catch((error: unknown) => { console.error(error instanceof InstallerError ? error.message : "Installation failed. Check native uv, Bun 1.4.4, OpenCode 2, prepared dependencies and valid writable JSON/JSONC configuration. No config values were logged."); process.exitCode = 1; });

@@ -72,3 +72,25 @@ def main() -> int:
         return 1
     sys.stdout.write(CONNECTION_MARKER)
     return 0
+
+
+async def login_existing(*, session_factory=None) -> None:
+    """Validate the native credential locally; native Vibe owns sign-in."""
+    from mvibe_auth.existing_vibe import ExistingVibeSession
+    session = (session_factory or ExistingVibeSession)()
+    try:
+        await session.resolve(session.config.audience.rstrip('/') + '/v1/models')
+    finally:
+        await session.close()
+
+
+def main_existing() -> int:
+    from mvibe_auth.existing_vibe import NATIVE_SIGN_IN_MESSAGE
+    try:
+        with open(os.devnull, 'w') as sink, redirect_stdout(sink), redirect_stderr(sink):
+            asyncio.run(login_existing())
+    except (Exception, KeyboardInterrupt, asyncio.CancelledError):
+        sys.stderr.write(NATIVE_SIGN_IN_MESSAGE + '\n')
+        return 1
+    sys.stdout.write(CONNECTION_MARKER)
+    return 0

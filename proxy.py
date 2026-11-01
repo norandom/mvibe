@@ -102,6 +102,10 @@ def _default_auth_factory() -> AuthSession:
 
 async def login(session: AuthSession, *, force: bool = False) -> None:
     """The caller presents URLs; the shared library owns the login lifecycle."""
+    from mvibe_auth.existing_vibe import ExistingVibeSession
+    if isinstance(session, ExistingVibeSession):
+        await session.resolve(session.config.audience.rstrip('/') + '/v1/models')
+        return
     handle = await session.start_login(force=force)
     if handle.authorization_url:
         print(f"Sign in: {handle.authorization_url}", flush=True)
@@ -216,6 +220,7 @@ def _port(value: str) -> int:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description='Local OpenAI-compatible proxy using Vibe OIDC')
+    parser.add_argument('--auth-source', choices=['oidc', 'existing-vibe'], default='oidc', help='Select experimental OIDC or existing native Vibe credentials')
     parser.add_argument('--port', type=_port, default=8765)
     parser.add_argument('--login', action='store_true', help='Sign in again before serving')
     parser.add_argument('--log', action='store_true', help='Emit safe structured request diagnostics to stdout (default: off)')
@@ -224,7 +229,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         configure_stdout()
     else:
         disable_stdout()
-    uvicorn.run(create_app(force_login=args.login), host='127.0.0.1', port=args.port, access_log=False)
+    if args.auth_source == 'existing-vibe':
+        from mvibe_auth.existing_vibe import ExistingVibeSession
+        selected_app = create_app(auth_factory=ExistingVibeSession, force_login=args.login)
+    else:
+        selected_app = create_app(force_login=args.login)
+    uvicorn.run(selected_app, host='127.0.0.1', port=args.port, access_log=False)
 
 
 if __name__ == '__main__':

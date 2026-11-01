@@ -14,7 +14,7 @@ rebuilding the installed checkout during an active request; the release archive
 provides a separate prebuilt installation path.
 
 The selectable display name is **Mistral-Vibe**; the stable provider ID remains
-`vibe-oidc`. This direct route uses the Python OIDC library and does not need the
+`vibe-oidc`. This direct route uses the Python authentication library and does not need the
 proxy server. Install with `./install.ps1` on Windows or `bash ./install.sh` on
 macOS/Linux from the checkout root. Both support explicit tool/config paths,
 prepare locked dependencies and back up changed configuration while preserving
@@ -23,16 +23,24 @@ JSONC comments. Restart OpenCode and run
 `/models`. Full entry-point instructions are in the [README](../README.md).
 
 Choose the direct `vibe-oidc` plugin or an OpenAI-compatible client pointed at the
-loopback proxy. Both delegate login, refresh and tenant selection to the same
-Python library. There is no API-key fallback. Python 3.12+ installed and managed
+loopback proxy. New provider entries explicitly select `authSource: "existing-vibe"`.
+Sign in through the normal Vibe application first. The provider reads only native
+keyring service `ai.mistral.vibe`, entry `MISTRAL_API_KEY`, freshly for every
+request. It ignores environment API keys and never modifies native credentials.
+Normal Vibe owns sign-in and renewal; replacing the native credential is observed
+on the next request. The connection method **Use existing Vibe login** verifies
+the credential and does not launch another browser flow or accept manual keys.
+Python 3.12+ installed and managed
 through uv is a prerequisite even for the TypeScript plugin.
 
 Both routes send the exact native Vibe 3.0.4 `User-Agent` from the shared library.
 The direct provider accepts only `User-Agent` as helper client metadata alongside
 the three credential/tenant headers; it replaces a caller User-Agent only when
 the helper supplies one. Other helper headers remain excluded. This metadata
-does not establish subscription/quota attribution; account counter behavior
-remains unverified. Chat requests receive the shared native metadata defaults,
+does not establish subscription/quota attribution. The user observed native Vibe
+quota usage and experimental direct OIDC API counter usage. The integrated
+existing-login provider still requires the user's live quota check; no quota
+guarantee follows from a keyring entry or request metadata. Chat requests receive the shared native metadata defaults,
 plus actual OpenCode session/message/client context when available. Unknown
 plan fields are omitted. See the [metadata contract](auth-library.md#native-completion-request-metadata).
 
@@ -65,6 +73,7 @@ prepared `node_modules` and built `dist`; it is not a published package.
   "plugins": [{
     "package": "D:/Source/mvibe/packages/opencode-vibe-oidc",
     "options": {
+      "authSource": "existing-vibe",
       "audience": "https://api.mistral.ai",
       "helperCommand": {
         "executable": "D:/Source/mvibe/.venv/Scripts/python.exe",
@@ -83,7 +92,22 @@ Prepare that project/environment first. Request handling never installs Python,
 libraries or dependencies. On Windows the helper supervisor requires Windows 10+
 native Job Objects and tracks only its owned process tree.
 
-The bridge and login command opt in when `VIBE_CLI_OIDC_ENABLED` is absent;
+With `authSource: "existing-vibe"`, the provider changes the configured terminal
+`bridge` argument to `bridge-vibe` and connects through `login-vibe`. An explicit
+terminal `bridge-vibe` is also supported in this mode. The native credential is
+sent only to trusted Mistral inference destinations; OIDC external tenant headers
+are omitted. Keyring presence cannot establish browser issuance or entitlement;
+obtain the intended credential by completing normal Vibe browser sign-in.
+Missing credentials require that normal Vibe sign-in, then reconnect in OpenCode.
+
+For experimental direct OIDC, set `authSource: "oidc"` and retain a helper ending
+in `bridge`. Omitting `authSource` preserves this legacy behavior. The installer
+sets existing-login mode only for newly added plugin entries; rerunning it keeps
+existing choices, including entries with no option. To migrate one, add
+`"authSource": "existing-vibe"` deliberately and restart OpenCode. Other option
+values are rejected.
+
+In experimental OIDC mode, the bridge and login command opt in when `VIBE_CLI_OIDC_ENABLED` is absent;
 an explicit false value disables OIDC. The plugin's `options.audience` must match
 the Python `VIBE_CLI_OIDC_AUDIENCE` (default
 `https://api.mistral.ai`). Configure issuer/client/callback/scope and optional
@@ -91,7 +115,10 @@ the Python `VIBE_CLI_OIDC_AUDIENCE` (default
 Select **Mistral-Vibe** and its **Mistral-Vibe** connection method in OpenCode. The host
 runs the matching Python `login` command and opens browser sign-in. OpenCode
 persists only `vibe-oidc-connected-v1`, a non-secret marker in a key-shaped record;
-real credentials stay in the shared library's encrypted store. The marker is never
+real OIDC credentials stay in the shared library's separate encrypted store. This
+ID-token route is distinct from the credential issued by normal Vibe browser
+sign-in. In existing-login mode credentials stay in native Vibe's keyring.
+The marker is never
 an upstream API key. Each inference request reloads current credentials through
 the helper; streams and tool calls pass through and cancellation closes work.
 
@@ -122,7 +149,7 @@ check the tested OpenCode 2 SDK pair and rerun compatibility. Auth failures:
 reconnect deliberately; model 401/403 also requires checking account access.
 These errors give setup/reconnection guidance and never offer API-key fallback.
 
-## Loopback proxy route
+## Experimental OIDC loopback proxy route
 
 Prepare `uv sync --locked --python 3.12 --extra proxy`, then run
 `uv run --locked --offline -- python proxy.py`. This starts live browser/account activity
@@ -161,7 +188,7 @@ validate credentials, entitlement, upstream readiness or stream-client recovery.
 Transport cleanup failure retires the client and requires proxy restart; health
 can remain healthy while forwarding returns 502.
 
-Both routes share portable encrypted Python persistence with a short OS-keyring
+The experimental OIDC routes share portable encrypted Python persistence with a short OS-keyring
 encryption key. The legacy Vibe service `ai.mistral.vibe.oidc`, entry
 `cli-oidc:v1:tokens`, is read only when the new store is absent. Subsequent writes
 do not synchronize with installed Vibe. Library consumers cooperate with native

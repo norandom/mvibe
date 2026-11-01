@@ -127,3 +127,9 @@ opaque keys or prove the OpenCode provider is fixed. Next integration should
 explicitly reuse native Vibe authentication, preserve its credential provenance,
 and avoid silent fallback to user-supplied general API keys. Direct ID-token OIDC
 must not be described as quota-equivalent on this account.
+
+The user approved the existing-auth integration. It is implemented, independently
+reviewed and locally installed with `authSource=existing-vibe`; see
+[existing-vibe-auth.md](existing-vibe-auth.md). The actual helper and account
+lookup produced Pro in an intercepted outgoing request without inference.
+This is a pending live counter check, not a confirmed OpenCode quota fix.
