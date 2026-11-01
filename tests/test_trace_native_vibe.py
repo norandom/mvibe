@@ -8,6 +8,7 @@ import sys
 import ssl
 from types import ModuleType
 from unittest.mock import patch
+from unittest.mock import AsyncMock
 
 import httpx2
 import pytest
@@ -342,3 +343,95 @@ def test_keyring_success_and_diagnostic_failure_preserve_behavior(tmp_path):
         with pytest.raises(RuntimeError) as observed:
             module.set_password("private-service", "private-account", "private-token")
     assert observed.value is failure
+
+
+def load_native_credentials():
+    from conftest import _original_env
+    installed = Path(_original_env["APPDATA"]) / "uv/tools/mistral-vibe/Lib/site-packages/vibe/setup/auth/_oidc_credentials.py"
+    if not installed.exists():
+        pytest.skip("Installed native Vibe source is needed for adapter contract tests")
+    spec = importlib.util.spec_from_file_location("_test_native_oidc_credentials", installed)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_portable_native_store_large_lifecycle_isolated_slots_and_cas(tmp_path, monkeypatch):
+    trace = load_trace()
+    native = load_native_credentials()
+    values = {}
+    touched = []
+    def get(service, entry):
+        touched.append((service, entry))
+        return values.get((service, entry))
+    def put(service, entry, value):
+        assert len(value) < 1000  # Simulate the Windows credential-size limit.
+        touched.append((service, entry))
+        values[(service, entry)] = value
+    import keyring
+    monkeypatch.setattr(keyring, "get_password", get)
+    monkeypatch.setattr(keyring, "set_password", put)
+    monkeypatch.chdir(tmp_path)
+    portable = trace.install_portable_store(native=native, credential_dir=tmp_path / "portable")
+    tokens = native.OidcTokens(issuer="https://synthetic.invalid", client_id="client", audience="audience",
+                              subject="subject", access_token="access" * 3000, refresh_token="refresh",
+                              id_token="idtoken" * 3000, expires_at=1234567890)
+    newer = tokens.model_copy(update={"expires_at": 1234567900})
+    tenant = native.OidcTenant(selection="", organization_id="org", workspace_id="workspace")
+    async def run():
+        store = native.OidcCredentialStore()
+        assert await store.load() is None
+        assert await store.save(tokens, complete_on_cancel=True) is None
+        assert (await store.reload()).model_dump_json() == tokens.model_dump_json()
+        assert store._load().model_dump_json() == tokens.model_dump_json()
+        assert await store.save_if_current(newer, expected=tokens) is True
+        assert await store.save_if_current(tokens, expected=tokens) is False
+        # Native tenant writes accept the same identity after a token refresh.
+        assert store.save_tenant(tokens, tenant) is None
+        current = await store.reload()
+        assert current.tenant == tenant and current.expires_at == newer.expires_at
+        # Native refresh ignores tenant-only concurrent updates and retains them.
+        assert await store.save_if_current(newer, expected=newer) is True
+        assert (await store.reload()).tenant == tenant
+        # Plain native saves replace the caller's tenant selection, including None.
+        assert await store.save(newer) is None
+        assert (await store.reload()).tenant is None
+        assert await store.clear() is None
+        assert await native.OidcCredentialStore().reload() is None
+    asyncio.run(run())
+    assert portable._KEYRING_SERVICE == "mvibe.native-comparison.oidc"
+    assert portable._KEYRING_ENTRY == "native:v1:legacy-disabled"
+    assert portable._ENCRYPTION_KEY_ENTRY == "native:v1:fernet-key"
+    assert all(service == "mvibe.native-comparison.oidc" for service, _ in touched)
+    assert all(entry != "cli-oidc:v1:tokens" for _, entry in touched)
+    assert portable.credential_path() == tmp_path / "portable/credentials.v1.enc"
+    encrypted = portable.credential_path().read_bytes()
+    assert b"signed_out" not in encrypted and b"refresh" not in encrypted
+
+
+def test_portable_adapter_cancel_forwarding_and_safe_errors(tmp_path):
+    trace = load_trace()
+    native = load_native_credentials()
+    portable = trace.install_portable_store(native=native, credential_dir=tmp_path / "portable")
+    backend = type("Backend", (), {})()
+    backend.save = AsyncMock(return_value=False)
+    backend.coordinator = portable.MutationCoordinator(tmp_path / "portable/credentials.lock")
+    tokens = native.OidcTokens(issuer="issuer", client_id="client", audience="aud", subject="sub",
+                              access_token="access", refresh_token=None, id_token="id", expires_at=1)
+    with patch.object(portable, "OidcCredentialStore", return_value=backend):
+        store = native.OidcCredentialStore()
+    async def run():
+        with pytest.raises(native.OidcStorageError):
+            await store.save(tokens, complete_on_cancel=True)
+        assert backend.save.call_args.kwargs == {"complete_on_cancel": True}
+        cancellation = asyncio.CancelledError()
+        backend.save.side_effect = cancellation
+        with pytest.raises(asyncio.CancelledError):
+            await store.save(tokens)
+        assert backend.save.call_args.kwargs == {"complete_on_cancel": False}
+        backend.save.side_effect = RuntimeError("private-secret-error")
+        with pytest.raises(native.OidcStorageError) as observed:
+            await store.save(tokens)
+        assert "private" not in str(observed.value)
+    asyncio.run(run())

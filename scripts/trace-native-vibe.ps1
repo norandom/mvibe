@@ -11,7 +11,7 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     throw "Installed uv mistral-vibe Python not found: $python"
 }
 $launcher = Join-Path $PSScriptRoot 'trace-native-vibe.py'
-$arguments = @($launcher)
+$arguments = @($launcher, '--portable-store')
 if ($CaptureDir) { $arguments += @('--capture-dir', $CaptureDir) }
 if ($VibeArgs) { $arguments += '--'; $arguments += $VibeArgs }
 & $python @arguments

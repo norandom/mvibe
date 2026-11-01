@@ -47,3 +47,33 @@ Amendment verification: independent review APPROVED; 16 focused offline tests
 and Ruff passed. Installed uv Python synthetic capture smoke and PowerShell
 native `--version` passed. No inference or keyring writes performed. The user
 must retry native sign-in to produce failure evidence; login is not claimed fixed.
+
+## Native Windows persistence workaround
+
+The retry produced `auth_storage_failure.exception_types=["error"]` during
+native keyring writes, with no recorded auth HTTP transport failure. Native
+Vibe directly saves its full token bundle to Windows Credential Manager.
+
+- [x] Enable isolated portable persistence for the diagnostic native launch,
+  reusing the existing shared encrypted store with a separate native comparison
+  namespace, file, encryption key and native lock. Do not import or mutate
+  OpenCode credentials or the native legacy credential slot. Native browser
+  OAuth, token validation, refresh and HTTP generation remain native; only the
+  persistence adapter changes. Convert token schemas explicitly, preserve CAS
+  and cancellation behavior, and fail safely on incompatible schemas or storage
+  errors. Test large bundles and isolation offline; independently review.
+
+The installed native runtime needed filelock for reuse of the shared store.
+Installed `filelock==3.20.3` using uv into that existing uv-managed tool runtime;
+no other package change was requested. This workaround changes the diagnostic
+storage baseline and must be identified in the comparison evidence.
+
+Verification: independent Kiro review APPROVED; 18 focused offline tests and
+Ruff passed. Tests cover large token
+bundles with a simulated small keyring limit, isolated slots, lifecycle, stale
+CAS, tenant semantics and cancellation. Installed native runtime smoke from a
+foreign working directory initialized an empty encrypted native comparison
+store and short Windows keyring key, then loaded the signed-out state. The
+guard refused to initialize over an existing file. No browser login or inference
+was performed. The PowerShell launcher enables portable storage automatically;
+the installed native Vibe source and OpenCode credentials remain unchanged.

@@ -1,17 +1,19 @@
 """Opt-in, local-only final HTTP capture for the installed official Vibe TUI.
 
-Uses the installed Vibe runtime; never imports this project's proxy or auth.
+Uses installed Vibe authentication and HTTP; portable mode reuses shared persistence.
 Captured prompts/tool arguments can be sensitive even after credential redaction.
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 from datetime import datetime, timezone
 import functools
 import hashlib
 import hmac
 import importlib
+import importlib.util
 import io
 import json
 import os
@@ -290,14 +292,132 @@ def install_keyring_diagnostics(sink):
     keyring.set_password = set_password
 
 
+def install_portable_store(*, native=None, credential_dir=None):
+    """Use the shared encrypted persistence implementation in an isolated namespace."""
+    project = Path(__file__).resolve().parents[1]
+    if str(project) not in sys.path:
+        sys.path.insert(0, str(project))
+    if native is None:
+        from vibe.setup.auth import _oidc_credentials as native
+    spec = importlib.util.spec_from_file_location(
+        "_mvibe_native_portable_credentials", project / "mvibe_auth/_oidc_credentials.py")
+    portable = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = portable
+    spec.loader.exec_module(portable)
+    directory = credential_dir or (
+        Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local"))) / "mvibe-native-auth")
+    if not directory.is_absolute() or directory.is_symlink():
+        raise ValueError("Portable storage needs an absolute private directory")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    secure_directory(directory)
+    portable._KEYRING_SERVICE = "mvibe.native-comparison.oidc"
+    portable._KEYRING_ENTRY = "native:v1:legacy-disabled"
+    portable._ENCRYPTION_KEY_ENTRY = "native:v1:fernet-key"
+    portable.credential_path = lambda: directory / "credentials.v1.enc"
+
+    def safe_error():
+        return native.OidcStorageError("Native comparison credential storage failed")
+
+    def to_native(tokens):
+        return None if tokens is None else native.OidcTokens.model_validate_json(tokens.model_dump_json())
+
+    def to_portable(tokens):
+        return portable.OidcTokens.model_validate_json(tokens.model_dump_json())
+
+    class PortableNativeStore(native.OidcCredentialStore):
+        def __init__(self):
+            self.backend = portable.OidcCredentialStore(
+                coordinator=portable.MutationCoordinator(directory / "credentials.lock"))
+
+        def _load(self):
+            try:
+                return to_native(self.backend._load())
+            except Exception:
+                raise safe_error() from None
+
+        def _reload(self):
+            try:
+                return to_native(self.backend._reload())
+            except Exception:
+                raise safe_error() from None
+
+        async def load(self):
+            try:
+                return to_native(await self.backend.load())
+            except Exception:
+                raise safe_error() from None
+
+        async def reload(self):
+            try:
+                return to_native(await self.backend.reload())
+            except Exception:
+                raise safe_error() from None
+
+        async def save(self, tokens, *, complete_on_cancel=False):
+            async def commit():
+                value = to_portable(tokens)
+                async with self.backend.coordinator.hold_async():
+                    if not await self.backend.save(value, complete_on_cancel=complete_on_cancel):
+                        raise safe_error()
+                    # Plain native saves replace tenant selection too; refresh CAS
+                    # retains the latest selection through save_if_current below.
+                    if not self.backend.save_tenant(value, value.tenant):
+                        raise safe_error()
+            try:
+                # Drain the whole native save (including tenant replacement) before
+                # exposing cancellation, exactly as the native storage worker does.
+                await self._wait_for_worker(asyncio.create_task(commit()), complete_on_cancel=complete_on_cancel)
+            except Exception:
+                raise safe_error() from None
+
+        async def save_if_current(self, tokens, *, expected):
+            try:
+                return await self.backend.save_if_current(to_portable(tokens), expected=to_portable(expected))
+            except Exception:
+                raise safe_error() from None
+
+        async def clear(self):
+            try:
+                if not await self.backend.clear():
+                    raise safe_error()
+            except Exception:
+                raise safe_error() from None
+
+        def save_tenant(self, tokens, tenant):
+            try:
+                # Native tenant writes accept the same identity after refresh.
+                # Hold the shared lock across the authoritative read and delegate.
+                with self.backend.coordinator.hold():
+                    current = self.backend._reload()
+                    if current is None or not current.same_identity(to_portable(tokens)):
+                        return
+                    value = portable.OidcTenant.model_validate_json(tenant.model_dump_json())
+                    if not self.backend.save_tenant(current, value):
+                        raise safe_error()
+            except Exception:
+                raise safe_error() from None
+
+    native.OidcCredentialStore = PortableNativeStore
+    native.clear_oidc_token_cache = portable.clear_oidc_token_cache
+    return portable
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--capture-dir", type=Path, help="New absolute private directory; never reused")
     parser.add_argument("--app-server", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--portable-store", action="store_true",
+                        help="Use isolated encrypted native credential persistence")
     args, passthrough = parser.parse_known_args(argv)
     if passthrough[:1] == ["--"]:
         passthrough = passthrough[1:]
     if args.app_server:
+        if args.portable_store:
+            try:
+                install_portable_store()
+            except Exception as error:
+                print(f"Native portable credential storage unavailable ({type(error).__name__}).", file=sys.stderr)
+                raise SystemExit(1) from None
         try:
             sink = create_run_sink(args.capture_dir)
             install_capture(sink)
@@ -317,8 +437,11 @@ def main(argv=None):
     from vibe.cli.launcher import exec_rust_cli
     print(f"Native Vibe HTTP capture: {directory}", file=sys.stderr)
     print("Prompts/tool arguments are sensitive. Browser OIDC enabled for this child only.", file=sys.stderr)
-    exec_rust_cli(passthrough, extra_env={"VIBE_CLI_OIDC_ENABLED": "1"}, app_server_cmd=[
-        sys.executable, str(Path(__file__).resolve()), "--app-server", "--capture-dir", str(directory)])
+    server_command = [sys.executable, str(Path(__file__).resolve()), "--app-server", "--capture-dir", str(directory)]
+    if args.portable_store:
+        server_command.append("--portable-store")
+        print("Native login uses isolated encrypted persistence in LOCALAPPDATA/mvibe-native-auth.", file=sys.stderr)
+    exec_rust_cli(passthrough, extra_env={"VIBE_CLI_OIDC_ENABLED": "1"}, app_server_cmd=server_command)
 
 
 if __name__ == "__main__":
