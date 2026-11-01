@@ -165,6 +165,7 @@ const sequence = integer(CONTRACT_LIMITS.events);
 const strings = list(identifier);
 const artifact: Check = v => typeof v === "string" && v.length <= CONTRACT_LIMITS.artifact && /^(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(v) && !v.split("/").some(p => p === "." || p === "..");
 // Prepared executable/profile paths are controller input, never persisted report captures.
+// eslint-disable-next-line no-control-regex -- Reject control bytes in executable paths.
 const preparedPath: Check = v => typeof v === "string" && v.length > 0 && v.length <= 4096 && !/[\x00-\x1f\x7f]/.test(v) && !v.includes("://");
 const tool = object({ registryId: identifier, declaredName: identifier, origin: oneOf("native", "plugin", "mcp", "unknown"), schemaHash: hash }, { offeredName: identifier, namespace: identifier, originHash: hash });
 const scope = object({ hash, hostVersion: identifier, hostSha256: hash, sdkVersion: identifier, providerBuildHash: hash, profileHash: hash, agent: identifier, model: identifier, protocolProfile: identifier, negotiatedMcpVersions: strings });

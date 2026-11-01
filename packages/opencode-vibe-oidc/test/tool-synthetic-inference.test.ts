@@ -5,7 +5,7 @@ import { createSyntheticInference } from "./tool-compatibility/synthetic-inferen
 import type { SyntheticPlan, SyntheticRequest } from "./tool-compatibility/synthetic-inference.js";
 import type { LanguageModelV3CallOptions } from "@ai-sdk/provider";
 
-const definition = { description: "Owned fixture", inputSchema: { type: "object", properties: { nested: { type: "array" } }, required: ["nested"] } };
+const definition = { description: "Owned fixture", inputSchema: { type: "object" as const, properties: { nested: { type: "array" as const } }, required: ["nested"] } };
 const input = { nested: [{ text: "雪😀", n: 2.5, ok: true }, null, [1, false]] };
 function setup() {
   const calls = ["native-read", "mcp-read"].map((id, i) => ({ tool: { registryId: id, declaredName: "read", offeredName: `actual_${i}`, origin: "native" as const, originHash: "a".repeat(64), schemaHash: fixtureHash(definition) }, callId: `owned_call_${i}`, input: structuredClone(input), result: `fixture-${i}-雪`, validateInput: (value: unknown) => fixtureHash(value) === fixtureHash(input) }));

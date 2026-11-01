@@ -14,7 +14,7 @@ function fixture() {
   return { fetch, resolved, sent, snapshot: (value: typeof snapshot) => { snapshot = value; }, response: (value: Response) => { response = value; } };
 }
 test("per-fetch rotation replaces caller credentials and preserves tool bytes, method, query and response", async () => {
-  const f = fixture(); const body = '{ "tools": [{"function":{"arguments":"{\\\"x\\\":1}"}}], "stream":true }';
+  const f = fixture(); const body = '{ "tools": [{"function":{"arguments":"{\\"x\\":1}"}}], "stream":true }';
   for (let i = 1; i <= 2; i++) {
     const result = await f.fetch(new Request(url, { method: "POST", body, headers: { Authorization: "Bearer connection-marker", "x-api-key": "caller-key", "api-key": "caller-key", "x-external-workspace-id": "caller", "content-type": "application/json" } }));
     expect(result.status).toBe(401);

@@ -80,7 +80,7 @@ async def test_refresh_omissions_keep_fresh_id_and_refresh(setup):
 @pytest.mark.anyio
 @pytest.mark.parametrize('expiry', [None, NOW - 1, NOW + 30, float('nan'), float('inf')])
 async def test_omitted_id_without_fresh_prior_is_refused(setup, expiry):
-    original = put(setup, id_token_expires_at=expiry)
+    put(setup, id_token_expires_at=expiry)
     with pytest.raises(OidcError, match='re-login'):
         await setup.service.access_tokens(require_id_token=True)
     assert setup.calls == ['synthetic-refresh']

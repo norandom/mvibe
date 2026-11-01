@@ -1,0 +1,150 @@
+name: Check and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+      - name: Check with Dagger
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: '0.21.8'
+          verb: run
+          args: uv run --locked --project .dagger python .dagger/ci.py check
+      - name: Build prebuilt release with Dagger
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          version: '0.21.8'
+          verb: run
+          args: uv run --locked --project .dagger python .dagger/ci.py build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: dist/release/*
+          if-no-files-found: error
+
+  native:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist/release
+      - name: Isolate native dependency cache
+        shell: pwsh
+        run: '"UV_CACHE_DIR=$env:RUNNER_TEMP/uv-cache" >> $env:GITHUB_ENV'
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.5'
+          python-version: '3.12'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+      - name: Prepare locked dependencies
+        shell: bash
+        run: |
+          uv sync --locked --python 3.12
+          uv run --python 3.12 --script proxy.py --help
+          cd packages/opencode-vibe-oidc
+          bun install --frozen-lockfile --ignore-scripts
+      - name: Native offline regression tests
+        shell: bash
+        run: |
+          uv run --locked --offline pytest
+          cd packages/opencode-vibe-oidc
+          bun test
+      - name: Native prebuilt archive installation
+        shell: bash
+        run: |
+          archive=(dist/release/mvibe-*.zip)
+          test "${#archive[@]}" -eq 1
+          uv run --locked --offline python scripts/test_release_install.py --archive "${archive[0]}"
+      - name: Real native OpenCode host integration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pythonRuntime = (& uv run --locked --offline python -c 'import sys; print(sys.executable)').Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $releaseArchive = @(Get-ChildItem dist/release/mvibe-*.zip)
+          if ($releaseArchive.Count -ne 1) { throw 'Expected exactly one release archive.' }
+          $bundleRoot = Join-Path $env:RUNNER_TEMP 'bundle-host'
+          Expand-Archive -LiteralPath $releaseArchive[0].FullName -DestinationPath $bundleRoot
+          $bundleEntry = @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -Filter index.js | Where-Object { $_.Directory.Name -eq 'dist' })
+          if ($bundleEntry.Count -ne 1) { throw 'Expected exactly one bundled provider entry.' }
+          $env:VIBE_TEST_PROVIDER_ENTRY = $bundleEntry[0].FullName
+          Set-Location packages/opencode-vibe-oidc
+          bun node_modules/@opencode/cli/postinstall.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:OPENCODE_TEST_SOURCE = (Resolve-Path node_modules/@opencode/cli/bin/opencode.exe).Path
+          bun run prepare:host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:OPENCODE_TEST_BINARY = (Resolve-Path .host/opencode.exe).Path
+          $env:VIBE_TEST_PYTHON = $pythonRuntime
+          $env:VIBE_HOST_REPORT = Join-Path $env:RUNNER_TEMP 'host-integration.json'
+          bun run test:host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun run test:consumer-host
+          exit $LASTEXITCODE
+      - name: PowerShell lint
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force -ErrorAction Stop
+          ./scripts/lint.ps1
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist/release
+      - name: Validate tag and publish checked artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -1)
+          test "$RELEASE_TAG" = "v$version"
+          cd dist/release
+          sha256sum --check SHA256SUMS
+          gh release create "$RELEASE_TAG" ./* --repo "$GITHUB_REPOSITORY" --verify-tag --title "mvibe $RELEASE_TAG" --notes-file "$GITHUB_WORKSPACE/docs/release-notes.md" --generate-notes

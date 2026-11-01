@@ -36,6 +36,7 @@ dev = [
     "uvicorn",
     "structlog==25.5.0",
     "pytest-xdist>=3.8.0",
+    "ruff==0.14.3",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -47,3 +48,15 @@ include = ["mvibe_auth/", "mvibe_proxy/", "proxy.py", "pyproject.toml", "uv.lock
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers -n 2 --dist=loadscope"
+
+[tool.ruff]
+target-version = "py312"
+extend-exclude = [".tools", ".agents", ".codex", "reports", "dist", "packages", ".venv-packaging"]
+
+[tool.ruff.lint]
+# Correctness first; no wholesale style/format migration for the first release.
+select = ["F", "E9"]
+
+[tool.ruff.lint.per-file-ignores]
+# Imported fixtures and guard modules deliberately run through pytest/import effects.
+"tests/**" = ["F401", "F811"]

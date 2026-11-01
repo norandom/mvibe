@@ -16,6 +16,20 @@ The original HTTP transport version remains unchanged. Preserve
 distribution. This project retains attribution to Mistral Vibe; packaging a new
 facade does not change the origin or license of copied code.
 
+### Canonical Git checkout hashes
+
+The historical inspection hashes later in this document were captured with
+Windows CRLF line endings. Git's committed blobs use LF. The following SHA256
+values identify those exact committed bytes, allowing native Linux/macOS
+checkouts to retain the same provenance check without modifying copied source.
+
+| File | Committed LF SHA256 |
+| --- | --- |
+| LICENSE.vibe | 3375b98d59c50073c1ea6667fda7df54d122f4e8c67d1ae2fb7afdfe311abf27 |
+| mvibe_auth/_credentials_port.py | bcbd8365728b75caa2c14443afcebffddfb2f38e0396c13bc5a696eac7a1a932 |
+| mvibe_auth/_http.py | e8784330c0ce2521bb10dd6aa41799a2bc471482f40f20aad5a2de63aa91c604 |
+| mvibe_auth/concurrency.py | bba28e2edafd6e872973b8061af0666f4a9b384eccc366b705743e24db17c49e |
+
 ## Code-observed flows in the implemented checkout
 
 | Flow | Source and observed contract |

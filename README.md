@@ -4,6 +4,14 @@ Use your Vibe subscription through browser OIDC from a local OpenAI-compatible
 proxy or the direct OpenCode 2 provider. Both use the same Python authentication
 library. No Mistral API key is needed.
 
+For a prebuilt install on Linux, Windows or macOS, download the ZIP and
+`SHA256SUMS` from [GitHub Releases](https://github.com/norandom/mvibe/releases),
+verify the checksum and extract to a permanent directory. With native uv,
+Bun 1.4.4 and OpenCode 2 installed, run `bash ./install.sh` on Linux/macOS or
+`./install.ps1` in PowerShell on Windows. The release installers use the bundled
+wheel/JavaScript; they do not compile the project. uv may download managed Python
+and locked runtime dependencies. See [release installation](docs/release.md).
+
 For OpenCode, install the direct provider below. For curl and protocol checks,
 use the proxy sequence afterward. These examples use PowerShell on Windows.
 

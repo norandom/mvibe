@@ -12,7 +12,7 @@ from typing import Literal, cast
 import keyring
 from keyring.errors import KeyringError
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, field_serializer
+from pydantic import BaseModel, ConfigDict, SecretStr, field_serializer
 from mvibe_auth._coordination import MutationCoordinator
 
 _KEYRING_SERVICE = "ai.mistral.vibe.oidc"
