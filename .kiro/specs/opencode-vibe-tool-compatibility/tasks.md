@@ -1,271 +1,55 @@
-# Implementation Plan
+# Practical implementation plan
 
-Requirements, design and tasks are approved. Implementation is in progress.
-Each subtask is a bounded 1-3 hour coding,
-configuration or verification unit and follows the repository's tests-first and
-independent implementation-review workflow.
+Revision 2 replaces the 36-subtask queue. The user requested a pragmatic baseline
+on 2026-11-01. Three implementation deliverables remain after parallel pytest.
+Requirements/design/remaining-task approval is pending; do not automatically
+resume the old queue. Historical completed work is retained below.
 
-Foundation work precedes core work, explicit integration and acceptance. Order
-implies dependencies for sequential tasks. A (P) task may run after its listed
-prerequisites, provided its design ownership is disjoint and shared contracts,
-vectors, budgets and case schemas are frozen. Parallel fixture work supplies
-family-owned capabilities; central orchestration is integrated later.
+- [x] 1. Make Python regression runs parallel and repeatable
+- [x] 1.1 Enable and verify pytest-xdist
+  - Lock the development dependency, use two workers by default and retain a serial override.
+  - Keep worker/child offline guards, isolated state, prepared uv cache and aggregate JUnit acceptance working.
+  - Complete when the full parallel suite and serial isolation checks pass and the existing acceptance reader consumes its JUnit outcomes.
+  - _Boundary: Python test infrastructure_
+  - _Requirements: 3.1, 3.2_
 
-All verification is mandatory. A capability/baseline gate may finish with a
-proved decision and an explicit unsupported outcome; this does not finish a
-later coding task or grant positive tool coverage. Production corrections need
-recorded conformance failures. Live execution is a separate deliberate command,
-not a side effect of implementation or the default verifier.
+- [ ] 2. Complete the native-tools baseline
+- [ ] 2.1 Finish commands and retain the verified file workflows
+  - Reuse read/glob/grep, write/edit and scoped patch evidence without rebuilding the harness.
+  - Apply the confirmed Windows environment/exit-code fixture fix; verify real shell output, nonzero outcome, denied/invalid cases and bounded cleanup.
+  - Complete when native query, mutation and command probes pass with actual result continuations and independent state checks; untested profiles remain explicit.
+  - _Boundary: Native workspace integration_
+  - _Requirements: 1.1, 1.2, 1.3, 3.3, 4.1_
 
-- [x] 1. Establish prepared runtimes and shared contracts
-- [x] 1.1 Prepare locked dependencies and test-runtime configuration
-  - Prepare the reference host, fixture SDK and V3 type dependencies explicitly, preserving the working provider's pinned runtime and uv-managed Python constraint.
-  - Keep pure checks separate from real-host/MCP process checks; default commands must not install dependencies or touch accounts.
-  - Completion is visible when prepared-runtime/version checks and existing build checks pass, with missing preparation producing an actionable failure.
-  - _Boundary: HostController, dependency preparation_
-  - _Requirements: 5.1, 5.5, 5.6_
-- [x] 1.2 Define immutable scope, inventory and round-trip evidence contracts
-  - Define the approved run, tool identity, scope, correlation, cancellation, outcome and claim contracts with runtime validation and canonical synthetic vectors.
-  - Include exact request/call/tool links, authoritative manifest expectations and separate offline/live outcomes; vectors are not execution evidence.
-  - Completion is visible when valid vectors parse and malformed/unknown fields, unsafe values and inconsistent identities fail without exposing rejected contents.
-  - _Boundary: EvidenceGate, shared contracts and vectors_
-  - _Requirements: 3.2, 3.5, 4.2, 5.2, 5.3, 5.4, 5.5, 5.8, 5.10_
-- [x] 1.3 Define authoritative cases, applicability and execution limits
-  - Establish owned fixture objectives, expected calls/observations, prerequisite states, negative outcomes and required cancellation observations.
-  - Validate case budgets and positive-versus-negative credit rules; record unavailable prerequisites without pretending that a tool executed.
-  - Completion is visible when the default case manifest validates, contradictory expectations fail, and every later case can be assigned a scope and verifiable outcome.
-  - _Boundary: InventoryCoverage, case manifest_
-  - _Requirements: 1.4, 3.4, 4.1, 4.2, 4.3, 5.4, 5.8, 5.10, 6.4_
+- [ ] 3. Prove one real MCP tool workflow
+- [ ] 3.1 Add the owned local fixture and exercise the host client
+  - Use the prepared official SDK and real OpenCode MCP discovery/execution for a nested/Unicode structured-result tool.
+  - Exercise one deliberate tool error and cancellation, preserving call association and owned cleanup.
+  - Complete when real server calls/results reach the next model turn, failures remain failures, and no private MCP config is used.
+  - _Boundary: MCP baseline integration_
+  - _Requirements: 1.2, 1.3, 2.1, 2.2, 3.3, 4.1_
 
-- [x] 2. Implement inventory and independent evidence gates
-- [x] 2.1 Reconcile registered tools with actual session offerings
-  - Combine transformed registry entries, negotiated MCP discovery and every primary turn's effective definitions, preserving namespaces and schema fingerprints.
-  - Distinguish known origins, ambiguous identities, disabled states and absent exposure; never infer provenance from a tool name.
-  - Completion is visible when late/new tools or schema drift produce explicit gaps, while no controlled fixture can grant a PASS to a different private-profile tool.
-  - _Boundary: InventoryCoverage_
-  - _Depends: 1.3_
-  - _Requirements: 1.1, 1.4, 1.5, 2.1, 5.6, 5.7, 5.8, 5.9_
-- [x] 2.2 Validate and assemble scoped positive and negative reports
-  - Validate event/proof joins, manifest-defined expectations, observation hashes, required negatives and cancellation evidence before assembling coverage rows.
-  - Bind results to tool, scope, request chain and mode; deny missing stages, crossed calls, reused result proofs and false all-tool claims.
-  - Completion is visible when mutation tests reject forged/incomplete graphs and a valid synthetic report exposes only its supported subset, without promoting offline evidence to live PASS.
-  - _Boundary: EvidenceGate, report writer_
-  - _Depends: 1.2, 1.3_
-  - _Requirements: 3.2, 3.3, 3.5, 4.2, 4.3, 5.2, 5.3, 5.4, 5.8, 5.10_
-- [x] 2.3 (P) Implement independent read-only report validation
-  - Consume the frozen contracts/vectors and authoritative case expectations through a validator independent of application startup and model execution.
-  - Require matching mode/scope, complete required evidence and bounded fixed-code failures; never import account, browser or credential operations.
-  - Completion is visible when valid reports agree with the writer and malformed, stale, cross-scope or incomplete reports fail through a read-only command.
-  - _Boundary: EvidenceGate, independent validator_
-  - _Depends: 1.1, 1.2, 1.3_
-  - _Requirements: 3.5, 5.1, 5.2, 5.3, 5.4, 5.5, 5.8, 5.9, 5.10_
+- [ ] 4. Deliver the repeatable baseline and operator guide
+- [ ] 4.1 Integrate verification, report the subset and document live testing
+  - Reuse existing reports/validators and retain mandatory parent regression/build checks; add one prepared offline baseline command.
+  - Report actual versions/profiles, tested cases and deferred tools, with artifact links and no blanket all-tool claim.
+  - Document direct-provider setup and an explicit live native/MCP procedure using Vibe OIDC; leave unexecuted live cases unverified.
+  - Complete when the fresh offline pipeline passes, the guide's commands match the runner, and a single final review finds no baseline blocker.
+  - _Boundary: Verification and operator integration_
+  - _Requirements: 1.1, 1.2, 1.3, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 4.1_
 
-- [x] 3. Build isolated real-host control and passive observation
-- [x] 3.1 Start and close an isolated offline host with owned resources
-  - Prepare private host configuration/data/cache/state/temporary locations, an owned working directory and a disposable readiness input.
-  - Apply synthetic authentication and default-deny external-effect guards; validate host paths, binaries, explicit client location and actual model readiness.
-  - Completion is visible when the host starts without private account access, location mismatches fail preflight, and owned processes/resources close within declared limits.
-  - _Boundary: HostController_
-  - _Depends: 1.1, 1.2, 1.3_
-  - _Requirements: 4.1, 4.2, 4.4, 5.1, 5.5, 5.6_
-- [x] 3.2 Drive deterministic streamed inference and continuation assertions
-  - Generate model calls using observed offered names and validated fixture inputs, with incremental nested/Unicode arguments and correct call completion semantics.
-  - Accept a final synthetic answer only after the next request contains the actual expected fixture result; distinguish primary and auxiliary traffic.
-  - Completion is visible when pure protocol checks reject missing results, premature final answers and incorrect call/result pairings without running a fake executor.
-  - _Boundary: HostController, synthetic inference boundary_
-  - _Depends: 1.2, 1.3_
-  - _Requirements: 1.1, 3.1, 3.2, 3.3, 3.5, 5.1, 5.2_
-- [x] 3.3 Prove public-hook coverage and permission ordering
-  - Exercise a disposable real native operation through the isolated host to locate definition, request/response, dispatch, completion and permission observations.
-  - Demonstrate coverage for the custom SDK path; use the approved fixture transport observer only if its correlation and streaming coverage are proved.
-  - Completion is visible when a capability report identifies usable observations and actual ordering, or a fixed unsupported outcome prevents false execution claims.
-  - _Boundary: RoundTripRecorder, host capability probe_
-  - _Depends: 2.1, 3.1, 3.2_
-  - _Requirements: 1.1, 3.5, 4.1, 5.2, 5.5, 5.7_
-- [x] 3.4 Capture bounded correlated evidence without private payloads
-  - Correlate offered definitions, upstream and host identifiers, actual execution outcomes, next-request results and final responses within each scoped case.
-  - Preserve stream backpressure/cancellation; capture only approved fixture observations and hashes, never whole requests, headers or unrelated output.
-  - Completion is visible when parallel/crossed identities and oversized/private captures fail, while complete primary chains produce validator-accepted proofs.
-  - _Boundary: RoundTripRecorder_
-  - _Depends: 2.2, 2.3, 3.3_
-  - _Requirements: 2.3, 3.1, 3.2, 3.3, 3.5, 4.2, 5.2, 5.5, 6.5_
+## Preserved implementation history
 
-- [ ] 4. Exercise native workspace and interaction tools
-- [x] 4.1 Exercise native file reading and search
-  - Prepare unpredictable file contents and known matching/nonmatching paths for real read, glob and grep operations.
-  - Check actual host results and independent fixture state; retain real offered definitions and scoped permissions.
-  - Completion is visible when each applicable query tool produces its expected observation and a correlated continuation proof.
-  - _Boundary: FixtureSet, workspace fixtures_
-  - _Depends: 3.4_
-  - _Requirements: 1.1, 1.2, 3.5, 5.2_
-- [x] 4.2 Exercise native file creation and modification
-  - Drive real write, edit and multi-file patch operations within an owned repository, preserving the host's normal argument validation.
-  - Inspect exact resulting bytes/diffs and correlate the returned result with the next model turn.
-  - Completion is visible when each mutation case changes only its owned targets and malformed operations cannot receive successful execution credit.
-  - _Boundary: FixtureSet, workspace fixtures_
-  - _Requirements: 1.2, 3.3, 3.4, 3.5, 4.1_
-- [ ] 4.3 Exercise native command outcomes safely
-  - Execute bounded harmless fixture commands through the real command tool, with unpredictable output and explicit stdout/stderr/exit expectations.
-  - Reject arbitrary commands and targets outside owned resources while retaining host permission checks.
-  - Completion is visible when approved commands yield actual outcomes and denied/invalid variants produce no unauthorized side effect.
-  - _Boundary: FixtureSet, workspace fixtures_
-  - _Requirements: 1.3, 3.3, 3.5, 4.1, 4.3_
-- [ ] 4.4 Exercise real question and form interactions
-  - Observe host form creation and supply only the fixture's declared answer through the actual reply path; separately exercise cancellation.
-  - Keep controlled fixture input distinct from genuine user approval and never fabricate an answer in provider code.
-  - Completion is visible when answer and cancellation outcomes are observed through the host and reach the appropriate model continuation.
-  - _Boundary: FixtureSet, workspace fixtures_
-  - _Requirements: 1.5, 3.3, 4.2, 6.1_
-- [ ] 4.5 Exercise skill loading and actual child-session work
-  - Provide an owned skill nonce and bounded child objective through real skill and delegation tools.
-  - Observe actual activation/child lifecycle and correlate the returned child result with the parent rather than substituting a result string.
-  - Completion is visible when fixture observations appear in the parent continuation and all child work is accounted for on completion/cancellation.
-  - _Boundary: FixtureSet, workspace fixtures_
-  - _Requirements: 1.5, 3.2, 3.3, 3.5, 4.2, 6.2_
-- [ ] 4.6 Exercise owned sessions and model enumeration
-  - Move and rename only test-created sessions and query the real scoped model inventory through the registered tools.
-  - Verify the resulting host state and preserve configuration/capability limitations explicitly.
-  - Completion is visible when each applicable tool's reported result matches actual scoped state and no production session is mutated.
-  - _Boundary: FixtureSet, workspace fixtures_
-  - _Requirements: 1.5, 3.3, 3.5, 4.1, 6.3_
-- [ ] 4.7 Exercise owned worktree lifecycle tools
-  - Create, list and remove worktrees only in a disposable repository with explicit ownership records and bounded setup.
-  - Validate actual host/repository state and resolved targets before removal; preserve permissions and unknown-commit outcomes.
-  - Completion is visible when all worktree cases agree with observed state and no resource outside the owned repository is changed.
-  - _Boundary: FixtureSet, workspace fixtures_
-  - _Requirements: 1.5, 3.3, 3.5, 4.1, 4.2, 6.3_
+Twelve original subtasks (1.1-1.3, 2.1-2.3, 3.1-3.4 and 4.1-4.2) were
+independently reviewed and committed through 42f1fc1. Their numbering is historical
+and must not be confused with this revision's task IDs. See implementation-log.md.
+The last committed original task plan is available at that commit.
 
-- [ ] 5. Build owned external-service and plugin fixtures
-- [ ] 5.1 (P) Provide a standards-based MCP discovery and tool fixture
-  - Use the prepared official server SDK for explicit initialization, negotiated capabilities, deterministic tool discovery and typed echo/structured results.
-  - Keep protocol stdout clean, diagnostics bounded and startup side-effect free until explicitly invoked.
-  - Completion is visible when fixture contract checks pass and the server can be connected by the later real-host integration without any private service configuration.
-  - _Boundary: FixtureSet, MCP fixtures_
-  - _Depends: 1.1, 1.2, 1.3_
-  - _Requirements: 2.1, 2.2, 2.3, 5.1, 5.5_
-- [ ] 5.2 Exercise MCP resources, errors and negotiated lifecycle variants
-  - Extend the owned server with resource listing/reading, structured tool failure, protocol failure and cancellable work; include pagination/list changes only when advertised.
-  - Exercise the host's actual MCP client and resource helpers, distinguishing tool results from resource discovery and links.
-  - Completion is visible when each variant returns the expected host outcome and observed cancellation/lifecycle state without substituting a custom client.
-  - _Boundary: FixtureSet, MCP fixtures_
-  - _Depends: 3.4, 5.1_
-  - _Requirements: 1.5, 2.1, 2.2, 2.3, 2.4, 3.3, 4.2, 4.3, 6.4_
-- [ ] 5.3 (P) Provide controlled page and search backends
-  - Supply known page content, search results and source links through owned services and the host's supported search-backend contract.
-  - Reject unowned destinations and arbitrary network fallback; keep native web tool execution for integration rather than replacing it.
-  - Completion is visible when fixture responses and cancellation checks pass and the native-tool cases have deterministic expected content/source observations.
-  - _Boundary: FixtureSet, services fixtures_
-  - _Depends: 1.1, 1.2, 1.3_
-  - _Requirements: 1.5, 3.3, 4.1, 4.2, 5.1, 6.4_
-- [ ] 5.4 (P) Provide owned plugin-tool cases with explicit provenance
-  - Supply harmless plugin fixtures with known results, including memory-shaped operations that never read private observations.
-  - Preserve the distinction between these fixture origins and similarly named tools in a user's profile.
-  - Completion is visible when plugin execution/result checks pass and cross-origin evidence cannot grant a PASS to another plugin or service.
-  - _Boundary: FixtureSet, plugin-tool fixtures_
-  - _Depends: 1.1, 1.2, 1.3_
-  - _Requirements: 1.5, 3.3, 3.5, 5.4, 5.7, 5.8, 5.10_
-- [ ] 5.5 Establish conditional media and native image capability cases
-  - Capture actual host behavior for owned non-text MCP/resource results and probe whether native image generation has a controllable supported route.
-  - Where no such route/capability exists, implement the explicit negative case and record the missing prerequisite; a fake file-returning plugin cannot earn native-generator credit.
-  - Completion is visible when the capability decision is reproducible and supported-content observations are distinct from unsupported/unverified image execution.
-  - _Boundary: FixtureSet, services and conditional-content fixtures_
-  - _Depends: 3.4, 5.2, 5.3, 5.4_
-  - _Requirements: 1.5, 3.3, 5.4, 5.8, 6.4, 6.5_
+The uncommitted original 4.3 command draft is retained. Its debugger recommends
+RETRY_TASK / CONFIG_GAP: restore minimal Windows PATHEXT and propagate native
+PowerShell exit codes explicitly. Do not restart from scratch or include the
+separate .task43-debug-* diagnostic copies in an implementation commit.
 
-- [ ] 6. Verify and implement bounded model-protocol compatibility
-- [ ] 6.1 (P) Record the unchanged SDK's wire-level conformance baseline
-  - Exercise actual installed serialization of tool definitions, history/results, streamed arguments, typed errors/denials and non-text results against pinned contract vectors.
-  - Preserve genuine failing evidence before any correction; distinguish documented constraint profiles from unverified deployed-model capabilities.
-  - Completion is visible when each supported path has an executed baseline and each proposed correction has a specific reproducible mismatch, not a guessed requirement.
-  - _Boundary: ToolProtocolAdapter, conformance tests_
-  - _Depends: 1.1, 1.2, 1.3_
-  - _Requirements: 1.1, 3.1, 3.2, 3.3, 3.4, 4.3, 6.4, 6.5_
-- [ ] 6.2 Preserve typed error meaning and reject unproved content encodings
-  - Implement validated exact-model profile selection and request-local wrapping, retaining the existing successful text behavior by default.
-  - Correct reproduced loss of error/denial meaning inside valid content and reject unsupported content representations before a misleading continuation.
-  - Completion is visible when installed-SDK regressions pass, arbitrary profiles fail setup, and no unsupported top-level API field or executor change is introduced.
-  - _Boundary: ToolProtocolAdapter_
-  - _Depends: 6.1_
-  - _Requirements: 2.4, 3.3, 3.4, 4.3, 4.4, 6.4_
-- [ ] 6.3 Preserve tool identities under proved wire constraints
-  - Implement evidence-backed reversible name mapping and history/result ID handling with collision checks, preserving valid identities where possible.
-  - Keep mappings invocation-local, reject unknown inverse identities, and require explicit profile selection rather than inferred tokenizer generations.
-  - Completion is visible when constrained and preserve profiles pass parallel/history/collision regressions without changing logical arguments or executor selection.
-  - _Boundary: ToolProtocolAdapter_
-  - _Requirements: 1.1, 2.2, 3.1, 3.2, 3.3, 3.4_
-- [ ] 6.4 Preserve verified supported non-text results through continuation
-  - Use the captured typed host outputs and verified route representations to preserve supported content, MIME/metadata and result association.
-  - Keep unsupported combinations explicit; serialized JSON descriptions cannot count as media delivery, and unverified live capabilities remain unverified.
-  - Completion is visible when actual SDK wire/host cases preserve the expected owned content hashes or produce the correct unsupported outcome.
-  - _Boundary: ToolProtocolAdapter_
-  - _Depends: 5.5, 6.2_
-  - _Requirements: 2.3, 3.3, 3.5, 6.4, 6.5_
-- [ ] 6.5 Integrate proved profiles without changing authentication or streaming ownership
-  - Register the typed wrapper only at the approved provider boundary and retain current destination guards, per-request credentials, cancellation and no-replay behavior.
-  - Keep passthrough, profile selection and decoded name restoration independent from discovery and real executor ownership.
-  - Completion is visible when provider integration and parent regressions pass with incremental delivery preserved and no extra inference attempt or auth fallback.
-  - _Boundary: ToolProtocolAdapter, explicit provider integration_
-  - _Depends: 6.3, 6.4_
-  - _Requirements: 1.1, 3.1, 3.3, 4.2, 4.4, 6.4, 6.5_
-
-- [ ] 7. Integrate complete offline tool round trips and negative proofs
-- [ ] 7.1 Integrate every applicable fixture into the real-host round-trip suite
-  - Connect owned fixture families, actual offerings, synthetic inference and evidence gates through the isolated controller.
-  - Require actual executor outcomes, independent state checks and next-primary-request observations for each positive case; retain the full offered set.
-  - Completion is visible when each scoped applicable tool has a complete proof, while unsupported/private-profile rows remain explicitly excluded from compatibility claims.
-  - _Boundary: HostController, explicit fixture/observer/gate integration_
-  - _Depends: 2.2, 2.3, 3.4, 4.7, 5.5, 6.5_
-  - _Requirements: 1.1, 1.2, 1.3, 1.5, 2.1, 2.2, 2.3, 3.5, 5.1, 5.2, 5.7, 5.8, 5.10, 6.1, 6.2, 6.3_
-- [ ] 7.2 Verify permissions, invalid calls and tool/service failures end to end
-  - Exercise denied, malformed, unavailable and failed operations through real host paths with authoritative negative expectations.
-  - Verify no unauthorized side effect, fabricated success, argument reinterpretation or provider replay; preserve error meaning in continuation where applicable.
-  - Completion is visible when expected negatives have matching evidence and cannot satisfy positive coverage or hide an unexpected failure.
-  - _Boundary: HostController, explicit negative-case integration_
-  - _Requirements: 1.4, 2.4, 3.3, 3.4, 4.1, 4.3, 4.4, 5.2, 5.8, 5.10_
-- [ ] 7.3 Verify incremental and parallel call/result correlation
-  - Exercise fragmented Unicode/nested arguments, distinguishable simultaneous calls and reversed completion order through actual host execution.
-  - Validate separate executor/result links while allowing only the approved shared enclosing response evidence.
-  - Completion is visible when correct streams pass and missing, crossed, duplicate or stale associations fail regardless of the final answer text.
-  - _Boundary: RoundTripRecorder, explicit stream/correlation integration_
-  - _Requirements: 3.1, 3.2, 3.3, 3.5, 5.2_
-- [ ] 7.4 Verify cancellation and owned-resource release across boundaries
-  - Cancel pending native command/child work, provider streaming and MCP work as applicable to each manifest case.
-  - Observe host, executor, provider and fixture cancellation separately; inspect committed/unknown state and follow declared completion-race rules.
-  - Completion is visible when required observations and cleanup are present, with no inferred rollback, process leak or false cancellation PASS.
-  - _Boundary: HostController, explicit cancellation integration_
-  - _Requirements: 4.2, 4.4, 5.2, 5.5, 6.1, 6.2, 6.3_
-- [ ] 7.5 Verify dynamic inventory and host-version drift gates
-  - Introduce late, renamed or schema-changed fixture tools and vary recorded host/profile/model identity.
-  - Reconcile every effective primary offering and deny stale or unmapped evidence without silently disabling the new tool.
-  - Completion is visible when declared scope changes force revalidation and only the actually executed supported subset can be reported.
-  - _Boundary: InventoryCoverage, explicit coverage-gate integration_
-  - _Requirements: 1.4, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9, 5.10_
-
-- [ ] 8. Add deliberate live operation and mandatory acceptance integration
-- [ ] 8.1 Preserve credential-root paths only in the isolated live helper
-  - Implement the helper-only path restoration contract without changing shared authentication APIs, copying credentials or restoring arbitrary environment data.
-  - Verify original/unset semantics, unchanged bridge/login behavior, explicit paths and cancellation/process ownership on each enabled platform.
-  - Completion is visible when synthetic process probes preserve the intended credential root while every host state path remains owned; unsupported platforms fail preflight.
-  - _Boundary: HostController, live-helper isolation_
-  - _Depends: 3.1, 3.3, 7.4_
-  - _Requirements: 4.2, 5.1, 5.5_
-- [ ] 8.2 Provide a separately invoked live verification command
-  - Require an explicit mode, model, owned profile and declared budgets; default to credential reuse without opening a browser unless that login policy was selected.
-  - Reuse the same observers/cases/gates without copying private plugins or MCP services, and record exact live scope independently from offline evidence.
-  - Completion is visible when command/preflight tests prove deliberate invocation and safe rejection paths; no real live PASS is recorded merely because the runner exists.
-  - _Boundary: HostController, live-run integration_
-  - _Depends: 7.5, 8.1_
-  - _Requirements: 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.10_
-- [ ] 8.3 Integrate the tool gate and scoped operator results into acceptance
-  - Add the prepared-runtime standalone tool gate while preserving every existing mandatory parent stage and its separate requirement namespace.
-  - Connect the feature's 33-criterion mapping, independent validation and scoped report/help output, including the operator command and evidence guidance described by the design.
-  - Completion is visible when missing/failed/stale tool evidence fails acceptance, all numeric criteria map to executed or required documentary evidence, and default verification never launches live account activity.
-  - _Boundary: EvidenceGate, explicit acceptance and operator-output integration_
-  - _Depends: 2.3, 7.5, 8.2_
-  - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.8, 5.9, 5.10_
-- [ ] 8.4 Run final offline acceptance and enforce honest compatibility claims
-  - Execute the complete prepared-runtime pipeline, including builds, parent regressions, actual-host tool execution and independent coverage validation.
-  - Verify required source/artifact closure, no mandatory skips, no secret-bearing capture and no positive credit for negative or unexercised live cases.
-  - Completion is visible in a fresh passing offline acceptance report plus the exact supported subset/exclusions; live results remain unverified until a deliberate live run supplies evidence.
-  - _Boundary: EvidenceGate, final integration validation_
-  - _Requirements: 3.5, 4.4, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.8, 5.9, 5.10_
+Remaining original tasks are superseded, not completed. Specialist tool coverage
+is deferred in scope-revision.md and verification-plan.md. Preserve existing tests;
+no further generic certification work is required for this baseline.

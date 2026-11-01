@@ -29,7 +29,13 @@ dependencies = [
 proxy = ["fastapi", "uvicorn"]
 
 [dependency-groups]
-dev = ["pytest", "hatchling==1.27.0", "fastapi", "uvicorn"]
+dev = [
+    "pytest",
+    "hatchling==1.27.0",
+    "fastapi",
+    "uvicorn",
+    "pytest-xdist>=3.8.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["mvibe_auth", "mvibe_proxy"]
@@ -39,4 +45,4 @@ include = ["mvibe_auth/", "mvibe_proxy/", "proxy.py", "pyproject.toml", "uv.lock
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -n 2 --dist=loadscope"

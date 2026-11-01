@@ -165,3 +165,18 @@ Live execution is separate from the default offline implementation checks.
 - Completion gate: VERIFIED for these offline Windows mutation cases. Live,
   other platforms, full RunReport and all-tool compatibility remain unverified.
 - Artifact: packages/opencode-vibe-oidc/.host/workspace-mutation-proof.json.
+
+## Revision 2: parallel pytest and reduced baseline
+
+User requested pytest-xdist and a pragmatic scope on 2026-11-01. The prior
+36-subtask plan is superseded; twelve completed tasks above remain historical
+work, and the unfinished command draft remains uncommitted.
+
+Revision 2 task 1.1 is VERIFIED after independent APPROVED review: full default
+parallel suite 1,016 passed, serial isolation 8 passed, aggregate JUnit accepted
+with 1,016 unique passing cases and 129 Python mappings resolved. See
+revision-review.md for commands/results and evidence paths. No live tests ran.
+
+Remaining work is three deliverables: native command completion, one MCP tool
+workflow, and verification/operator integration. Revised phase approvals are
+pending; do not resume the superseded queue. Existing code/tests are retained.

@@ -5,6 +5,7 @@ Run mandatory offline acceptance using explicitly prepared tools.
 pwsh -NoProfile -File scripts/verify.ps1 -Bun C:/tools/bun.exe -HostBinary C:/tools/opencode.exe
 .DESCRIPTION
 Prepare the locked uv environment, exact Bun and pinned isolated host separately.
+Python uses two pytest-xdist workers; -PythonWorkers 0 enables serial debugging.
 This command installs nothing from the network and runs no live account checks.
 Each invocation writes reports/verification/<run-id>/acceptance.json with named
 executed test outcomes, mandatory step results and required documentary evidence.
@@ -14,7 +15,8 @@ Required documents owned by later implementation tasks remain acceptance blocker
 param(
     [Parameter(Mandatory = $true)][string]$Bun,
     [Parameter(Mandatory = $true)][string]$HostBinary,
-    [string]$ReportRoot = (Join-Path $PSScriptRoot '../reports/verification')
+    [string]$ReportRoot = (Join-Path $PSScriptRoot '../reports/verification'),
+    [ValidateRange(0, 64)][int]$PythonWorkers = 2
 )
 # Run only prepared tools. Online setup and current-stable discovery are separate actions.
 $ErrorActionPreference = 'Stop'
@@ -76,7 +78,7 @@ for (const [name, version] of Object.entries(declared)) {
 console.log("Prepared locked provider tool versions PASS");
 '@
     Invoke-Check 'tools' $Bun @('--no-install', '-e', $toolCheck) $provider
-    Invoke-Check 'python' $uv @('run', '--locked', '--offline', 'pytest', "--junitxml=$(Join-Path $directory 'python.xml')") $root
+    Invoke-Check 'python' $uv @('run', '--locked', '--offline', 'pytest', '-n', [string]$PythonWorkers, '--dist=loadscope', "--junitxml=$(Join-Path $directory 'python.xml')") $root
     Invoke-Check 'provider' $Bun @('--no-install', 'test', '--reporter=junit', "--reporter-outfile=$(Join-Path $directory 'provider.xml')") $provider
     Invoke-Check 'typecheck' $Bun @('--no-install', 'run', 'typecheck') $provider
     Invoke-Check 'provider-build' $Bun @('--no-install', 'run', 'build') $provider

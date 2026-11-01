@@ -222,8 +222,16 @@ pwsh -NoProfile -File scripts/verify.ps1 -Bun C:/tools/bun.exe -HostBinary C:/Us
 
 Use absolute paths to prepared Bun 1.4.4 and OpenCode 2 executables. Reports go
 to `reports/verification/<run-id>/acceptance.json`. Focused Python checks use
-`uv run --locked --offline pytest`; packaging uses
+`uv run --locked --offline pytest`; it uses two xdist workers with scope-based
+scheduling. Each worker retains the offline guards and isolated state. Use
+`uv run --locked --offline pytest -n 0 tests/test_refresh.py` for serial debugging,
+or pass `-n 4` for a different worker count. The full PowerShell runner accepts
+`-PythonWorkers 0` for serial execution (default: 2). Packaging uses
 `uv build --offline --no-build-isolation`.
+
+Tool compatibility follows a [practical baseline plan](.kiro/specs/opencode-vibe-tool-compatibility/tasks.md):
+native files/commands, one MCP tool workflow, then a repeatable report and guide.
+Broader tool families remain explicit follow-ups, not an all-tool support claim.
 
 - [Shared auth API and lifecycle](docs/auth-library.md)
 - [Direct OpenCode plugin setup, build and compatibility](docs/opencode-provider.md)

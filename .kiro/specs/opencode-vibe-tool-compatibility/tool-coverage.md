@@ -1,3 +1,7 @@
+> Revision 2 scope: this is the original discovery snapshot, not the current
+> execution ledger. Later offline query/mutation evidence is recorded in
+> implementation-log.md and its artifacts. Unexercised tools below are deferred
+> from baseline completion; their live support remains unverified.
 # Tool coverage inventory
 
 Read-only observation on 2026-10-31, native OpenCode CLI 2.2.5: the host's

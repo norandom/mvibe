@@ -94,6 +94,17 @@ def isolate_environment(root):
 isolate_environment(_session_root.name)
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    # xdist's controller collects no tests. Let workers inherit the original
+    # runtime/cache paths; each worker installs these import-time guards and
+    # creates its own isolated homes before collecting application tests.
+    if getattr(config.option, "numprocesses", 0) and not hasattr(config, "workerinput"):
+        _guards.undo()
+        os.environ.clear()
+        os.environ.update(_original_env)
+
+
 def pytest_unconfigure(config):
     _guards.undo()
     os.environ.clear()

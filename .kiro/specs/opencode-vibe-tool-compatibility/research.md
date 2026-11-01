@@ -1,3 +1,5 @@
+> Historical revision 1 review. Superseded by the practical revision requested on 2026-11-01; this verdict does not approve revision 2.
+
 # Research and design decisions
 
 ## Summary
