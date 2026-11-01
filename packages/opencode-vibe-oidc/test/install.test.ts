@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installConfig, selectConfigPath, runInstaller } from "../scripts/install.js";
 import type { InstallerRuntime } from "../scripts/install.js";
 const dirs: string[] = [];
-function fixture() { const dir = mkdtempSync(join(tmpdir(), "vibe installer spaces ")); dirs.push(dir); return dir; }
+function fixture() { const dir = realpathSync(mkdtempSync(join(tmpdir(), "vibe installer spaces "))); dirs.push(dir); return dir; }
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const options = { packagePath: "D:/checkout with spaces/packages/opencode-vibe-oidc", projectPath: "D:/checkout with spaces", uvPath: "C:/tools with spaces/uv.exe" };
 test("preserves comments, legacy plugins, unrelated data and backup; reinstall is inert", async () => {
