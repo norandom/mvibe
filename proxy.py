@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from urllib.parse import urlencode
 from mvibe_proxy.streaming import ProxyStreamOwner
-from mvibe_proxy.diagnostics import ProxyDiagnostics, RequestDiagnostic, configure_stdout
+from mvibe_proxy.diagnostics import ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
 from mvibe_auth.http import VibeAsyncHTTPClient
 import uvicorn
@@ -205,8 +205,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description='Local OpenAI-compatible proxy using Vibe OIDC')
     parser.add_argument('--port', type=_port, default=8765)
     parser.add_argument('--login', action='store_true', help='Sign in again before serving')
+    parser.add_argument('--log', action='store_true', help='Emit safe structured request diagnostics to stdout (default: off)')
     args = parser.parse_args(argv)
-    configure_stdout()
+    if args.log:
+        configure_stdout()
+    else:
+        disable_stdout()
     uvicorn.run(create_app(force_login=args.login), host='127.0.0.1', port=args.port, access_log=False)
 
 

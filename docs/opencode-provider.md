@@ -1,5 +1,10 @@
 # OpenCode Vibe OIDC provider
 
+For opt-in direct-provider diagnostics, set `"diagnostics": true` in the plugin's
+`options` and restart OpenCode. With the native CLI, add `--print-logs` to see
+forwarded plugin events, for example `opencode --print-logs run --standalone --model vibe-oidc/mistral-large-4 "Create hello.ps1"`.
+See [diagnostic fields and limits](tool-compatibility.md#diagnose-the-proxy-route).
+
 The selectable display name is **Mistral-Vibe**; the stable provider ID remains
 `vibe-oidc`. This direct route uses the Python OIDC library and does not need the
 proxy server. Install with `./install.ps1` on Windows or `bash ./install.sh` on
@@ -109,6 +114,16 @@ when stored matching credentials are absent. Force browser re-login with
 `--port`. The script form `uv run --script proxy.py` has separate PEP 723
 dependencies and may download them on first use. Copy **both** `mvibe_auth/` and
 `mvibe_proxy/` alongside `proxy.py`; include `LICENSE.vibe` when redistributing.
+
+Diagnostic logging defaults to off for both consumers. Add `"diagnostics": true`
+to the direct plugin's `options` object for safe JSON `provider_request` events
+on stderr. Add `--log` to the proxy command for safe structlog `proxy_request`
+events on stdout. Status 422 hints point to tool schema and reasoning history
+serialization; 401 hints direct Vibe OIDC sign-in. Neither mode logs request or
+response bodies, credentials, URLs or exception text, nor automatically retries
+inference. Plugin events end at response headers, so they do not establish SSE
+completion. See [diagnostic fields and limitations](tool-compatibility.md#diagnose-the-proxy-route)
+and [observed live results](live-results.md).
 
 For an OpenAI-compatible client configure base URL
 `http://127.0.0.1:8765/v1`, a placeholder `apiKey` such as `local` if its SDK

@@ -1,5 +1,30 @@
 # Live verification evidence
 
+## Direct Large 4 file-tool continuation, 2026-11-01
+
+A user-reported HTTP 422 was traced to the SDK replaying assistant history with
+`reasoning_content`, rejected as `extra_forbidden`. The direct provider now maps
+that reasoning to Mistral thinking chunks without discarding it or changing tools.
+
+An isolated native OpenCode 2.2.5 CLI run selected `vibe-oidc/mistral-large-4`
+and reused matching stored Vibe OIDC credentials without opening a browser.
+The public test prompt requested one `hello.ps1` file. Observed: one file-tool
+event, exact requested file content, a final `DONE` after tool execution, exit 0,
+and no 422. Running the checked generated file under PowerShell printed
+`Hello, World!`. The safe summary is `reports/live-large4-result.json`.
+
+The test was repeated with `options.diagnostics: true` after the logging change.
+It again created the correct file and completed without 422. On native 2.2.5,
+adding `--print-logs` exposed five safe `provider_request` events on outer stderr
+(models and chat/completions, HTTP 200, `headers_received`). The plugin option
+alone did not forward them there. These events establish header acquisition;
+the independent CLI/file observations establish the tested continuation outcome.
+
+This establishes the exercised direct file-write and reasoning/tool-result
+continuation. It does not establish live MCP, all file/command tools, refresh,
+other models, or future OpenCode updates. The older records below retain their
+original test dates and scope; the blank template is still not an executed run.
+
 ## Authorized live smoke test, 2026-10-31
 
 The first proxy launch received the browser OIDC callback and reached validated

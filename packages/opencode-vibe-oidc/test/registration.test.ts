@@ -69,6 +69,8 @@ test("V2 SDK hook is provider-scoped and replaces host key options with V3 custo
 
 test("registered SDK rewrites Mistral reasoning history before authenticated transport", async () => {
   const f = fixture();
+  Object.assign(f.ctx.options, { diagnostics: true });
+  const diagnostic = spyOn(console, "error").mockImplementation(() => {});
   let cleanup: (() => Promise<void>) | undefined;
   type SDKEvent = Extract<Parameters<Parameters<RegistrationContext["aisdk"]["hook"]>[1]>[0], { package: string }>;
   const event = { model: undefined, package: "@ai-sdk/openai-compatible", options: {}, sdk: undefined } as unknown as SDKEvent;
@@ -85,7 +87,9 @@ test("registered SDK rewrites Mistral reasoning history before authenticated tra
     expect(http.requests).toHaveLength(1);
     expect((await http.requests[0]!.json()).messages).toEqual([{ role: "assistant", content: [{ type: "thinking", thinking: [{ type: "text", text: "Retain this reasoning" }] }, { type: "text", text: "Answer" }] }]);
     expect(http.requests[0]!.headers.get("authorization")).toBe("Bearer synthetic");
-  } finally { request.mockRestore(); transport.mockRestore(); await cleanup?.(); }
+    expect(diagnostic).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(diagnostic.mock.calls[0]![0])).toMatchObject({ event: "provider_request", status: 200, outcome: "headers_received" });
+  } finally { diagnostic.mockRestore(); request.mockRestore(); transport.mockRestore(); await cleanup?.(); }
 });
 
 test.each([{}, { helperCommand: { executable: "python", args: [] }, audience: "x" }, { helperCommand: { executable: "uv", args: ["run", "-m", "mvibe_auth", "bridge"] }, audience: "x" }])("missing/unsafe runtime is actionable before registration %j", async options => {

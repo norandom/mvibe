@@ -234,7 +234,7 @@ Broader tool families remain explicit follow-ups, not an all-tool support claim.
 
 - [Shared auth API and lifecycle](docs/auth-library.md)
 - [Direct OpenCode plugin setup, build and compatibility](docs/opencode-provider.md)
-- [Tool baseline, candidate updates and proxy diagnostics](docs/tool-compatibility.md)
+- [Tool baseline, candidate updates and diagnostics](docs/tool-compatibility.md) — logging defaults off; enable proxy `--log` (stdout) or plugin `options.diagnostics: true` (stderr).
 - [Live procedure and evidence checklist](docs/live-verification.md)
 - [Live results](docs/live-results.md)
 - [Offline acceptance](docs/offline-acceptance.md)

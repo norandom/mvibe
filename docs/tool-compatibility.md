@@ -124,20 +124,50 @@ With the deliberately started proxy, inspect
 conversations; the agent executes tools and owns MCP. The direct plugin bypasses
 the proxy entirely. See [provider setup](opencode-provider.md) for both routes.
 
-Responses carry `X-Request-ID`. Match that value to structured stdout, for example:
+Diagnostics default to off. Start the proxy with
+`uv run --locked --offline -- python proxy.py --log` to emit structured stdout
+events. Responses carry `X-Request-ID` even when logging is off. Match that value
+to an enabled event, for example:
 
 ```json
 {"event":"proxy_request","request_id":"0123456789abcdef0123456789abcdef","phase":"upstream","outcome":"upstream_error","status":403,"elapsed_ms":12.5,"hint":"Check Vibe tenant and model access; the agent owns tool permissions."}
 ```
 
 Authentication hints direct explicit OIDC re-login; 400 hints point to model/tool
-schema fields, 403 to tenant/model access, 429 to upstream rate guidance, and
+schema fields, 422 to tool schema and reasoning history serialization, 403 to tenant/model access, 429 to upstream rate guidance, and
 stream cancellation/interruption asks the operator to inspect agent state before
 retrying. Cleanup failure requires proxy restart. Events omit headers,
 credentials, prompts, tool arguments/results and raw upstream exceptions. Logging
 preserves stream ownership and never replays inference. These are structlog
 stdout diagnostics; [traces/metrics/export](../.kiro/specs/proxy-observability/brief.md)
 remain follow-up work.
+
+For the direct plugin, set `"diagnostics": true` in its `options` object (see
+[provider setup](opencode-provider.md)). It defaults to off and emits JSON
+`provider_request` events to stderr; helper protocol stdout stays clean. Each
+event has a locally generated request ID, fixed endpoint name, phase/outcome,
+HTTP status when available, elapsed milliseconds and a fixed actionable hint.
+These IDs correlate each event's fields; they are not upstream IDs or distributed
+trace IDs. No URL, query, model, headers, request/response body or exception text
+is logged. Diagnostic sink failures never fail inference, and neither consumer
+automatically retries a request for logging.
+
+For the native standalone CLI, also pass OpenCode's `--print-logs` flag so its
+server forwards plugin diagnostics to the terminal, for example
+`opencode --print-logs run --standalone --model vibe-oidc/mistral-large-4 "Create hello.ps1"`.
+On the tested 2.2.5 host, the plugin option alone did not expose events on the
+outer CLI stderr; enabling `--print-logs` did. Other OpenCode frontends may route
+plugin stderr differently.
+
+Plugin events observe request acquisition and response headers only. A
+`headers_received` outcome does not establish body or SSE completion; later
+stream errors remain visible to OpenCode. Logging never reads or buffers the
+body. Proxy events additionally observe stream completion/interruption through
+the existing stream owner. Both destinations use best-effort synchronous local
+writes; no network exporter or delivery guarantee is provided. Distributed
+tracing and plugin stream lifecycle instrumentation remain follow-up work.
+The observed Large 4 reasoning fix and live continuation are recorded in
+[live results](live-results.md).
 
 ## Opt in to a harmless live workflow
 

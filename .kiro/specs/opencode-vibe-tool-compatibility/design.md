@@ -121,3 +121,13 @@ never print raw request/response content or exception strings. Request/stream
 completion, cancellation and error paths need concise events without consuming
 or buffering the SSE stream. OTel context/export comes later through the chosen
 logging library. See api-observability-notes.md and the follow-up brief.
+
+The live-failure follow-up makes proxy request logging explicit through `--log`
+(off by default), retaining structlog stdout and existing stream ownership.
+The direct plugin accepts `options.diagnostics: true` (off by default) and emits
+safe JSON stderr records for acquisition/response headers only. It does not read
+request/response bodies, add retries, or observe later SSE completion. Native
+OpenCode 2.2.5 needs `--print-logs` to forward plugin events to outer CLI stderr.
+Actual live 422 evidence also justifies a narrow SDK `transformRequestBody`
+adapter: replay assistant reasoning as Mistral thinking chunks while preserving
+text, tool calls/results and all unrelated fields. Auth ownership is unchanged.

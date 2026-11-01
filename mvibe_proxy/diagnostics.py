@@ -56,6 +56,7 @@ class RequestDiagnostic:
                 400: 'Check tool_schema and request fields against the selected upstream model capabilities.',
                 401: 'Run proxy.py --login; verify Vibe OIDC access.',
                 403: 'Check Vibe tenant and model access; the agent owns tool permissions.',
+                422: 'Check tool schema and reasoning history serialization against the selected model; update the provider before an explicit retry.',
                 429: 'Respect upstream rate_limit guidance before an explicit retry.',
             }.get(status, 'Check upstream availability before an explicit retry; no inference was replayed.')
 

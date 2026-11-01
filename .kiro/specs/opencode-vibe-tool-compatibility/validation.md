@@ -17,6 +17,44 @@ live MCP, other models/tools, refresh and newer host versions remain unverified.
 Safe local summary: `reports/live-large4-result.json`. No prompts from the user's
 original conversation or credentials were exported.
 
+## Opt-in diagnostic follow-up verification
+
+Task 5.2 independently reviewed: APPROVED. Proxy `--log` enables safe structlog
+stdout; direct plugin `options.diagnostics: true` enables safe JSON stderr.
+Both default off. Native OpenCode 2.2.5 also needs `--print-logs` for visible
+forwarded events. A repeated live Large 4 run created the correct file and final
+answer without 422 while exposing five safe successful header-acquisition events.
+The plugin does not claim to observe later stream completion.
+
+Fresh canonical `scripts/verify.ps1` exited 0: 1,037 Python tests, 983 Bun tests,
+all 11 mandatory stages and all 97 parent mappings passed. Evidence:
+[acceptance.json](../../../reports/verification/ba4b5fcf099a40cabafe6ab22c8c0602/acceptance.json).
+This report is offline evidence; the separate live observations above establish
+only their stated model/workflow scope. The baseline validation below is the
+historical pre-follow-up record.
+
+## Follow-up integration gate
+
+- DECISION: GO, scoped to the declared baseline and follow-up tasks 5.1/5.2.
+- MECHANICAL_RESULTS: Full canonical command exited 0; 1,037 Python/983 Bun
+  tests, builds and all 11 stages passed. Review found no introduced placeholders
+  or hardcoded secrets. `git diff --check` passed.
+- INTEGRATION: Actual native host setup, consumer integration, native/MCP
+  synthetic baseline and separate real Large 4 file-tool continuation passed.
+  The request transformer precedes authenticated fetch; diagnostics observe
+  headers without consuming the transformed body or changing tool execution.
+- COVERAGE: All 13 baseline criteria retain fresh canonical evidence; 4.1 has
+  the reproduced reasoning regression plus live continuation, and extended 5.2
+  has both consumers' opt-in/privacy/failure-sink tests and CLI visibility checks.
+- DESIGN: Dependency direction and boundaries retained. Shared auth owns OIDC,
+  OpenCode owns tools/MCP, direct SDK owns Mistral request adaptation, proxy owns
+  passthrough/stream lifetime. No exporter or invented trace context introduced.
+- OWNERSHIP: LOCAL. UPSTREAM_SPEC: N/A.
+- BLOCKED_TASKS: None. Live MCP/other models/tools/updates and distributed
+  observability remain outside the exercised scope, not claimed as passed.
+- REMEDIATION: None. Both task-local independent reviews APPROVED; fresh-evidence
+  completion gate VERIFIED for the stated scope.
+
 ## Validation Report
 - DECISION: GO
 - SCOPE: Prepared Windows x64 / OpenCode 2.2.5 synthetic offline baseline and proxy API/diagnostic foundations. Live accounts, future versions, other platforms and all-tool compatibility are not claimed.
@@ -56,9 +94,9 @@ original conversation or credentials were exported.
 | 3.3 | Baseline versions/hashes/model/profile/limitations and docs/tool-compatibility.md identify tested subset |
 | 3.4 | Separate explicit live native/MCP procedure; default runs offline and leave live unverified |
 | 3.5 | Prepared HTTP OpenAPI and plugin declarations; immutable reference, located drift, matching candidate compile/E2E and selected-root regression |
-| 4.1 | No speculative provider rewrite; native/MCP ownership and shared OIDC remain intact |
+| 4.1 | Demonstrated reasoning replay adapter with installed-SDK regression and live Large 4 continuation; native/MCP ownership and shared OIDC remain intact |
 | 5.1 | Explicit OpenAPI/Swagger operations, common tool/SSE/error documentation, raw payload passthrough regressions |
-| 5.2 | structlog stdout, generated X-Request-ID and safe phase/outcome/status/timing/hints; cancellation/privacy/logging-failure tests |
+| 5.2 | Opt-in proxy structlog stdout and plugin JSON stderr, safe IDs/phase/status/timing/hints; cancellation/privacy/logging-failure tests and native --print-logs visibility |
 
 ## Fresh evidence
 

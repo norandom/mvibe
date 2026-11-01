@@ -22,7 +22,7 @@ def test_openapi_describes_supported_operations_without_validation():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(('status', 'hint'), [(400, 'tool_schema'), (401, 'login'), (403, 'tenant'), (429, 'rate_limit')])
+@pytest.mark.parametrize(('status', 'hint'), [(400, 'tool_schema'), (401, 'login'), (403, 'tenant'), (422, 'reasoning'), (429, 'rate_limit')])
 async def test_correlated_safe_stdout_upstream_errors(status, hint, capsys):
     from mvibe_proxy import diagnostics
     diagnostics.configure_stdout()
@@ -180,5 +180,20 @@ async def test_upstream_404_is_not_misclassified_as_local_routing(capsys):
         row = json.loads(capsys.readouterr().out)
         assert row['outcome'] == 'upstream_error' and row['phase'] == 'upstream'
         assert response.status_code == 404 and len(sent) == 1
+    finally:
+        diagnostics.disable_stdout()
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_cli_logging_is_explicit_and_clears_stale_configuration(enabled, monkeypatch, capsys):
+    from mvibe_proxy import diagnostics
+    diagnostics.configure_stdout()
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *args, **kwargs: diagnostics.RequestDiagnostic().emit())
+    try:
+        proxy.main(['--log'] if enabled else [])
+        output = capsys.readouterr().out
+        assert bool(output) is enabled
+        if enabled:
+            assert json.loads(output)['event'] == 'proxy_request'
     finally:
         diagnostics.disable_stdout()

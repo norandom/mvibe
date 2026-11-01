@@ -60,7 +60,7 @@ extension of the approved baseline, not a new all-tool certification queue.
   - _Boundary: Direct provider request serialization_
   - _Requirements: 1.2, 3.3, 3.4, 4.1_
 
-- [ ] 5.2 Add explicit diagnostic logging controls for both consumers
+- [x] 5.2 Add explicit diagnostic logging controls for both consumers
   - Add an opt-in proxy CLI flag and plugin option with safe correlated status/phase/hints.
   - Keep helper protocol stdout clean, payloads and credentials excluded, streaming and no replay intact.
   - Document enablement, diagnostic destinations and the observed live outcome.

@@ -67,12 +67,18 @@ automatically. Shared auth/proxy requirements remain in vibe-oidc-proxy.
    and Swagger UI describing its actual models/chat-completions/embeddings routes,
    streaming, error envelopes and agent-owned tool execution. Documentation shall
    not narrow runtime payload passthrough or imply the proxy is an MCP executor.
-2. When an agent request fails or its stream is interrupted, the proxy shall emit
+2. When diagnostics are enabled and an agent request fails or its stream is interrupted, the proxy shall emit
    structured stdout diagnostics with a correlation ID, phase/outcome and safe
    actionable hint. Logs shall exclude credentials, headers, raw prompts/tool
    arguments/results and upstream exceptions; logging shall preserve stream
    ownership and no replay. Use a logging library with an OpenTelemetry path;
    distributed traces/metrics/export remain the observability follow-up.
+
+   The user's live-failure follow-up adds explicit opt-in controls: proxy `--log`
+   and direct-plugin `options.diagnostics: true`, both off by default. Direct
+   plugin events shall report acquisition/response headers and fixed recovery
+   hints on stderr without reading bodies or claiming stream completion. On the
+   tested native CLI, document `--print-logs` for outer stderr visibility.
 
 ## Approval
 
