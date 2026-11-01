@@ -1,4 +1,13 @@
+> “Man is condemned to be free”
+>
+> “L’homme est condamné à être libre” — Jean-Paul Sartre
+
 # mvibe: use your Vibe login in OpenCode
+
+**For students, researchers and educators only. This is untested, experimental
+software, not production software.** Project-authored code is provided under the
+[Beerware license](LICENSE); upstream Vibe code retains its
+[Apache 2.0 license](LICENSE.vibe).
 
 Add Mistral models to OpenCode Desktop or the OpenCode CLI using your normal
 Vibe browser sign-in. The provider appears as `Mistral-Vibe` and connects
@@ -13,6 +22,13 @@ The existing-login route consumed the expected Vibe quota on the tested account
 in OpenCode. That is not a guarantee for every credential, model or plan.
 The [authentication writeup](docs/vibe-authentication.md) explains the evidence
 and why experimental direct OIDC behaved differently.
+
+| Vibe allowance | OpenCode Desktop | OpenCode CLI |
+|:---:|:---:|:---:|
+| [<img src="docs/images/vibe-allowance.png" width="280" alt="Pro account showing included Vibe Code usage">](docs/images/vibe-allowance.png) | [<img src="docs/images/opencode-desktop.png" width="280" alt="OpenCode Desktop running a Mistral-Vibe Large 4 review session">](docs/images/opencode-desktop.png) | [<img src="docs/images/opencode-cli.png" width="280" alt="OpenCode CLI running a Mistral-Vibe Large 4 subagent">](docs/images/opencode-cli.png) |
+
+Select a screenshot to open the full-size image. These are observations from one
+local setup; they do not establish production readiness or general quota eligibility.
 
 ## Before installing
 

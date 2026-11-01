@@ -74,13 +74,14 @@ def build(output: Path, uv: str, bun: str) -> Path:
         run([uv, "lock", "--project", str(stage), "--python", "3.12"], ROOT)
         (stage / "release.json").write_text(json.dumps({"format": 1, "version": version,
             "python": ">=3.12", "bun": "1.4.4", "opencode": "2", "wheel": f"wheels/{wheel.name}"}, indent=2) + "\n", encoding="utf-8")
-        for name in ["install.sh", "install.ps1", "proxy.py", "README.md", "LICENSE.vibe"]:
+        for name in ["install.sh", "install.ps1", "proxy.py", "README.md", "LICENSE", "LICENSE.vibe"]:
             shutil.copy2(ROOT / name, stage / name)
         (stage / "docs").mkdir()
         # Ship the public guides linked from README, including adopter setup.
         # Reports, specifications and source trees are outside this allowlist.
         for guide in sorted((ROOT / "docs").glob("*.md")):
             shutil.copy2(guide, stage / "docs" / guide.name)
+        shutil.copytree(ROOT / "docs/images", stage / "docs/images")
         # Preserve third-party notices for bundled JavaScript dependencies.
         for path in sorted((source / "node_modules").rglob("*")):
             if path.is_file() and path.name.lower().split(".")[0] in {"license", "licence", "notice", "notices"}:
