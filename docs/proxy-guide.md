@@ -165,5 +165,3 @@ subsequently verified separately as described above.
 The server binds to loopback and has no local caller authentication. Any local
 process that can reach the port can use it. Keep tokens, callback URLs and raw
 credential exports out of logs, issues and test evidence.
-
-

@@ -38,4 +38,3 @@ For the runtime-only library, prepare with
 running the proxy. `uv run --script proxy.py` uses separate inline dependencies
 and may download them. When copying that script, retain `mvibe_auth/`,
 `mvibe_proxy/` and `LICENSE.vibe`. See `uv.lock` for dependency versions.
-
