@@ -107,3 +107,23 @@ Capture must preserve existing native authentication by default. The user asks
 to reuse the working Vibe auth. The existing proxy/provider direct OIDC contract
 has not yet been changed; request metadata parity alone is not a demonstrated
 quota solution.
+
+## Captured working native quota path — 2026-11-01
+
+The user confirms the corrected default capture launcher consumes Vibe quota.
+The captured native completion requests use an opaque bearer credential from
+the existing native keyring path, without the OIDC external organization/workspace
+headers. They retain the same exact Vibe User-Agent, `call_source=vibe_code`,
+`host_kind=local` and `user_plan=Pro`. Native client identity is `vibe_rs`, and
+`x-affinity` is present. HTTP responses are 200, with server correlation IDs
+preserved privately. No credential or conversation is included in this report.
+
+The working native model identifier is `mistral-large-4-0`; previous OpenCode
+captures used `mistral-large-4`. This difference must remain visible in the
+comparison rather than asserting credential type alone proves server routing.
+The combined source and user-counter evidence establishes a working existing
+native authentication path. It does not establish a billing rule for arbitrary
+opaque keys or prove the OpenCode provider is fixed. Next integration should
+explicitly reuse native Vibe authentication, preserve its credential provenance,
+and avoid silent fallback to user-supplied general API keys. Direct ID-token OIDC
+must not be described as quota-equivalent on this account.
