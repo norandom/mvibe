@@ -50,7 +50,7 @@ def test_clean_no_dev_install_and_copied_script(tmp_path):
            "UV_PROJECT_ENVIRONMENT": str(tmp_path / "runtime"), "VIBE_TEST_DISABLE_KEYRING": "1"}
     source = tmp_path / "source"
     source.mkdir()
-    for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE.vibe", "proxy.py"):
+    for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE", "LICENSE.vibe", "proxy.py"):
         shutil.copy2(ROOT / name, source / name)
     for name in ("mvibe_auth", "mvibe_proxy"):
         shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))

@@ -149,4 +149,4 @@ jobs:
           test "$RELEASE_TAG" = "v$version"
           cd dist/release
           sha256sum --check SHA256SUMS
-          gh release create "$RELEASE_TAG" ./* --repo "$GITHUB_REPOSITORY" --verify-tag --title "mvibe $RELEASE_TAG" --notes-file "$GITHUB_WORKSPACE/docs/release-notes.md" --generate-notes
+          gh release create "$RELEASE_TAG" ./* --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --title "mvibe $RELEASE_TAG" --notes-file "$GITHUB_WORKSPACE/docs/release-notes.md" --generate-notes
