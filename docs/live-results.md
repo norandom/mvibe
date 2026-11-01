@@ -2,6 +2,11 @@
 
 ## Quota attribution report, 2026-11-01
 
+Latest user retest after installed commit `d3554be`, including server-derived
+Pro plan metadata: usage still counts as API. Vibe allowance support remains
+an unresolved live acceptance failure. No release is authorized by the passing
+offline or cross-platform checks.
+
 The user reports that OpenCode use increments the API counter instead of the
 expected Vibe quota. The successful inference/tool checks below establish
 functional authentication and transport, not subscription billing attribution.

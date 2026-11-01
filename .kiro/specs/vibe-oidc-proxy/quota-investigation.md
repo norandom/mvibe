@@ -1,5 +1,21 @@
 # Quota investigation, 2026-11-01
 
+## Latest outcome
+
+The user retested the installed account-context change (`d3554be`) and again
+reported API allowance consumption. The plan lookup did not resolve the quota
+issue. Treat this as an unresolved live acceptance failure, not merely an
+unperformed check. Do not publish a release claiming Vibe allowance support.
+
+The available client source does not establish the server's billing selector.
+Its OIDC implementation is explicitly feature-gated as a CLI experiment.
+This is not proof that native OIDC uses API allowance. A confirmed comparison
+with native Vibe using the same OIDC registration, account, tenant and model,
+or authoritative server-side classification evidence, is still missing.
+OpenCode identity fields intentionally differ from native CLI identity;
+native cache-affinity headers also differ. Neither is established as a billing
+cause. Do not relabel them as a quota fix without evidence.
+
 The user retested installed commit `0b69a29` and reported API allowance usage.
 This is not a successful Vibe quota result. Release publication remains held.
 
