@@ -366,15 +366,21 @@ def test_keyring_success_and_diagnostic_failure_preserve_behavior(tmp_path):
 
 
 def load_native_credentials():
-    from conftest import _original_env
-    installed = Path(_original_env["APPDATA"]) / "uv/tools/mistral-vibe/Lib/site-packages/vibe/setup/auth/_oidc_credentials.py"
-    if not installed.exists():
-        pytest.skip("Installed native Vibe source is needed for adapter contract tests")
-    spec = importlib.util.spec_from_file_location("_test_native_oidc_credentials", installed)
+    fixture = Path(__file__).parent / "fixtures/native-vibe-3.0.4-oidc-credentials.py"
+    spec = importlib.util.spec_from_file_location("_test_native_oidc_credentials", fixture)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_native_credentials_contract_loads_without_appdata_or_installed_vibe(monkeypatch):
+    from conftest import _original_env
+    monkeypatch.delitem(_original_env, "APPDATA", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+    native = load_native_credentials()
+    assert native.OidcCredentialStore is not None
+    assert native.OidcTokens.model_fields["version"].default == 1
 
 
 def test_portable_native_store_large_lifecycle_isolated_slots_and_cas(tmp_path, monkeypatch):
