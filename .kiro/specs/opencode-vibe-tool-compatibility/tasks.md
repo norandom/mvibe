@@ -31,7 +31,7 @@ baseline below; do not resume the superseded queue. Historical completed work is
   - _Requirements: 1.2, 1.3, 2.1, 2.2, 3.3, 4.1_
 
 - [ ] 4. Deliver API diagnostics and the repeatable baseline
-- [ ] 4.1 Publish proxy API docs and structured diagnostic logs
+- [x] 4.1 Publish proxy API docs and structured diagnostic logs
   - Expose accurate OpenAPI/Swagger for supported routes, passthrough tool conversations, streaming and errors.
   - Add structlog-based safe stdout events with request IDs, failure phases and actionable hints, without changing helper protocol stdout or buffering responses.
   - Complete when offline route/schema and failure/stream tests pass, secret-bearing inputs never appear in logs, and existing proxy behavior is retained.

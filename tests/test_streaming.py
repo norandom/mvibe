@@ -140,7 +140,9 @@ async def test_decoded_payload_status_headers_and_no_replay_or_redirect(status):
     async with app.router.lifespan_context(app):
         messages = await call(app)
     assert messages[0]['status'] == status and len(requests) == 1
-    assert dict(messages[0]['headers']) == {b'content-type':b'application/custom+json', b'cache-control':b'no-cache'}
+    headers = dict(messages[0]['headers'])
+    assert len(headers.pop(b'x-request-id')) == 32
+    assert headers == {b'content-type':b'application/custom+json', b'cache-control':b'no-cache'}
     assert b''.join(m.get('body',b'') for m in messages) == payload
     assert stream.closed.is_set()
 

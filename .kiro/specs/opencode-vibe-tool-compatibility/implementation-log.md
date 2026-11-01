@@ -211,3 +211,21 @@ pending; do not resume the superseded queue. Existing code/tests are retained.
 - Completion gate VERIFIED for this Windows/synthetic/stdin-stdout fixture.
   Private MCP config, live calls and other capabilities remain unverified.
 - Artifact: packages/opencode-vibe-oidc/.host/mcp-proof.json.
+
+## Revision 2 task 4.1: proxy API and diagnostic foundation
+
+- Implementer READY_FOR_REVIEW; independent reviewer APPROVED.
+- Initial RED: six failures for opaque catch-all OpenAPI/missing diagnostics.
+  Routing regression RED: two failures for local 404/405 logged as completed;
+  fixed classification preserves upstream 404 as an upstream error.
+- Fresh independent full Python suite: 1,033 passed in 39.91s, exit 0. Dependency,
+  script metadata and clean-install/copy-script checks passed; diff check clean.
+- OpenAPI/Swagger describe supported operations, common tool payloads, SSE and
+  errors while preserving raw unvalidated forwarding, method fallback and bodies.
+- Explicit proxy CLI enables isolated structlog 25.5.0 stdout, generated request
+  ID/header, allowlisted phase/outcome/status/timing and fixed action hints.
+  Request/response bodies, credentials, headers and exception strings stay out.
+- Pure ASGI observation preserves early chunks, cancellation, bounded cleanup
+  and no replay. Logger failure is inert; Uvicorn raw access logging is disabled.
+- Completion gate VERIFIED for offline API/diagnostic behavior. No OpenTelemetry
+  exporter or distributed traces are implemented; see proxy-observability brief.

@@ -98,7 +98,7 @@ def test_cli_loopback_and_port(monkeypatch, arguments, port, force):
     calls = []
     monkeypatch.setattr(proxy.uvicorn, 'run', lambda app, **kwargs: calls.append((app, kwargs)))
     proxy.main(arguments)
-    assert calls[0][1] == {'host': '127.0.0.1', 'port': port}
+    assert calls[0][1] == {'host': '127.0.0.1', 'port': port, 'access_log': False}
     assert calls[0][0].state.force_login is force
 
 

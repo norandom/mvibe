@@ -26,7 +26,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-proxy = ["fastapi", "uvicorn"]
+proxy = ["fastapi", "uvicorn", "structlog==25.5.0"]
 
 [dependency-groups]
 dev = [
@@ -34,6 +34,7 @@ dev = [
     "hatchling==1.27.0",
     "fastapi",
     "uvicorn",
+    "structlog==25.5.0",
     "pytest-xdist>=3.8.0",
 ]
 

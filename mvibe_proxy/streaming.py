@@ -52,10 +52,12 @@ class ProxyStreamOwner:
             self._client_close_attempted = True
             await self._bounded(self.client.aclose())
 
-    async def _close_stream(self, stream) -> None:
+    async def _close_stream(self, stream, diagnostic=None) -> None:
         if not await self._bounded(stream.aclose()):
             self.retired = True
             logger.warning('proxy_cleanup_failed stage=response reason=close_failed')
+            if diagnostic is not None:
+                diagnostic.failure('cleanup')
             for scope in tuple(self._active):
                 scope.cancel()
             await self._close_client()
@@ -88,14 +90,15 @@ class ProxyStreamOwner:
             scope.cancel()
         await self._protected(self._close_client())
 
-    def response(self, acquire: Callable[[], Awaitable]):
-        return _OwnedResponse(self, acquire)
+    def response(self, acquire: Callable[[], Awaitable], diagnostic=None):
+        return _OwnedResponse(self, acquire, diagnostic)
 
 
 class _OwnedByteStream(httpx2.AsyncByteStream):
-    def __init__(self, owner: ProxyStreamOwner, stream):
+    def __init__(self, owner: ProxyStreamOwner, stream, diagnostic=None):
         self.owner = owner
         self.stream = stream
+        self.diagnostic = diagnostic
 
     async def __aiter__(self):
         async for chunk in self.stream:
@@ -104,18 +107,20 @@ class _OwnedByteStream(httpx2.AsyncByteStream):
     async def aclose(self):
         # HTTPX also closes automatically at iterator exhaustion. Bound that
         # path too, before the downstream terminal body can be sent.
-        await self.owner._protected(self.owner._close_stream(self.stream))
+        await self.owner._protected(self.owner._close_stream(self.stream, self.diagnostic))
 
 
 class _OwnedResponse(Response):
-    def __init__(self, owner: ProxyStreamOwner, acquire: Callable[[], Awaitable]):
+    def __init__(self, owner: ProxyStreamOwner, acquire: Callable[[], Awaitable], diagnostic=None):
         super().__init__(content=b'')
         self.owner = owner
         self.acquire = acquire
+        self.diagnostic = diagnostic
 
     async def __call__(self, scope, receive, send) -> None:
         upstream = None
         disconnected = False
+        completed = False
         cancellation = anyio.CancelScope()
         self.owner._active.add(cancellation)
         try:
@@ -125,13 +130,19 @@ class _OwnedResponse(Response):
                         raise StreamAborted('Upstream unavailable')
                     # Acquisition is inside the same try/finally as headers/body.
                     upstream = await self.acquire()
-                    upstream.stream = _OwnedByteStream(self.owner, upstream.stream)
+                    upstream.stream = _OwnedByteStream(self.owner, upstream.stream, self.diagnostic)
+                    if self.diagnostic is not None:
+                        self.diagnostic.upstream(upstream.status_code)
                     if self.owner.retired:
                         raise StreamAborted('Upstream unavailable')
                 except AuthError:
+                    if self.diagnostic is not None:
+                        self.diagnostic.failure('auth')
                     await JSONResponse({'error': {'message': 'Vibe authentication failed; run proxy.py --login'}}, status_code=401)(scope, receive, send)
                     return
                 except Exception:
+                    if self.diagnostic is not None:
+                        self.diagnostic.failure('connection')
                     await JSONResponse({'error': {'message': 'Upstream connection failed'}}, status_code=502)(scope, receive, send)
                     return
 
@@ -141,6 +152,8 @@ class _OwnedResponse(Response):
                         message = await receive()
                         if message['type'] == 'http.disconnect':
                             disconnected = True
+                            if self.diagnostic is not None and not completed:
+                                self.diagnostic.failure('cancelled')
                             cancellation.cancel()
                             return
 
@@ -159,6 +172,7 @@ class _OwnedResponse(Response):
                     await upstream.aclose()
                     if self.owner.retired:
                         raise StreamAborted('Upstream stream interrupted')
+                    completed = True
                     await send({'type': 'http.response.body', 'body': b'', 'more_body': False})
                     group.cancel_scope.cancel()
             if cancellation.cancel_called and not disconnected:
