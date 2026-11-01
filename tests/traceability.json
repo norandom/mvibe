@@ -1144,7 +1144,7 @@
         "kind": "test",
         "suite": "provider",
         "file": "packages/opencode-vibe-oidc/test/provider.test.ts",
-        "name": "per-fetch rotation replaces caller credentials and preserves tool bytes, method, query and response"
+        "name": "per-fetch rotation replaces caller credentials and preserves tool payload, method, query and response"
       }
     ],
     "12.6": [

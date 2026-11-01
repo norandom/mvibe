@@ -62,7 +62,8 @@ class Session:
             # Test-only synthetic boundary observation, independent of JS bundling.
             with open(os.environ['VIBE_TEST_RESOLUTIONS'], 'a') as evidence:
                 evidence.write(json.dumps({'target': target, 'revision': revision}) + '\n')
-        return AuthSnapshot({'Authorization': 'Bearer synthetic-' + revision},
+        return AuthSnapshot({'Authorization': 'Bearer synthetic-' + revision,
+                             'User-Agent': 'mistral-client-python/Mistral-Vibe/3.0.4'},
                             datetime.now(timezone.utc) + timedelta(hours=1), revision, target)
 
     async def cancel_login(self, attempt):

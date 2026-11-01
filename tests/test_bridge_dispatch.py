@@ -112,6 +112,24 @@ async def test_methods_and_request_scoped_resolution():
 
 
 @pytest.mark.anyio
+async def test_native_metadata_is_request_scoped_and_optional():
+    async with Pipes() as p:
+        url = 'https://api.mistral.ai/v1/chat/completions'
+        await p.send('resolve', 'legacy', target_url=url)
+        assert 'metadata' not in (await p.receive())['result']
+        for session_id, purpose, iteration, call_type in [('one', 'agent', 0, 'main_call'),
+                ('two', 'title', 0, 'title_generation'), ('one', 'agent', 1, 'secondary_call')]:
+            await p.send('resolve', session_id + purpose + str(iteration), target_url=url,
+                request_context={'session_id': session_id, 'purpose': purpose, 'iteration': iteration})
+            result = (await p.receive())['result']
+            assert result['metadata']['session_id'] == session_id
+            assert result['metadata']['call_type'] == call_type
+            assert 'user_plan' not in result['metadata']
+            assert 'message_id' not in result['metadata']
+        assert p.session.calls.count(('resolve', url)) == 4
+
+
+@pytest.mark.anyio
 async def test_wait_does_not_block_cancel():
     async with Pipes() as p:
         await p.send('login.wait', 'wait', attempt_id='attempt')

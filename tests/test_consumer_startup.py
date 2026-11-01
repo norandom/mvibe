@@ -25,7 +25,11 @@ async def test_public_injected_startup_records_separate_local_evidence(monkeypat
             assert health.status_code == 200 and health.json() == {'status': 'ok'}
             assert not sent, 'local liveness must not probe upstream'
             assert (await client.post('/v1/chat/completions', content=payload)).status_code == 200
-            assert sent[0].content == payload
+            import json
+            outgoing = json.loads(sent[0].content)
+            assert outgoing['messages'] == json.loads(payload)['messages']
+            assert outgoing['metadata']['call_source'] == 'vibe_code'
+            assert outgoing['metadata']['call_type'] == 'secondary_call'
             assert (await client.post('/v1/responses')).status_code == 404
             assert len(sent) == 1
     assert session.events[-1] == 'close'

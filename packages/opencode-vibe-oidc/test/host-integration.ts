@@ -36,10 +36,11 @@ try {
   assert.equal(current.exitCode, 0); version = current.stdout.toString().trim();
   assert.match(version, /\bv2\./);
   writeFileSync(rotation, "one");
+  writeFileSync(join(root, "metadata.txt"), "owned metadata bytes\n");
   copyFileSync(resolve("test/host-integration-sitecustomize.py"), join(root, "sitecustomize.py"));
   const plugin = join(root, "plugins", "integration"); mkdirSync(plugin, { recursive: true });
   writeFileSync(join(plugin, "index.ts"), `export { default } from ${JSON.stringify(resolve("test/host-integration-plugin.ts").replaceAll("\\", "/"))};`);
-  writeFileSync(join(root, "opencode.json"), JSON.stringify({ plugins: [{ package: "./plugins/integration", options: { evidence, rotation, audience: "https://inference.example.test", helperCommand: { executable: python, args: ["-m", "mvibe_auth", "bridge"] } } }] }));
+  writeFileSync(join(root, "opencode.json"), JSON.stringify({ permission: { "*": "allow" }, plugins: [{ package: "./plugins/integration", options: { evidence, rotation, metadataFile: join(root, "metadata.txt"), audience: "https://inference.example.test", helperCommand: { executable: python, args: ["-m", "mvibe_auth", "bridge"] } } }] }));
   const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
   const port = reservation.port!; await reservation.stop(true);
   child = Bun.spawn([host, "serve", "--hostname", "127.0.0.1", "--port", String(port)], { env, cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" });

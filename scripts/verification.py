@@ -15,7 +15,7 @@ STEPS = ('python', 'provider', 'typecheck', 'provider-build', 'python-build',
          'bridge-process', 'bridge-root-exit', 'host-setup', 'host', 'tools', 'tool-baseline')
 HOST_CHECKS = ('markerOnly', 'modelDiscovery', 'currentCredentials', 'incrementalStream',
                'toolCallPayload', 'cancellation', 'noReplay401', 'noSessionReplay401',
-               'noReplay503', 'noSessionReplay503', 'customSDKCalled', 'cleanup')
+               'noReplay503', 'noSessionReplay503', 'customSDKCalled', 'nativeRequestMetadata', 'cleanup')
 STARTUP_CHECKS = ('default_loopback', 'injected_lifespan', 'local_health',
                   'tool_payload', 'rejected_route', 'closed')
 

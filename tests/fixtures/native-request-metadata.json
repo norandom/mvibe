@@ -1,0 +1,84 @@
+{
+  "source_commit": "338ad4bf0f73c4dd879d667cf7ab011555ae1751",
+  "source_sha256": {
+    "vibe/core/telemetry/build_metadata.py": "f6e27c1a81b238e09801ed9c2cb335aa7822a06a064b9898a447c0fdf431a9b8",
+    "vibe/core/telemetry/types.py": "53be510ecc741213e13b9d6aff2bbb21fa9321402364f342437ef011b560814a",
+    "vibe/app_server/_completion_attribution.py": "1372575de651794f2354e6b4beb435d4aee39eb50d987288a049ce6e2a32d4ec",
+    "vibe/utils/http.py": "30d9a75d184328998309363dc02b5d076fd0aecf0453422d96b7b030042db6a7",
+    "vibe/utils/platform.py": "bd2a8c14e26661ee16403b1a4530d934fb11ec01dbf46e8182e5c79e0234468f"
+  },
+  "cases": [
+    {
+      "call_type": "main_call",
+      "metadata": {
+        "agent_entrypoint": "cli",
+        "agent_version": "3.0.4",
+        "client_name": "vibe_cli",
+        "client_version": "3.0.4",
+        "os": "windows",
+        "arch": "amd64",
+        "os_version": "synthetic-os-version",
+        "version": "3.0.4",
+        "session_id": "synthetic-session",
+        "call_type": "main_call",
+        "call_source": "vibe_code",
+        "host_kind": "local",
+        "message_id": "synthetic-message"
+      }
+    },
+    {
+      "call_type": "secondary_call",
+      "metadata": {
+        "agent_entrypoint": "cli",
+        "agent_version": "3.0.4",
+        "client_name": "vibe_cli",
+        "client_version": "3.0.4",
+        "os": "windows",
+        "arch": "amd64",
+        "os_version": "synthetic-os-version",
+        "version": "3.0.4",
+        "session_id": "synthetic-session",
+        "call_type": "secondary_call",
+        "call_source": "vibe_code",
+        "host_kind": "local",
+        "message_id": "synthetic-message"
+      }
+    },
+    {
+      "call_type": "smart_approve",
+      "metadata": {
+        "agent_entrypoint": "cli",
+        "agent_version": "3.0.4",
+        "client_name": "vibe_cli",
+        "client_version": "3.0.4",
+        "os": "windows",
+        "arch": "amd64",
+        "os_version": "synthetic-os-version",
+        "version": "3.0.4",
+        "session_id": "synthetic-session",
+        "call_type": "smart_approve",
+        "call_source": "vibe_code",
+        "host_kind": "local",
+        "message_id": "synthetic-message"
+      }
+    },
+    {
+      "call_type": "title_generation",
+      "metadata": {
+        "agent_entrypoint": "cli",
+        "agent_version": "3.0.4",
+        "client_name": "vibe_cli",
+        "client_version": "3.0.4",
+        "os": "windows",
+        "arch": "amd64",
+        "os_version": "synthetic-os-version",
+        "version": "3.0.4",
+        "session_id": "synthetic-session",
+        "call_type": "title_generation",
+        "call_source": "vibe_code",
+        "host_kind": "local",
+        "message_id": "synthetic-message"
+      }
+    }
+  ]
+}

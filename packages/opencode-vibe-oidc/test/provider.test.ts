@@ -7,19 +7,19 @@ const audience = "https://inference.example.test";
 const url = audience + "/v1/chat/completions?q=&q=two";
 function fixture() {
   const resolved: string[] = [], sent: Request[] = [];
-  let snapshot: ((target: string, signal?: AbortSignal) => Promise<Results["resolve"]>) = async target => ({ target, headers: { Authorization: `Bearer synthetic-${resolved.length}`, "x-external-organization-id": "org", "x-external-workspace-id": "space", "x-evil": "exclude" }, expires_at: Date.now() / 1000 + 300, revision: String(resolved.length) });
+  let snapshot: ((target: string, signal?: AbortSignal) => Promise<Results["resolve"]>) = async target => ({ target, headers: { Authorization: `Bearer synthetic-${resolved.length}`, "x-external-organization-id": "org", "x-external-workspace-id": "space", "x-evil": "exclude" }, expires_at: Date.now() / 1000 + 300, revision: String(resolved.length), metadata: { call_source: "vibe_code" } });
   const bridge = { request: async (method: string, params: { target_url: string }, signal?: AbortSignal) => { expect(method).toBe("resolve"); resolved.push(params.target_url); return snapshot(params.target_url, signal); } } as Pick<StdioBridge, "request">;
   let response = new Response("unauthorized", { status: 401 });
   const fetch = createProviderFetch(bridge, audience, async (input, init) => { sent.push(new Request(input, init)); return response; });
   return { fetch, resolved, sent, snapshot: (value: typeof snapshot) => { snapshot = value; }, response: (value: Response) => { response = value; } };
 }
-test("per-fetch rotation replaces caller credentials and preserves tool bytes, method, query and response", async () => {
+test("per-fetch rotation replaces caller credentials and preserves tool payload, method, query and response", async () => {
   const f = fixture(); const body = '{ "tools": [{"function":{"arguments":"{\\"x\\":1}"}}], "stream":true }';
   for (let i = 1; i <= 2; i++) {
     const result = await f.fetch(new Request(url, { method: "POST", body, headers: { Authorization: "Bearer connection-marker", "x-api-key": "caller-key", "api-key": "caller-key", "x-external-workspace-id": "caller", "content-type": "application/json" } }));
     expect(result.status).toBe(401);
     const request = f.sent.at(-1)!;
-    expect(request.url).toBe(url); expect(request.method).toBe("POST"); expect(await request.text()).toBe(body);
+    expect(request.url).toBe(url); expect(request.method).toBe("POST"); expect(await request.json()).toEqual({ ...JSON.parse(body), metadata: { call_source: "vibe_code" } });
     expect(request.headers.get("authorization")).toBe(`Bearer synthetic-${i}`);
     expect(request.headers.get("x-external-workspace-id")).toBe("space");
     for (const name of ["x-api-key", "api-key", "x-evil"]) expect(request.headers.has(name)).toBe(false);
@@ -33,7 +33,7 @@ test.each(["User-Agent", "user-agent", "USER-AGENT"])("shared %s metadata replac
   f.snapshot(async target => ({ target, headers: {
     Authorization: "Bearer synthetic-id", "x-external-organization-id": "org", "x-external-workspace-id": "space",
     [name]: agent, "x-evil": "exclude", "call_source": "exclude", "x-affinity": "exclude", "content-type": "evil/type",
-  }, expires_at: Date.now()/1000+300, revision: "1" }));
+  }, expires_at: Date.now()/1000+300, revision: "1", metadata: { call_source: "vibe_code" } }));
   const body = '{ "messages":[], "stream":true }';
   await f.fetch(url, { method: "POST", body, headers: {
     "user-agent": "caller-agent", Authorization: "Bearer caller", "x-external-organization-id": "caller-org",
@@ -46,7 +46,7 @@ test.each(["User-Agent", "user-agent", "USER-AGENT"])("shared %s metadata replac
   expect(request.headers.get("x-external-workspace-id")).toBe("space");
   for (const key of ["x-evil", "call_source", "x-affinity"]) expect(request.headers.has(key)).toBe(false);
   expect(request.headers.get("content-type")).toBe("application/json");
-  expect(await request.text()).toBe(body);
+  expect(await request.json()).toEqual({ ...JSON.parse(body), metadata: { call_source: "vibe_code" } });
   expect(request.redirect).toBe("manual");
   expect(f.sent).toHaveLength(1);
 });

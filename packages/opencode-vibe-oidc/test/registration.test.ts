@@ -32,6 +32,8 @@ function fixture(options: Plugin.Context["options"] = { audience: "https://infer
   const integrationEditor: Pick<IntegrationEditor, "method"> = { method: { update: input => { methods.push(input); }, list: () => [], remove: () => {} } };
   const ctx = {
     options,
+    app: { version: "2.2.5" },
+    session: { hook: async () => ({ dispose: async () => {} }) },
     event: { subscribe: async function* (options: { signal?: AbortSignal; types?: string[] }) { while (!options?.signal?.aborted) { if (!pending.length) await new Promise<void>(resolve => { notify = resolve; options?.signal?.addEventListener("abort", () => resolve(), { once: true }); }); if (options?.signal?.aborted) break; const type = pending.shift()!; if (!options.types || options.types.includes(type)) yield { type }; } } },
     aisdk: { hook: async (name: string, callback: unknown, options: unknown) => { hooks.push({ name, callback, options }); return { dispose: async () => { disposed.push("aisdk"); } }; } },
     provider: { reload: async () => { if (!lazyProvider) editorCallback?.(providerEditor as ProviderEditor); }, transform: async (edit: (editor: ProviderEditor) => void) => { editorCallback = edit; if (!lazyProvider) edit(providerEditor as ProviderEditor); return { dispose: async () => { disposed.push("provider"); } }; } },
@@ -77,7 +79,7 @@ test("registered SDK rewrites Mistral reasoning history before authenticated tra
   const http = new ControlledHTTP();
   const target = "https://inference.example.test/v1/chat/completions";
   http.queue("POST", target, Response.json({ choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "Done" } }] }));
-  const request = spyOn(StdioBridge.prototype, "request").mockImplementation((async () => ({ target, revision: "synthetic", expires_at: Date.now() / 1000 + 60, headers: { authorization: "Bearer synthetic" } })) as StdioBridge["request"]);
+  const request = spyOn(StdioBridge.prototype, "request").mockImplementation((async () => ({ target, revision: "synthetic", expires_at: Date.now() / 1000 + 60, metadata: { call_source: "vibe_code" }, headers: { authorization: "Bearer synthetic" } })) as StdioBridge["request"]);
   const transport = spyOn(globalThis, "fetch").mockImplementation(Object.assign(http.fetch, { preconnect: () => {} }));
   try {
     cleanup = await setupVibe(f.ctx);
@@ -111,7 +113,7 @@ test("setup waits for credential event discovery that supersedes its initial req
   Object.assign(f.ctx.options, { modelMetadata: { available: { name: "Synthetic", capabilities: { tools: false, input: ["text"], output: ["text"] }, limit: { context: 2048, output: 256 }, time: { released: 1 }, status: "active", cost: [{ input: 1, output: 2, cache: { read: 0, write: 0 } }] } } });
   const base = "https://inference.example.test/v1/models";
   const releases: Array<() => void> = [];
-  const request = spyOn(StdioBridge.prototype, "request").mockImplementation((async (method: string) => method === "status" ? { signed_in: true, config_match: true } : { target: base, revision: "synthetic", expires_at: Date.now() / 1000 + 60, headers: { authorization: "Bearer synthetic" } }) as StdioBridge["request"]);
+  const request = spyOn(StdioBridge.prototype, "request").mockImplementation((async (method: string) => method === "status" ? { signed_in: true, config_match: true } : { target: base, revision: "synthetic", expires_at: Date.now() / 1000 + 60, metadata: { call_source: "vibe_code" }, headers: { authorization: "Bearer synthetic" } }) as StdioBridge["request"]);
   const transport = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => { await new Promise<void>(resolve => releases.push(resolve)); return Response.json({ data: [{ id: "available" }] }); }, { preconnect: () => {} }));
   let settled = false;
   const setup = setupVibe(f.ctx).then(cleanup => { settled = true; return cleanup; });
@@ -139,7 +141,7 @@ test.each(["integration.updated", "credential.updated", "credential.switched", "
   const base = "https://inference.example.test/v1/models";
   f.hostModels.set("available", { ...Model.Info.default(Provider.ID.make("mistral"), Model.ID.make("available")), name: "Synthetic", capabilities: { tools: false, input: ["text"], output: ["text"] }, limit: { context: 2048, output: 256 }, time: { released: 1 }, status: "active", cost: [{ input: 1 as Model.Cost["input"], output: 2 as Model.Cost["output"], cache: { read: 0 as Model.Cost["cache"]["read"], write: 0 as Model.Cost["cache"]["write"] } }] });
   http.queue("GET", base, Response.json({ data: [{ id: "available" }, { id: "not-in-host-catalog" }] }));
-  const request = spyOn(StdioBridge.prototype, "request").mockImplementation((async (method: string) => method === "status" ? { signed_in: true, config_match: true } : { target: base, revision: "synthetic", expires_at: Date.now() / 1000 + 60, headers: { authorization: "Bearer synthetic" } }) as StdioBridge["request"]);
+  const request = spyOn(StdioBridge.prototype, "request").mockImplementation((async (method: string) => method === "status" ? { signed_in: true, config_match: true } : { target: base, revision: "synthetic", expires_at: Date.now() / 1000 + 60, metadata: { call_source: "vibe_code" }, headers: { authorization: "Bearer synthetic" } }) as StdioBridge["request"]);
   const transport = spyOn(globalThis, "fetch").mockImplementation(Object.assign(http.fetch, { preconnect: () => {} }));
   let cleanup: (() => Promise<void>) | undefined;
   try {

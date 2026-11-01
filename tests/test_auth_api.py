@@ -2,7 +2,6 @@
 import asyncio
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
-from importlib.metadata import version
 
 from keyring.errors import KeyringError
 from pydantic import SecretStr
@@ -30,7 +29,7 @@ async def test_public_snapshot_is_immutable_target_bound_and_reloads(session, lo
     assert first.target == url and first.kind == 'id_token'
     assert first.headers == {'Authorization': 'Bearer synthetic-id',
                              'x-external-organization-id': 'synthetic-org',
-                             'User-Agent': 'mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/' + version('mvibe-auth')}
+                             'User-Agent': 'mistral-client-python/Mistral-Vibe/3.0.4'}
     assert first.expires_at == datetime.fromtimestamp(1700000900, timezone.utc)
     assert 'synthetic-id' not in repr(first) and 'synthetic-refresh' not in repr(first)
     assert not hasattr(first, 'refresh_token')
@@ -47,16 +46,12 @@ async def test_public_snapshot_is_immutable_target_bound_and_reloads(session, lo
 
 
 @pytest.mark.anyio
-async def test_client_metadata_tracks_adapter_distribution_independently(session, login, monkeypatch):
+async def test_client_metadata_is_exact_native_transport_identity(session, login):
     from mvibe_auth import http
 
     login.slot.external(tokens())
-    def installed_version(name):
-        assert name == 'mvibe-auth'
-        return '7.8.9'
-    monkeypatch.setattr(http, 'version', installed_version)
     snapshot = await session.resolve('https://inference.invalid/v1/models')
-    assert snapshot.headers['User-Agent'] == 'mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/7.8.9'
+    assert snapshot.headers['User-Agent'] == 'mistral-client-python/Mistral-Vibe/3.0.4'
     assert http.get_user_agent('mistral') == 'mistral-client-python/Mistral-Vibe/3.0.4'
     assert http.get_user_agent(None) == 'Mistral-Vibe/3.0.4'
     await session.close()
@@ -86,11 +81,13 @@ async def test_proxy_sends_shared_client_metadata_with_authoritative_identity(se
     assert response.status_code == 401
     assert len(sent) == 1
     request = sent[0]
-    assert request.headers['user-agent'] == 'mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/' + version('mvibe-auth')
+    assert request.headers['user-agent'] == 'mistral-client-python/Mistral-Vibe/3.0.4'
     assert request.headers['authorization'] == 'Bearer synthetic-id'
     assert request.headers['x-external-organization-id'] == 'synthetic-org'
     assert 'x-external-workspace-id' not in request.headers
-    assert request.content == body
+    import json
+    assert json.loads(request.content)['messages'] == []
+    assert json.loads(request.content)['metadata']['call_source'] == 'vibe_code'
 
 
 @pytest.mark.anyio

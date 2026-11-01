@@ -5,13 +5,14 @@ export const MAX_FRAME_BYTES = 1_048_576;
 export type Method = "hello" | "status" | "login.start" | "login.wait" | "login.cancel" | "resolve" | "shutdown";
 export type ErrorCode = "missing" | "invalid" | "rejected" | "transient" | "conflict" | "cancelled" | "unsupported_version" | "unknown_method" | "invalid_frame" | "frame_too_large";
 export type AuthError = { code: ErrorCode; message: string; retryable: boolean };
+export type RequestContext = { session_id?: string; message_id?: string; parent_session_id?: string; client_name?: string; client_version?: string; agent_entrypoint?: "cli" | "acp" | "desktop" | "programmatic" | "unknown"; agent_version?: string; purpose?: "agent" | "compaction" | "classify" | "title" | "generate"; iteration?: number };
 export type Params = {
   hello: Record<string, never>;
   status: Record<string, never>;
   "login.start": { force: boolean };
   "login.wait": { attempt_id: string };
   "login.cancel": { attempt_id: string };
-  resolve: { target_url: string };
+  resolve: { target_url: string; request_context?: RequestContext };
   shutdown: Record<string, never>;
 };
 export type Results = {
@@ -20,7 +21,7 @@ export type Results = {
   "login.start": { attempt_id: string; authorization_url: string; expires_at: number };
   "login.wait": { outcome: "completed" | "reused_current" };
   "login.cancel": { cancelled: boolean };
-  resolve: { headers: Record<string, string>; expires_at: number; revision: string; target: string };
+  resolve: { headers: Record<string, string>; expires_at: number; revision: string; target: string; metadata?: Record<string, string> };
   shutdown: { closed: boolean };
 };
 export type Request = { [M in Method]: { version: 1; id: string; method: M; params: Params[M] } }[Method];
@@ -36,7 +37,7 @@ export class ProtocolError extends Error {
   }
 }
 
-type Schema = { $ref?: string; type?: string; const?: unknown; enum?: unknown[]; oneOf?: Schema[]; properties?: Record<string, Schema>; required?: string[]; additionalProperties?: boolean | Schema; minLength?: number };
+type Schema = { $ref?: string; type?: string; const?: unknown; enum?: unknown[]; oneOf?: Schema[]; properties?: Record<string, Schema>; required?: string[]; additionalProperties?: boolean | Schema; minLength?: number; maxLength?: number; minimum?: number; maximum?: number };
 const definitions: Record<string, Schema> = canonicalSchema.$defs;
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const owns = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key);
@@ -64,9 +65,9 @@ function matches(value: unknown, schema: Schema): boolean {
       }
       break;
     }
-    case "string": return typeof value === "string" && value.length >= (schema.minLength ?? 0);
+    case "string": return typeof value === "string" && value.length >= (schema.minLength ?? 0) && [...value].length <= (schema.maxLength ?? Infinity);
     case "boolean": return typeof value === "boolean";
-    case "integer": return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value);
+    case "integer": return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= (schema.minimum ?? -Infinity) && value <= (schema.maximum ?? Infinity);
     case "number": return typeof value === "number" && Number.isFinite(value);
   }
   return true;

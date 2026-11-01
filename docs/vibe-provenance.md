@@ -132,3 +132,24 @@ License SHA256: `815AD2F988BC0E55678643CCD41CE6B17F879C7A5A78857E546AF1BC26D0D40
 | mvibe_auth/concurrency.py | FAE2F4CBAA7F571196616FF4AA328AB331035C1285D4C4FBED70B9A436DDAB79 |
 | mvibe_auth/http.py | C1C072A977464B235412F8B3338285222CD5A8343BDDD219E02946CDFEE30BEB |
 | mvibe_auth/oidc_marker.py | 711A2FDF30008221031D7100995847F331F0A66FEADF73154E6374CBC9BA6EBA |
+
+## Native completion attribution amendment (2026-11-01)
+
+Native parity was checked against sibling Mistral Vibe 3.0.4 commit
+`338ad4bf0f73c4dd879d667cf7ab011555ae1751`. The shared pure
+`mvibe_auth/request_metadata.py` derives platform/version fields and the native
+purpose/iteration call taxonomy from `vibe/core/telemetry/build_metadata.py`,
+`vibe/core/telemetry/types.py`, `vibe/app_server/_completion_attribution.py` and
+`vibe/utils/platform.py`, retaining the source license. The exact transport
+User-Agent replaces the temporary adapter suffix. AuthSession, ID-token and
+tenant policy are unchanged.
+
+`tests/fixtures/native-request-metadata.json` records deterministic native-builder
+outputs and the five examined source SHA256s. The capture script executes that
+builder using a synthetic launch/session/message context and patched platform;
+it performs no authentication, inference or account access. Adapter context uses
+actual OpenCode identity and only known IDs; absent account plan fields remain
+absent. Request attribution is an explicit chat-JSON preservation exception;
+custom caller metadata and application payload fields remain intact. This
+source/serialization evidence and synthetic host request captures are separate
+from live account quota-counter behavior, which remains unverified.

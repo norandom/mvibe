@@ -109,8 +109,7 @@ async def test_runtime_retains_tenant_destination_and_service(monkeypatch):
     monkeypatch.setenv('VIBE_CLI_OIDC_AUDIENCE', 'https://new.example')
     monkeypatch.setenv('VIBE_CLI_OIDC_ENABLED', 'false')
     headers = await owner.headers('https://api.mistral.ai/v1/models')
-    from importlib.metadata import version
-    assert headers.pop('User-Agent') == 'mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/' + version('mvibe-auth')
+    assert headers.pop('User-Agent') == 'mistral-client-python/Mistral-Vibe/3.0.4'
     assert headers == {'Authorization': 'Bearer synthetic-id',
                        'x-external-organization-id': 'old-org',
                        'x-external-workspace-id': 'old-workspace'}

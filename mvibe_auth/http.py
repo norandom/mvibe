@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 import functools
-from importlib.metadata import version
 import ipaddress
 import os
 import re
@@ -306,8 +305,8 @@ def get_user_agent(backend: str | None) -> str:
 
 
 def get_adapter_user_agent() -> str:
-    """Identify the Vibe-derived client and this independently versioned adapter."""
-    return f"{get_user_agent('mistral')} mvibe-auth/{version('mvibe-auth')}"
+    """Exact native Vibe Mistral transport identity."""
+    return get_user_agent('mistral')
 
 
 def with_user_agent(headers: Mapping[str, str], backend: str | None) -> dict[str, str]:

@@ -9,7 +9,9 @@ import json
 import math
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from mvibe_auth.request_metadata import RequestContext
 
 MAX_FRAME_BYTES = 1_048_576
 Method = Literal["hello", "status", "login.start", "login.wait", "login.cancel", "resolve", "shutdown"]
@@ -41,6 +43,14 @@ class AttemptParams(WireModel):
 
 class ResolveParams(WireModel):
     target_url: str
+    request_context: RequestContext | None = Field(default=None, repr=False)
+
+    @field_validator('request_context', mode='before')
+    @classmethod
+    def non_null_context(cls, value):
+        if value is None:
+            raise ValueError('Omit unavailable request context.')
+        return value
 
 
 class HelloResult(WireModel):
@@ -73,6 +83,14 @@ class ResolveResult(WireModel):
     expires_at: float
     revision: str
     target: str
+    metadata: dict[str, str] | None = Field(default=None, repr=False)
+
+    @field_validator('metadata', mode='before')
+    @classmethod
+    def non_null_metadata(cls, value):
+        if value is None:
+            raise ValueError('Omit unavailable metadata.')
+        return value
 
 
 class ShutdownResult(WireModel):

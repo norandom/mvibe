@@ -80,3 +80,14 @@ reloads. After builds completed, the actual background service was restarted
 with `opencode service restart`, successfully, for a clean user retest. Evidence
 and limits: `reports/disposed-helper-debug.md`. A durable host cache invalidation
 change belongs upstream and needs an isolated reload regression first.
+
+### Complete native request parity
+
+The adapter-suffixed User-Agent above did not resolve the user's API-counter
+observation. The subsequent [native request parity amendment](native-request-parity.md)
+replaces it with the exact native User-Agent and adds the previously missing
+completion metadata through shared Python policy. Independent review approved
+actual-host captures covering overlapping sessions, native read continuations
+and auxiliary generation. Dagger checks passed. The local provider was rebuilt
+and `opencode service restart` succeeded. Publication is still held pending the
+user's counter retest; none of these offline checks proves Vibe quota usage.

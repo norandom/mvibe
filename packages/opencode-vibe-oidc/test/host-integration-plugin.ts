@@ -20,6 +20,9 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   let mode = "text", upstreamFinished = false, cancelled = false;
   let release: (() => void) | undefined;
   const observedCredentials: string[] = [];
+  const nativeRequests: Array<{ metadata: Record<string, string>; toolResult: boolean }> = [];
+  const metadataSessionIDs = new Set<string>();
+  let toolExecutions = 0;
   const eventTypes: string[] = [];
   const warnings: string[] = [];
   const credentials = new HostFixtureCredentials();
@@ -36,7 +39,9 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   } as StdioBridge["request"];
   console.warn = (...values: unknown[]) => { warnings.push(values.map(String).join(" ")); };
   const monitor = new AbortController();
-  void (async () => { for await (const event of ctx.event.subscribe({ signal: monitor.signal })) eventTypes.push(event.type); })();
+  void (async () => { for await (const event of ctx.event.subscribe({ signal: monitor.signal })) {
+    eventTypes.push(event.type);
+  } })();
   const originalFetch = globalThis.fetch;
   const encoder = new TextEncoder();
   // No fallback: every fetch in this host fixture is synthetic or fails closed.
@@ -52,6 +57,8 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     }
     const expected = readFileSync(rotation, "utf8");
     const observed = credentials.assertRequest(request, expected);
+    assert.equal(request.headers.get("user-agent"), "mistral-client-python/Mistral-Vibe/3.0.4");
+    assert.equal(request.headers.get("x-mvibe-request-context"), null, "private context must not reach upstream");
     if (request.url.endsWith("/models")) {
       models++;
       return Response.json({ data: [{ id: "synthetic-model", name: "Synthetic", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 131072, output: 4096 }, time: { released: 0 }, status: "active", cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] }] });
@@ -60,6 +67,23 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     inference++;
     observedCredentials.push(observed);
     const body = await request.json() as Record<string, unknown>;
+    assert.ok(body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata), "native completion metadata is required");
+    const metadata = body.metadata as Record<string, string>;
+    assert.equal(metadata.call_source, "vibe_code");
+    assert.equal(metadata.host_kind, "local");
+    assert.equal(metadata.version, "3.0.4");
+    assert.ok(Object.values(metadata).every(value => typeof value === "string"));
+    assert.ok(metadata.os && metadata.arch && metadata.call_type);
+    assert.equal(metadata.user_plan, undefined, "fixture has no claimed plan");
+    const toolResult = Array.isArray(body.messages) && body.messages.some(message => message?.role === "tool");
+    nativeRequests.push({ metadata, toolResult });
+    if (mode === "metadata") {
+      if (!toolResult) await wait(() => [...metadataSessionIDs].every(id => nativeRequests.some(item => item.metadata.session_id === id)), "both session requests must overlap");
+      if (toolResult) assert.ok(JSON.stringify(body.messages).includes("owned metadata bytes"), "native read result reaches continuation");
+      const frame = (delta: unknown, finish_reason: string | null) => "data: " + JSON.stringify({ id: "native-metadata", model: "synthetic-model", choices: [{ index: 0, delta, finish_reason }] }) + "\n\n";
+      const delta = toolResult ? { role: "assistant", content: "metadata done" } : { role: "assistant", tool_calls: [{ index: 0, id: "meta00001", type: "function", function: { name: "read", arguments: JSON.stringify({ path: String(ctx.options.metadataFile) }) } }] };
+      return new Response(frame(delta, null) + frame({}, toolResult ? "stop" : "tool_calls") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    }
     if (mode === "401" || mode === "503") return Response.json({ error: { message: "synthetic rejection" } }, { status: Number(mode) });
     if (!body.stream) return Response.json({ id: "synthetic", object: "chat.completion", created: 0, model: "synthetic-model", choices: [{ index: 0, message: { role: "assistant", content: "synthetic answer" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
     upstreamFinished = false;
@@ -110,8 +134,16 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     checks.modelDiscovery = true;
     registrations.push(await ctx.aisdk.hook("sdk", event => { sdkCalls++; assert.equal(event.options.maxRetries, 0); assert.ok(event.sdk); }, { providerID: "vibe-oidc" }));
     registrations.push(await ctx.aisdk.hook("language", event => { languageCalls++; assert.ok(event.language ?? event.sdk); }, { providerID: "vibe-oidc" }));
-    registrations.push(await ctx.session.hook("context", event => { event.tools = { synthetic_echo: { description: "Synthetic test tool", input: { type: "object", properties: { sentinel: { type: "string" } }, required: ["sentinel"] } } }; }, { providerID: "vibe-oidc" }));
+    registrations.push(await ctx.session.hook("context", event => {
+      if (mode === "metadata") { assert.ok(event.tools.read, "native read is offered"); event.tools = { read: event.tools.read }; }
+      else event.tools = { synthetic_echo: { description: "Synthetic test tool", input: { type: "object", properties: { sentinel: { type: "string" } }, required: ["sentinel"] } } };
+    }, { providerID: "vibe-oidc" }));
     registrations.push(await ctx.tool.transform(editor => { editor.add({ name: "synthetic_echo", description: "Synthetic test tool", input: { type: "object", properties: { sentinel: { type: "string" } }, required: ["sentinel"] }, execute: async () => ({ content: "synthetic" }) }); }));
+    registrations.push(await ctx.tool.hook("execute.after", event => {
+      if (metadataSessionIDs.has(event.sessionID)) {
+        assert.equal(event.tool, "read"); assert.equal(event.status, "completed"); toolExecutions++;
+      }
+    }));
     await ctx.tool.reload();
     const model = { id: "synthetic-model", providerID: "vibe-oidc" };
     for (const revision of ["one", "two"]) {
@@ -121,6 +153,43 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     }
     assert.deepEqual(observedCredentials, ["one", "two"]);
     checks.currentCredentials = true;
+    mode = "metadata";
+    const metadataSessions: Array<Awaited<ReturnType<typeof ctx.session.create>>> = [];
+    for (const label of ["one", "two"]) {
+      metadataSessions.push(await ctx.session.create({ title: "owned metadata " + label, model }));
+    }
+    metadataSessions.forEach(item => metadataSessionIDs.add(item.id));
+    for (const item of metadataSessions) {
+      await ctx.session.prompt({ sessionID: item.id, text: "synthetic metadata tool continuation" });
+      await wait(() => nativeRequests.some(request => request.metadata.session_id === item.id), "session starts its metadata request");
+    }
+    await wait(() => metadataSessions.every(item => nativeRequests.some(request => request.metadata.session_id === item.id && request.toolResult)), "each concurrent session must reach a correlated tool-result request");
+    await Promise.all(metadataSessions.map(item => ctx.session.wait({ sessionID: item.id })));
+    assert.equal(toolExecutions, 2, "both real native tools executed");
+    for (const item of metadataSessions) {
+      const requests = nativeRequests.filter(request => request.metadata.session_id === item.id);
+      assert.equal(requests.length, 2);
+      assert.equal(requests[0]!.metadata.call_type, "main_call");
+      assert.equal(requests[1]!.metadata.call_type, "secondary_call");
+      assert.equal(requests[0]!.toolResult, false);
+      assert.equal(requests[1]!.toolResult, true);
+      assert.ok(requests[0]!.metadata.message_id, "native message context must be present");
+      assert.equal(requests[0]!.metadata.client_name, "opencode");
+      assert.equal(requests[0]!.metadata.client_version, ctx.app.version);
+      assert.equal(requests[0]!.metadata.agent_version, ctx.app.version);
+      assert.equal(requests[0]!.metadata.message_id, requests[1]!.metadata.message_id);
+    }
+    assert.equal(new Set(metadataSessions.map(item => nativeRequests.find(request => request.metadata.session_id === item.id)!.metadata.message_id)).size, 2, "message context is isolated between sessions");
+    mode = "text";
+    const auxiliaryStart = nativeRequests.length;
+    const auxiliary = await ctx.session.generate({ sessionID: metadataSessions[0]!.id, prompt: "owned auxiliary generation" });
+    assert.equal(auxiliary.text, "first synthetic chunk");
+    const auxiliaryRequests = nativeRequests.slice(auxiliaryStart);
+    assert.equal(auxiliaryRequests.length, 1);
+    assert.equal(auxiliaryRequests[0]!.metadata.session_id, metadataSessions[0]!.id);
+    assert.equal(auxiliaryRequests[0]!.metadata.call_type, "secondary_call");
+    assert.equal(auxiliaryRequests[0]!.metadata.client_name, "opencode");
+    checks.nativeRequestMetadata = true;
     mode = "gated";
     const session = await ctx.session.create({ title: "synthetic integration", model });
     const events = new AbortController();

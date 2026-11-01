@@ -150,6 +150,9 @@
       "properties": {
         "target_url": {
           "type": "string"
+        },
+        "request_context": {
+          "$ref": "#/$defs/request_context"
         }
       },
       "required": [
@@ -174,6 +177,12 @@
         },
         "target": {
           "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -646,6 +655,65 @@
           "additionalProperties": false
         }
       ]
+    },
+    "request_context": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "parent_session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "client_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "client_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "agent_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "agent_entrypoint": {
+          "enum": [
+            "cli",
+            "acp",
+            "desktop",
+            "programmatic",
+            "unknown"
+          ]
+        },
+        "purpose": {
+          "enum": [
+            "agent",
+            "compaction",
+            "classify",
+            "title",
+            "generate"
+          ]
+        },
+        "iteration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

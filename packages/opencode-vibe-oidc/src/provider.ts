@@ -2,6 +2,9 @@ import type { StdioBridge } from "./bridge.js";
 import { BridgeError } from "./bridge.js";
 import { randomUUID } from "node:crypto";
 
+import { REQUEST_CONTEXT_HEADER } from "./request-context.js";
+import type { RequestContext } from "./protocol.js";
+
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 export type ProviderFetchOptions = { diagnostics?: boolean };
 const credentialHeaders = new Set(["authorization", "x-external-organization-id", "x-external-workspace-id"]);
@@ -37,19 +40,50 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
       diagnostic.endpoint = target.pathname.slice(base.pathname.length + 1);
       diagnostic.phase = "authentication";
       diagnostic.hint = "Run OpenCode Vibe OIDC sign-in with the configured helper runtime; verify tenant access.";
-      const snapshot = await bridge.request("resolve", { target_url: target.href }, request.signal);
+      const chat = target.pathname === base.pathname + "/chat/completions" && request.method === "POST";
+      let requestContext: RequestContext = {};
+      const encodedContext = request.headers.get(REQUEST_CONTEXT_HEADER);
+      if (chat && encodedContext !== null) {
+        if (encodedContext.length > 4096) throw new BridgeError("context", "Invalid private request context.");
+        try { requestContext = JSON.parse(encodedContext) as RequestContext; }
+        catch { throw new BridgeError("context", "Invalid private request context."); }
+      }
+      const snapshot = await bridge.request("resolve", { target_url: target.href, ...(chat ? { request_context: requestContext } : {}) }, request.signal);
       if (request.signal.aborted) throw new BridgeError("cancelled");
       if (snapshot.target !== target.href || !Number.isFinite(snapshot.expires_at) || snapshot.expires_at <= Date.now() / 1000) throw new BridgeError("snapshot", "Authentication helper returned an unusable request snapshot.");
+      if (chat && !snapshot.metadata) throw new BridgeError("setup", "Native request metadata is unavailable; install matching library and provider versions.");
       const headers = new Headers(request.headers);
+      headers.delete(REQUEST_CONTEXT_HEADER);
       for (const name of [...credentialHeaders, "x-api-key", "api-key", "proxy-authorization"]) headers.delete(name);
       for (const [name, value] of Object.entries(snapshot.headers)) {
         if (credentialHeaders.has(name.toLowerCase()) || clientMetadataHeaders.has(name.toLowerCase())) headers.set(name, value);
       }
       diagnostic.phase = "acquisition";
       diagnostic.hint = "Check Vibe connectivity and configuration before an explicit retry; no inference was replayed.";
-      // Request construction transfers the body stream without reading it. The
-      // original signal remains linked through both Request objects.
-      const response = await transport(new Request(request, { headers, redirect: "manual" }));
+      // Only chat JSON is materialized for native attribution. Response bodies
+      // remain streaming and the original cancellation signal stays linked.
+      let body: string | undefined;
+      if (chat && snapshot.metadata) {
+        const serialized = await request.clone().text();
+        try {
+          const payload: unknown = JSON.parse(serialized);
+          if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+            const object = payload as Record<string, unknown>;
+            if (object.metadata === undefined || object.metadata === null || typeof object.metadata === "object" && !Array.isArray(object.metadata)) {
+              object.metadata = { ...(object.metadata as Record<string, unknown> | undefined), ...snapshot.metadata };
+              body = JSON.stringify(object);
+            }
+          }
+        } catch { /* Invalid/non-object JSON keeps its original bytes. */ }
+      }
+      if (request.signal.aborted) throw new BridgeError("cancelled");
+      if (body !== undefined) headers.delete("content-length");
+      const outbound = new Request(request, { headers, redirect: "manual", ...(body === undefined ? {} : { body }) });
+      // Bun can inherit source headers when an empty Headers override is used.
+      // Enforce removal on the final Request as well as the replacement set.
+      outbound.headers.delete(REQUEST_CONTEXT_HEADER);
+      if (body !== undefined) outbound.headers.delete("content-length");
+      const response = await transport(outbound);
       diagnostic.status = response.status;
       diagnostic.phase = "response_headers";
       diagnostic.outcome = response.status >= 400 ? "upstream_error" : "headers_received";

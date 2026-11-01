@@ -61,11 +61,11 @@ async def prepare_request(session, target_url):
 ```
 
 The immutable snapshot contains inference ID-token and tenant headers plus a
-shared `User-Agent` identifying the Vibe-derived client and the adapter:
-`mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/<distribution-version>`.
-The Vibe component records source provenance; `mvibe-auth` uses the installed
-distribution version independently. Both consumers send this resolved metadata
-with the authoritative credentials. This adds client identification only;
+exact native `User-Agent`: `mistral-client-python/Mistral-Vibe/3.0.4`.
+Both consumers send this resolved header with the authoritative credentials.
+Native completion-body attribution is built separately by
+`mvibe_auth.request_metadata`, keeping AuthSession authentication-only. This adds
+native request identification;
 subscription/quota attribution remains unverified and cannot be inferred from
 an HTTP success. No plan, session or telemetry body fields are synthesized.
 The snapshot also contains
@@ -147,3 +147,32 @@ blocked, native lock retention and diagnostic secrecy. Default-deny fixtures
 prevent real keyring, browser and remote-network use and reset caches between
 cases. Offline results do not verify account login, subscription entitlement,
 upstream compatibility or live inference.
+
+## Native completion request metadata
+
+The private bridge's `resolve` accepts an optional bounded `request_context`
+object (session/message/parent IDs, known client/version/entrypoint fields,
+purpose and iteration). Only that form returns a `metadata` string map, built
+by the shared pure Python builder in the same resolution operation. Target-only
+callers keep the original result shape. No prompt or tool body crosses stdio.
+
+The provider reads the active history in the session `context` hook, then
+snapshots its IDs, iteration and purpose into the `model.request` private header
+`x-mvibe-request-context`. Authenticated fetch removes this header before
+transport and merges resolved attribution after SDK body/reasoning serialization.
+The proxy uses the same builder for chat JSON objects. Native owned output keys
+win over caller metadata keys; unrelated fields and tool argument strings are
+preserved semantically. Other endpoints and invalid/non-object JSON retain raw
+bytes. Response streams remain unbuffered.
+
+Unknown launch/session/account fields are omitted. OpenCode reports its actual
+client version and name rather than claiming to be `vibe_cli`; unavailable plan
+labels are never synthesized. Main turn, continuation/compaction, classification
+and title purposes use the native call-type mapping. The committed golden in
+`tests/fixtures/native-request-metadata.json` was produced by executing the native
+Vibe builder from commit `338ad4bf0f73c4dd879d667cf7ab011555ae1751` with synthetic
+inputs; its source hashes allow provenance checks. Maintainers can refresh it
+with `uv run scripts/capture_native_metadata.py ../mistral-vibe`; ordinary tests
+never import the sibling checkout. Offline request parity does not establish
+live subscription quota attribution. Publication remains held for the user's
+quota-counter check.

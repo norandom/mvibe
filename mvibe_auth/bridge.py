@@ -66,7 +66,7 @@ async def serve(
     resolution_lock = asyncio.Lock()
 
     async def emit(envelope: Success | Failure, *, suppressible: bool = False) -> None:
-        frame = envelope.model_dump_json().encode('utf-8') + b'\n'
+        frame = envelope.model_dump_json(exclude_none=True).encode('utf-8') + b'\n'
         if len(frame) > MAX_FRAME_BYTES:
             frame = Failure(version=1, id=envelope.id, ok=False,
                 error=WireError(code='frame_too_large', message=str(ProtocolError('frame_too_large')), retryable=False)).model_dump_json().encode() + b'\n'
@@ -112,8 +112,12 @@ async def serve(
             case 'resolve':
                 async with resolution_lock:
                     snapshot = await auth.resolve(request.params.target_url)
-                return dict(headers=dict(snapshot.headers), expires_at=snapshot.expires_at.timestamp(),
-                            revision=snapshot.revision, target=snapshot.target)
+                payload = dict(headers=dict(snapshot.headers), expires_at=snapshot.expires_at.timestamp(),
+                               revision=snapshot.revision, target=snapshot.target)
+                if request.params.request_context is not None:
+                    from mvibe_auth.request_metadata import build_request_metadata
+                    payload['metadata'] = build_request_metadata(request.params.request_context)
+                return payload
         raise ProtocolError('unknown_method')
 
     async def dispatch(request: Request) -> None:

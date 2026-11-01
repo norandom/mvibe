@@ -10,6 +10,8 @@
 """Run with: uv run --script proxy.py"""
 from __future__ import annotations
 
+from mvibe_auth.request_metadata import attach_request_metadata
+
 import argparse
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -161,9 +163,12 @@ def create_app(
             query = urlencode(request.query_params.multi_items())
             target = url + ('?' + query if query else '')
             client = request.app.state.client
+            body = await request.body()
+            if path == 'chat/completions':
+                body = attach_request_metadata(body)
             return await client.send(client.build_request(
                 request.method, target, headers=headers,
-                content=await request.body()), stream=True, follow_redirects=False)
+                content=body), stream=True, follow_redirects=False)
 
         return request.app.state.stream_owner.response(acquire, diagnostic)
 

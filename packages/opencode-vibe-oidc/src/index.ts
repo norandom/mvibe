@@ -7,7 +7,9 @@ import { createProviderFetch, providerBaseURL } from "./provider.js";
 import { createModelCatalog, metadataFromHostCatalog } from "./models.js";
 import { mistralRequestBody } from "./reasoning.js";
 
-export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options" | "aisdk" | "event">;
+import { registerRequestContext } from "./request-context.js";
+
+export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options" | "aisdk" | "event" | "session" | "app">;
 
 function settings(options: Plugin.Context["options"]): { command: HelperCommand; audience: string } {
   const value = options.helperCommand;
@@ -40,6 +42,7 @@ export async function setupVibe(ctx: RegistrationContext) {
     if (results.some(result => result.status === "rejected")) throw new BridgeError("cleanup", "Vibe OIDC cleanup failed; restart the provider before retrying.");
   })();
   try {
+    registrations.push(await registerRequestContext(ctx, providerID));
     registrations.push(await ctx.provider.transform(editor => {
       hostModels = editor.get?.("mistral")?.models ?? new Map();
       editor.add({ info: { ...Provider.Info.empty(providerID), name: "Mistral-Vibe", activation: "enabled", package: "aisdk:@ai-sdk/openai-compatible" }, ...catalog.snapshot });

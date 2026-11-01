@@ -5,6 +5,14 @@ For opt-in direct-provider diagnostics, set `"diagnostics": true` in the plugin'
 forwarded plugin events, for example `opencode --print-logs run --standalone --model vibe-oidc/mistral-large-4 "Create hello.ps1"`.
 See [diagnostic fields and limits](tool-compatibility.md#diagnose-the-proxy-route).
 
+If a live checkout rebuild produces `Authentication helper is disposed`, finish
+the build and run `opencode service restart`, then reconnect the app. OpenCode
+2.2.5 can retain a cached SDK across plugin reloads after disposing its helper;
+reopening the window alone may retain the background service. A private CLI
+test can use `--standalone` instead. Existing credentials can be reused. Avoid
+rebuilding the installed checkout during an active request; the release archive
+provides a separate prebuilt installation path.
+
 The selectable display name is **Mistral-Vibe**; the stable provider ID remains
 `vibe-oidc`. This direct route uses the Python OIDC library and does not need the
 proxy server. Install with `./install.ps1` on Windows or `bash ./install.sh` on
@@ -19,13 +27,14 @@ loopback proxy. Both delegate login, refresh and tenant selection to the same
 Python library. There is no API-key fallback. Python 3.12+ installed and managed
 through uv is a prerequisite even for the TypeScript plugin.
 
-Both routes send the shared library's client `User-Agent`, identifying the
-Vibe-derived component and the independently versioned `mvibe-auth` adapter.
+Both routes send the exact native Vibe 3.0.4 `User-Agent` from the shared library.
 The direct provider accepts only `User-Agent` as helper client metadata alongside
 the three credential/tenant headers; it replaces a caller User-Agent only when
 the helper supplies one. Other helper headers remain excluded. This metadata
 does not establish subscription/quota attribution; account counter behavior
-remains unverified. No plan, session or telemetry body fields are synthesized.
+remains unverified. Chat requests receive the shared native metadata defaults,
+plus actual OpenCode session/message/client context when available. Unknown
+plan fields are omitted. See the [metadata contract](auth-library.md#native-completion-request-metadata).
 
 ## Prepare the direct provider
 

@@ -14,7 +14,7 @@ def frame(value):
 def test_valid_wire_vector(vector):
     data = frame(vector["value"])
     parsed = parse_request(data) if vector["kind"] == "request" else parse_response(data, vector["method"])
-    assert parsed.model_dump() == vector["value"]
+    assert parsed.model_dump(exclude_none=True) == vector["value"]
 
 @pytest.mark.parametrize("vector", VECTORS["invalid"], ids=lambda v: v["name"])
 def test_invalid_wire_vector(vector):

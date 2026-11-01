@@ -5,7 +5,7 @@ import type { StdioBridge } from "../src/bridge.js";
 
 const audience = "https://private-audience.example.test/private-prefix";
 const url = audience + "/v1/chat/completions?secret=query";
-const bridge = { request: async (_method: string, params: { target_url: string }) => ({ target: params.target_url, headers: { authorization: "Bearer secret-token" }, expires_at: Date.now()/1000+300, revision: "secret-revision" }) } as Pick<StdioBridge, "request">;
+const bridge = { request: async (_method: string, params: { target_url: string }) => ({ target: params.target_url, headers: { authorization: "Bearer secret-token" }, expires_at: Date.now()/1000+300, revision: "secret-revision", metadata: { call_source: "vibe_code" } }) } as Pick<StdioBridge, "request">;
 
 test.each([false, true])("diagnostics opt in %s: safe stderr status, untouched bodies and no replay", async enabled => {
   const stderr = spyOn(console, "error").mockImplementation(() => {});
