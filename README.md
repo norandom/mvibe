@@ -47,10 +47,9 @@ and its prepared dependencies in place. See the
 
 The Windows PowerShell installation, provider label, 18-model inventory and a
 direct CLI response were verified on OpenCode 2.2.5. See
-[live results](docs/live-results.md). Native file/command tools and MCP tool
-execution have separate [draft compatibility requirements](.kiro/specs/opencode-vibe-tool-compatibility/requirements.md)
-and [end-to-end test matrix](.kiro/specs/opencode-vibe-tool-compatibility/verification-plan.md);
-their live round trips have not yet been verified.
+[live results](docs/live-results.md). Native file/command tools and one owned MCP
+tool have a [prepared offline baseline](docs/tool-compatibility.md);
+their live round trips remain unverified.
 
 ## 1. Prepare this checkout
 
@@ -217,7 +216,7 @@ entitlement, browser registration or inference. Once dependencies and a native
 host are prepared, run the full pipeline from the checkout root:
 
 ```powershell
-pwsh -NoProfile -File scripts/verify.ps1 -Bun C:/tools/bun.exe -HostBinary C:/Users/mariu/AppData/Local/Programs/OpenCode/resources/opencode-cli.exe
+pwsh -NoProfile -File scripts/verify.ps1 -Bun C:/Users/mariu/.bun/bin/bun.exe -HostBinary D:/Source/mvibe/packages/opencode-vibe-oidc/.host/opencode.exe
 ```
 
 Use absolute paths to prepared Bun 1.4.4 and OpenCode 2 executables. Reports go
@@ -229,12 +228,13 @@ or pass `-n 4` for a different worker count. The full PowerShell runner accepts
 `-PythonWorkers 0` for serial execution (default: 2). Packaging uses
 `uv build --offline --no-build-isolation`.
 
-Tool compatibility follows a [practical baseline plan](.kiro/specs/opencode-vibe-tool-compatibility/tasks.md):
-native files/commands, one MCP tool workflow, then a repeatable report and guide.
+Run the [prepared native/MCP baseline and update checks](docs/tool-compatibility.md)
+for native files/commands, one MCP tool workflow, contract drift and actual host evidence.
 Broader tool families remain explicit follow-ups, not an all-tool support claim.
 
 - [Shared auth API and lifecycle](docs/auth-library.md)
 - [Direct OpenCode plugin setup, build and compatibility](docs/opencode-provider.md)
+- [Tool baseline, candidate updates and proxy diagnostics](docs/tool-compatibility.md)
 - [Live procedure and evidence checklist](docs/live-verification.md)
 - [Live results](docs/live-results.md)
 - [Offline acceptance](docs/offline-acceptance.md)

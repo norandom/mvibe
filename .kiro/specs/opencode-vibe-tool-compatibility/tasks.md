@@ -30,7 +30,7 @@ baseline below; do not resume the superseded queue. Historical completed work is
   - _Boundary: MCP baseline integration_
   - _Requirements: 1.2, 1.3, 2.1, 2.2, 3.3, 4.1_
 
-- [ ] 4. Deliver API diagnostics and the repeatable baseline
+- [x] 4. Deliver API diagnostics and the repeatable baseline
 - [x] 4.1 Publish proxy API docs and structured diagnostic logs
   - Expose accurate OpenAPI/Swagger for supported routes, passthrough tool conversations, streaming and errors.
   - Add structlog-based safe stdout events with request IDs, failure phases and actionable hints, without changing helper protocol stdout or buffering responses.
@@ -38,7 +38,7 @@ baseline below; do not resume the superseded queue. Historical completed work is
   - _Boundary: Proxy API and diagnostic integration_
   - _Requirements: 3.2, 3.3, 3.4, 4.1, 5.1, 5.2_
 
-- [ ] 4.2 Integrate E2E reruns, compare update contracts and document operation
+- [x] 4.2 Integrate E2E reruns, compare update contracts and document operation
   - Reuse existing reports/validators and retain parent regression/build checks; add one prepared offline baseline command.
   - Capture and compare the prepared OpenCode HTTP OpenAPI plus plugin declaration contracts, compile against a prepared candidate SDK and rerun actual native/MCP workflows. Report drift/failures; never automatically refresh the reviewed baseline.
   - Report actual versions/profiles, tested cases and deferred tools, with artifact links and no blanket all-tool claim.

@@ -229,3 +229,20 @@ pending; do not resume the superseded queue. Existing code/tests are retained.
   and no replay. Logger failure is inert; Uvicorn raw access logging is disabled.
 - Completion gate VERIFIED for offline API/diagnostic behavior. No OpenTelemetry
   exporter or distributed traces are implemented; see proxy-observability brief.
+
+## Revision 2 task 4.2 and feature gate
+
+- Implementer READY_FOR_REVIEW; independent final reviewer APPROVED.
+- RED: missing contract capture helpers, selected-root loader and malformed-input
+  guard; missing tool-baseline mandatory-stage assertion. Fixes preserve exact
+  reference-version diagnostics and use own-key comparison for schema properties.
+- Fresh independent pipeline f0f7b55625f84eb8a6e4e51b6e849ce6: exit 0, Python
+  1,034 / Bun 967 passed, all 11 stages and 97 parent mappings passed. Actual
+  native/MCP baseline and host startup/consumer integration passed with cleanup.
+- Explicit same-version candidate-copy run passed after final updates. HTTP/plugin
+  drift, malformed JSON shape and reference overwrite independently fail nonzero;
+  reviewed reference hash unchanged. No automatic baseline update or global install.
+- All five revised deliverables complete. Feature completion gate VERIFIED / GO
+  for the declared offline scope, requirements 13/13, no integration blockers.
+- See validation.md for evidence and limitations; live, uninstalled future versions,
+  other platforms and all-tool support remain unverified. OTel is a follow-up.

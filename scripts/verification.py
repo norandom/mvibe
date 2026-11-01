@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 
 SPEC = '.kiro/specs/vibe-oidc-proxy/requirements.md'
 STEPS = ('python', 'provider', 'typecheck', 'provider-build', 'python-build',
-         'bridge-process', 'bridge-root-exit', 'host-setup', 'host', 'tools')
+         'bridge-process', 'bridge-root-exit', 'host-setup', 'host', 'tools', 'tool-baseline')
 HOST_CHECKS = ('markerOnly', 'modelDiscovery', 'currentCredentials', 'incrementalStream',
                'toolCallPayload', 'cancellation', 'noReplay401', 'noSessionReplay401',
                'noReplay503', 'noSessionReplay503', 'customSDKCalled', 'cleanup')
@@ -166,6 +166,19 @@ def acceptance(root, directory):
             steps[suite] = 'failed'
     steps['host'] = step_status(0 if steps['host'] == 'passed' else 1,
         json_checks(directory / 'host.json', 'offline-host-compatibility', HOST_CHECKS))
+    try:
+        baseline = json.loads((directory / 'tool-baseline' / 'baseline.json').read_text(encoding='utf8'))
+        rows = baseline['probes']
+        valid = (baseline.get('kind') == 'offline-tool-baseline' and baseline.get('status') == 'passed'
+                 and baseline.get('live') == 'unverified' and baseline.get('mode') == 'offline'
+                 and len(rows) == 4 and {row['name'] for row in rows} == {'query', 'mutation', 'command', 'mcp'}
+                 and all(row.get('status') == 'passed' and row.get('exitCode') == 0 for row in rows)
+                 and baseline.get('compilation', {}).get('status') == 'passed'
+                 and baseline.get('contracts', {}).get('status') == 'passed')
+    except (OSError, ValueError, KeyError, TypeError):
+        valid = False
+    steps['tool-baseline'] = step_status(0 if steps['tool-baseline'] == 'passed' else 1,
+                                        'passed' if valid else 'failed')
     startup = json_checks(directory / 'startup.json', 'offline-local-startup', STARTUP_CHECKS)
     criteria = {}
     for criterion, items in data['criteria'].items():

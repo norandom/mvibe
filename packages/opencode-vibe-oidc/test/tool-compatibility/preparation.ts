@@ -39,8 +39,8 @@ export function checkPreparedDependencies(read: (path: string) => string, bunVer
   }
 }
 
-export function requireReferenceHostVersion(output: string): "2.2.5" {
-  if (!/^(?:opencode\s+)?v?2\.2\.5\s*$/i.test(output.trim()))
-    throw new Error("Prepare OpenCode 2.2.5; other versions require separate compatibility evidence");
-  return "2.2.5";
+export function requireReferenceHostVersion(output: string, expected = "2.2.5"): string {
+  if (!/^2\.\d+\.\d+$/.test(expected) || output.trim().replace(/^(?:opencode\s+)?v?/i, "") !== expected)
+    throw new Error(expected === "2.2.5" ? "Prepare OpenCode 2.2.5; other versions require separate compatibility evidence" : "Prepare the exact expected OpenCode 2.x pair");
+  return expected;
 }

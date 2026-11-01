@@ -20,7 +20,9 @@
     "test:consumer-host": "bun run test/host-integration.ts",
     "compatibility:current": "bun run test/check-compatibility.ts",
     "prepare:host": "bun run test/prepare-host.ts",
-    "check:tool-runtimes": "bun --no-install run test/tool-compatibility/check-prepared.ts"
+    "check:tool-runtimes": "bun --no-install run test/tool-compatibility/check-prepared.ts",
+    "test:tool-baseline": "bun --no-install run test/tool-compatibility/baseline.ts",
+    "contracts:opencode": "bun --no-install run test/tool-compatibility/update-contracts.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "2.0.88",

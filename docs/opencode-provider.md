@@ -139,6 +139,10 @@ next resolution reloads authoritative storage. See the
 
 ## Offline and current-host verification
 
+Use the [tool baseline and update guide](tool-compatibility.md) for the sequential
+native/MCP command, immutable HTTP/plugin snapshots, exact prepared candidate
+pairs, proxy OpenAPI/docs and correlated structured stdout diagnostics.
+
 See [README](../README.md) for the complete offline runner and preparation.
 `test/host-integration.ts` loads this plugin in an isolated real pinned host with
 synthetic login/helper/fetch responses. It verifies marker persistence, current

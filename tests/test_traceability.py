@@ -78,6 +78,12 @@ def test_native_failure_overrides_passing_evidence():
     assert helper().step_status(0, 'unverified') == 'failed'
 
 
+def test_baseline_is_additional_mandatory_gate_and_preserves_parent_mapping():
+    assert len(mapping()['criteria']) == 97
+    assert set(helper().STEPS) == {'python', 'provider', 'typecheck', 'provider-build',
+        'python-build', 'bridge-process', 'bridge-root-exit', 'host-setup', 'host', 'tools', 'tool-baseline'}
+
+
 def test_offline_runner_has_explicit_prepared_tools_and_no_setup_action():
     script = (ROOT / 'scripts/verify.ps1').read_text()
     assert '[string]$Bun' in script and '[string]$HostBinary' in script
@@ -111,6 +117,11 @@ def execution_fixture(tmp_path):
     for file, kind, checks in [('startup', 'offline-local-startup', module.STARTUP_CHECKS),
                                ('host', 'offline-host-compatibility', module.HOST_CHECKS)]:
         (tmp_path / f'{file}.json').write_text(json.dumps(dict(kind=kind, status='passed', live='unverified', checks=dict.fromkeys(checks, True))))
+    (tmp_path / 'tool-baseline').mkdir()
+    (tmp_path / 'tool-baseline' / 'baseline.json').write_text(json.dumps(dict(
+        kind='offline-tool-baseline', status='passed', mode='offline', live='unverified',
+        probes=[dict(name=name, status='passed', exitCode=0) for name in ('query', 'mutation', 'command', 'mcp')],
+        compilation=dict(status='passed'), contracts=dict(status='passed'))))
     return module
 
 

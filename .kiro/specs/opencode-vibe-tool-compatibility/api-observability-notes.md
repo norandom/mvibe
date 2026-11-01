@@ -46,3 +46,33 @@ follow-up work in ../proxy-observability/brief.md.
 - https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/structlog/structlog.html
 - https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/logging/logging.html
 - https://structlog.org/en/stable/contextvars.html
+
+## Concrete offline capture and rerun inputs
+
+The installed contract can be generated without starting a server:
+
+```typescript
+import { ClientApi } from "@opencode/protocol/client";
+import { OpenApi } from "effect/http-api";
+const schema = OpenApi.fromApi(ClientApi);
+```
+
+The V2 docs publish https://dev.opencode.ai/v2/openapi.json separately. A fetched
+docs-site schema is reference material, not evidence of the installed CLI version.
+
+Provider-used plugin declarations include promise/plugin, provider, integration,
+aisdk and model domains; E2E uses session/tool/MCP/permission/shell domains too.
+Normalize declaration comments/formatting and compare meaningful surfaces; compile
+against the candidate SDK as the authoritative type-use check. Existing bridge
+JSON-schema tests continue to cover our own non-HTTP helper protocol.
+
+Future reruns must avoid the current hard-coded reference version barrier in
+preparation.ts/runner.ts. Preserve the pinned default but allow an explicitly
+selected prepared 2.x candidate with a matching expected version and SDK package
+root. Candidate copies also need the original project root for Python helper
+imports (runner PYTHONPATH currently derives from package location). Never loosen
+private-home isolation or silently accept a version mismatch.
+
+One aggregate baseline command can call the existing query/mutation/command/MCP
+probes and reuse each parser. Add its result to the parent acceptance runner
+without removing any existing stage or the 97 parent requirement mappings.

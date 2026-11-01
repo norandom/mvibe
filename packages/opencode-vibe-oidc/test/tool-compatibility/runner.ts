@@ -83,7 +83,7 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
   const env = offlineEnvironment(root, process.env);
   const password = randomUUID();
   env.OPENCODE_SERVER_PASSWORD = password;
-  env.PYTHONPATH = root + (process.platform === "win32" ? ";" : ":") + resolve(packageRoot, "../..");
+  env.PYTHONPATH = root + (process.platform === "win32" ? ";" : ":") + resolve(process.env.VIBE_TEST_PROJECT_ROOT ?? resolve(packageRoot, "../.."));
   env.VIBE_TEST_ROTATION = join(root, "rotation");
   let child: ReturnType<typeof spawn> | undefined;
   let mcpReport:any;
@@ -105,7 +105,9 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
     writeFileSync(jobScript, WINDOWS_JOB_SOURCE);
     writeFileSync(join(root, "sitecustomize.py"), readFileSync(resolve(packageRoot, "test/host-integration-sitecustomize.py")));
     if(options.workspaceMutationProbe)run("git",["init","--quiet"]);
-    const hostVersion = requireReferenceHostVersion(run(options.host, ["--version"]));
+    const hostVersion = requireReferenceHostVersion(run(options.host, ["--version"]), process.env.VIBE_EXPECTED_HOST_VERSION ?? "2.2.5");
+    for (const name of ["@opencode/plugin", "@opencode/cli", "@opencode/protocol", "@opencode/client"])
+      if (JSON.parse(readFileSync(join(packageRoot,"node_modules",name,"package.json"),"utf8")).version !== hostVersion) throw new Error("HOST_RUNTIME");
     if (run(options.bun, ["--version"]) !== "1.4.4") throw new Error("HOST_RUNTIME");
     const pythonVersion = run(options.python, ["-c", "import sys; print('.'.join(map(str,sys.version_info[:3])))"]);
     const guardProbe = run(options.python, ["-c", "import sitecustomize as s; import keyring, socket, webbrowser; import mvibe_auth.bridge as b; assert b.create_session is s.Session; assert keyring.get_password is s.deny; assert webbrowser.open is s.deny; assert socket.create_connection is s.deny; print('offline-guards-ready')"]);

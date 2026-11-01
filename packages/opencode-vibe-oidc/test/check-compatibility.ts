@@ -23,7 +23,7 @@ if (action === "--prepare-current") {
   const directory = resolve(".compat", sdk, "provider");
   assert.ok(!existsSync(directory), "Preparation directory already exists; reuse its frozen lock for offline checks or select a fresh destination manually");
   mkdirSync(directory, { recursive: true });
-  for (const path of ["src", "test", "tsconfig.json", "tsconfig.build.json"]) cpSync(path, join(directory, path), { recursive: true });
+  for (const path of ["src", "test", "scripts", "tsconfig.json", "tsconfig.build.json"]) cpSync(path, join(directory, path), { recursive: true });
   const manifest = JSON.parse(readFileSync("package.json", "utf8"));
   manifest.dependencies["@opencode/plugin"] = sdk; manifest.devDependencies["@opencode/cli"] = cli;
   writeFileSync(join(directory, "package.json"), JSON.stringify(manifest, null, 2));
@@ -34,9 +34,12 @@ if (action === "--prepare-current") {
   assert.ok(existsSync(host), "Prepared platform-specific host is missing");
   const version = Bun.spawnSync([host, "--version"]);
   assert.equal(version.exitCode, 0); assert.ok(version.stdout.toString().includes("v" + cli));
-  writeFileSync(join(directory, "prepared-pair.json"), JSON.stringify({ sdk, cli, sha256: createHash("sha256").update(readFileSync(host)).digest("hex"), host, offlineCommand: "bun install --frozen-lockfile --offline --ignore-scripts && bun run typecheck && bun run build && bun run test/host-integration.ts" }, null, 2));
-  for (const args of [["run", "typecheck"], ["run", "build"], ["run", "test/host-integration.ts"]]) {
-    const check = Bun.spawnSync([process.execPath, ...args], { cwd: directory, env: { ...process.env, OPENCODE_TEST_BINARY: host, VIBE_TEST_PROJECT_ROOT: resolve("../.."), VIBE_HOST_REPORT: resolve("../../reports/current-v2-compatibility.json") }, stdout: "inherit", stderr: "inherit" });
-    assert.equal(check.exitCode, 0, "Current V2 compatibility is blocking; inspect the separate result report");
+  const project=resolve("../.."),output=resolve("../../reports/current-v2-tool-baseline");
+  writeFileSync(join(directory, "prepared-pair.json"), JSON.stringify({ sdk, cli, sha256: createHash("sha256").update(readFileSync(host)).digest("hex"), host, projectRoot:project, offlineCommand: `bun --no-install run test:tool-baseline --provider-root "${directory}" --project-root "${project}" --expected-version ${sdk} --output "${output}"` }, null, 2));
+  const outcomes=[];
+  for (const args of [["run", "build"], ["run", "test/host-integration.ts"], ["run", "test:tool-baseline", "--provider-root",directory,"--project-root",project,"--expected-version",sdk,"--output",output]]) {
+    const check = Bun.spawnSync([process.execPath,"--no-install", ...args], { cwd: directory, env: { ...process.env, OPENCODE_TEST_BINARY: host, VIBE_EXPECTED_HOST_VERSION:sdk, VIBE_TEST_PROJECT_ROOT:project, VIBE_HOST_REPORT: resolve("../../reports/current-v2-compatibility.json") }, stdout: "inherit", stderr: "inherit" });
+    outcomes.push(check.exitCode);
   }
+  assert.ok(outcomes.every(code=>code===0), "Current V2 compatibility is unverified/failed; inspect build, host, contract drift and baseline results separately");
 }

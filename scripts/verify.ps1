@@ -87,6 +87,7 @@ console.log("Prepared locked provider tool versions PASS");
     Invoke-Check 'bridge-root-exit' $Bun @('--no-install', 'run', 'test/bridge-root-exit.ts') $provider
     Invoke-Check 'host-setup' $Bun @('--no-install', 'run', 'test:host') $provider
     Invoke-Check 'host' $Bun @('--no-install', 'run', 'test:consumer-host') $provider
+    Invoke-Check 'tool-baseline' $Bun @('--no-install', 'run', 'test:tool-baseline', '--output', (Join-Path $directory 'tool-baseline')) $provider
     @{run_id=$runId; mode='offline'; started=$started; steps=@($steps.ToArray())} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $directory 'execution.json') -Encoding utf8
     & $uv run --locked --offline python (Join-Path $PSScriptRoot 'verification.py') --reports $directory
     $result = $LASTEXITCODE
