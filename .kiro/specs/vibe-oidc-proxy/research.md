@@ -60,7 +60,7 @@ All criterion ranges refer to requirements.md. Source references identify the in
 | 8.5–8.7 | proxy.py:90,95,107 | Supported generic handled failures and upstream error relay. **Unknown:** sanitized uncaught/config/framework diagnostics and complete connection-error matrix. |
 | 9.1–9.3 | current-state.md; this report | Baseline/date, flow/source references and evidence categories exist. **Constraint:** no baseline commit; upstream-copy provenance is a repository assertion, not verified source equivalence. |
 | 9.4–9.6 | README.md:15; current-state.md | Supported client setup, local-auth/liveness/entitlement caveats and shared-slot warning. |
-| 9.7 | README.md:19; LICENSE.vibe | Partial / **Missing:** verified upstream diff/deviation ledger. Existing license retained; import adaptation noted. |
+| 9.7 | README.md:19; THIRD_PARTY_NOTICES | Partial / **Missing:** verified upstream diff/deviation ledger. Existing license retained; import adaptation noted. |
 | 10.1–10.9 | verification-plan.md; source seams above | **Missing:** executable isolated suite, runner/test dependencies, canonical command, controlled fixtures, requirement traceability and result reporting. A candidate coverage list is not test evidence. |
 | 10.10 | verification-plan.md; G1–G6 below | Documentation policy and static discrepancy record exist. **Unknown:** no executed characterization results yet. |
 | 11.1 | verification-plan.md | **Missing:** executable separation/default live exclusion because no suite exists. |

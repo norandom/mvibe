@@ -8,4 +8,4 @@ in return.
 
 This license applies to original mvibe contributions. Code derived from
 Mistral Vibe remains under the Apache License, Version 2.0, reproduced in
-LICENSE.vibe. Third-party dependencies retain their respective licenses.
+THIRD_PARTY_NOTICES. Third-party dependencies retain their respective licenses.

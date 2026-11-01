@@ -161,7 +161,7 @@ normal Vibe credential through the shared Python session. Complete normal Vibe
 sign-in first; `--login` validates that credential without a browser. Select a loopback port with
 `--port`. The script form `uv run --script proxy.py` has separate PEP 723
 dependencies and may download them on first use. Copy **both** `mvibe_auth/` and
-`mvibe_proxy/` alongside `proxy.py`; include `LICENSE.vibe` when redistributing.
+`mvibe_proxy/` alongside `proxy.py`; include `THIRD_PARTY_NOTICES` when redistributing.
 Explicit `--auth-source oidc` retains the experimental ID-token login/refresh
 flow. See [the authentication writeup](vibe-authentication.md) for why the two
 browser paths differ and what the user confirmed about quota attribution.

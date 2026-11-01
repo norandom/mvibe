@@ -35,7 +35,7 @@ def test_script_runtime_dependency_parity():
 
 def test_preserved_source_inputs_match_documented_baseline():
     text = (ROOT / "docs/vibe-provenance.md").read_text(encoding="utf-8").upper()
-    for name in ("LICENSE.vibe", "mvibe_auth/_credentials_port.py", "mvibe_auth/_http.py", "mvibe_auth/concurrency.py"):
+    for name in ("THIRD_PARTY_NOTICES", "mvibe_auth/_credentials_port.py", "mvibe_auth/_http.py", "mvibe_auth/concurrency.py"):
         assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest().upper() in text, name
 
 
@@ -50,7 +50,7 @@ def test_clean_no_dev_install_and_copied_script(tmp_path):
            "UV_PROJECT_ENVIRONMENT": str(tmp_path / "runtime"), "VIBE_TEST_DISABLE_KEYRING": "1"}
     source = tmp_path / "source"
     source.mkdir()
-    for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE", "LICENSE.vibe", "proxy.py"):
+    for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE", "THIRD_PARTY_NOTICES", "proxy.py"):
         shutil.copy2(ROOT / name, source / name)
     for name in ("mvibe_auth", "mvibe_proxy"):
         shutil.copytree(ROOT / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))

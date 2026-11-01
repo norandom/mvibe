@@ -1,7 +1,7 @@
 """Pure Vibe 3.0.4 completion attribution, shared by both adapters.
 
 Derived from vibe/core/telemetry/build_metadata.py and
-vibe/app_server/_completion_attribution.py (see LICENSE.vibe).
+vibe/app_server/_completion_attribution.py (see THIRD_PARTY_NOTICES).
 Unknown account/launch information is omitted, never synthesized.
 """
 from __future__ import annotations

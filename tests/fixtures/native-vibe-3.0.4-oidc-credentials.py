@@ -2,7 +2,7 @@
 # Source: mistral-vibe/vibe/setup/auth/_oidc_credentials.py
 # Upstream commit: 338ad4bf0f73c4dd879d667cf7ab011555ae1751
 # Original source SHA-256: 451ed14867d0bd52638b1566179a3a5f45e12cdd38f0e21d098ac60a478c2e3a
-# License: Apache-2.0; see repository LICENSE.vibe.
+# License: Apache-2.0; see repository THIRD_PARTY_NOTICES.
 # Upstream implementation below is unchanged; no installed Vibe is required.
 from __future__ import annotations
 

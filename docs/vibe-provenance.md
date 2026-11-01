@@ -12,7 +12,7 @@ capture pre-implementation inspection; descriptions there are historical.
 `mvibe-auth` distribution/public API **0.1.0** is independent of Vibe **3.0.4**.
 The private adapter protocol is **1**, and the provider accepts API major **0**.
 The original HTTP transport version remains unchanged. Preserve
-[LICENSE.vibe](../LICENSE.vibe), Apache License 2.0, with derived source and
+[THIRD_PARTY_NOTICES](../THIRD_PARTY_NOTICES), Apache License 2.0, with derived source and
 distribution. This project retains attribution to Mistral Vibe; packaging a new
 facade does not change the origin or license of copied code.
 
@@ -25,7 +25,7 @@ checkouts to retain the same provenance check without modifying copied source.
 
 | File | Committed LF SHA256 |
 | --- | --- |
-| LICENSE.vibe | 3375b98d59c50073c1ea6667fda7df54d122f4e8c67d1ae2fb7afdfe311abf27 |
+| THIRD_PARTY_NOTICES | 3375b98d59c50073c1ea6667fda7df54d122f4e8c67d1ae2fb7afdfe311abf27 |
 | mvibe_auth/_credentials_port.py | bcbd8365728b75caa2c14443afcebffddfb2f38e0396c13bc5a696eac7a1a932 |
 | mvibe_auth/_http.py | e8784330c0ce2521bb10dd6aa41799a2bc471482f40f20aad5a2de63aa91c604 |
 | mvibe_auth/concurrency.py | bba28e2edafd6e872973b8061af0666f4a9b384eccc366b705743e24db17c49e |
@@ -110,7 +110,7 @@ Offline tests, local startup and live results are separate evidence classes.
 These SHA256 values were captured before implementation on 2026-10-31. They are
 not hashes of files after the deviations above. The four unchanged source/license
 inputs are required source-capture artifacts even if they were initially untracked:
-`LICENSE.vibe`, `mvibe_auth/_credentials_port.py`, `mvibe_auth/_http.py`, and
+`THIRD_PARTY_NOTICES`, `mvibe_auth/_credentials_port.py`, `mvibe_auth/_http.py`, and
 `mvibe_auth/concurrency.py`. A clean checkout/build must retain all four.
 
 License SHA256: `815AD2F988BC0E55678643CCD41CE6B17F879C7A5A78857E546AF1BC26D0D401`.

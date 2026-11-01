@@ -37,4 +37,4 @@ For the runtime-only library, prepare with
 `uv sync --locked --python 3.12 --no-dev --no-editable`; add `--extra proxy` when
 running the proxy. `uv run --script proxy.py` uses separate inline dependencies
 and may download them. When copying that script, retain `mvibe_auth/`,
-`mvibe_proxy/` and `LICENSE.vibe`. See `uv.lock` for dependency versions.
+`mvibe_proxy/` and `THIRD_PARTY_NOTICES`. See `uv.lock` for dependency versions.

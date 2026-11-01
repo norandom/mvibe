@@ -704,7 +704,7 @@
       },
       {
         "kind": "document",
-        "path": "LICENSE.vibe",
+        "path": "THIRD_PARTY_NOTICES",
         "anchor": "Apache License",
         "required": true
       }

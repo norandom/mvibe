@@ -90,7 +90,7 @@ were `brief.md`, `research.md`, `spec.json`, `design-validation.md` and
 `task-plan-validation.md` in that specification directory. This run does not prove
 that the tested commit alone contains those files.
 
-The four immutable baseline inputs (`LICENSE.vibe`, `_credentials_port.py`,
+The four immutable baseline inputs (`THIRD_PARTY_NOTICES`, `_credentials_port.py`,
 `_http.py`, `concurrency.py`), requirements and current-state record were tracked.
 The [provenance guide](vibe-provenance.md) retains their hashes, source references,
 license attribution and implementation deviations.

@@ -1,7 +1,7 @@
 """Optional account-derived attribution for one adapter/auth-session lifetime.
 
 The credential-specific endpoints and plan labels follow Vibe 3.0.4
-``vibe/setup/auth/whoami.py`` (see LICENSE.vibe). No account response can change
+``vibe/setup/auth/whoami.py`` (see THIRD_PARTY_NOTICES). No account response can change
 credential destinations. Nothing from the response or request is logged.
 """
 from __future__ import annotations

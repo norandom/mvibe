@@ -7,7 +7,7 @@ in [authentication memory](../../steering/authentication.md) and the
 as evidence of the starting implementation, not as the current default.
 
 ## Evidence and Limits
-Static inspection on 2026-10-31; no imports, test execution, login, keyring access or upstream requests. README's Vibe 3.0.4 provenance is a repository claim, not an independently verified upstream diff. `LICENSE.vibe` contains Apache License 2.0.
+Static inspection on 2026-10-31; no imports, test execution, login, keyring access or upstream requests. README's Vibe 3.0.4 provenance is a repository claim, not an independently verified upstream diff. `THIRD_PARTY_NOTICES` contains Apache License 2.0.
 
 `proxy.py` SHA256: `8D97854E93E4DB1A422FF65CCAC58FBFDBA663EDC5126B8BEB35A05B073E0F54`.
 

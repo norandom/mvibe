@@ -62,7 +62,7 @@ def test_builder_stages_wheel_and_bundles_without_shipping_build_inputs(tmp_path
         assert '[build-system]' not in runtime
         wrapper = bundle.read(prefix + "install.sh").decode()
         assert 'scripts/install.js' in wrapper
-        assert prefix + "LICENSE.vibe" in names
+        assert prefix + "THIRD_PARTY_NOTICES" in names
         assert prefix + "LICENSE" in names
         for screenshot in ("vibe-allowance.png", "opencode-desktop.png", "opencode-cli.png"):
             assert prefix + "docs/images/" + screenshot in names

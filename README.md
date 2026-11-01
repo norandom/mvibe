@@ -7,7 +7,7 @@
 **For students, researchers and educators only. This is untested, experimental
 software, not production software.** Project-authored code is provided under the
 [Beerware license](LICENSE); upstream Vibe code retains its
-[Apache 2.0 license](LICENSE.vibe).
+[Apache 2.0 license](THIRD_PARTY_NOTICES).
 
 Add Mistral models to OpenCode Desktop or the OpenCode CLI using your normal
 Vibe browser sign-in. The provider appears as `Mistral-Vibe` and connects
