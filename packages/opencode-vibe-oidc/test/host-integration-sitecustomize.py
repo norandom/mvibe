@@ -1,5 +1,6 @@
 """Test-only child bootstrap, installed in a temporary isolated PYTHONPATH."""
 import os
+import json
 import socket
 import sys
 import webbrowser
@@ -57,6 +58,10 @@ class Session:
     async def resolve(self, target):
         with open(os.environ['VIBE_TEST_ROTATION']) as source:
             revision = source.read()
+        if os.environ.get('VIBE_TEST_RESOLUTIONS'):
+            # Test-only synthetic boundary observation, independent of JS bundling.
+            with open(os.environ['VIBE_TEST_RESOLUTIONS'], 'a') as evidence:
+                evidence.write(json.dumps({'target': target, 'revision': revision}) + '\n')
         return AuthSnapshot({'Authorization': 'Bearer synthetic-' + revision},
                             datetime.now(timezone.utc) + timedelta(hours=1), revision, target)
 

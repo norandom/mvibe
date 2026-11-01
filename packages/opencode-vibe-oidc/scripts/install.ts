@@ -58,7 +58,7 @@ export async function installConfig(configPath: string, options: InstallOptions)
 
 const help = `Install the direct Mistral-Vibe provider into OpenCode 2.
 Options: --config-path FILE --uv EXECUTABLE --bun EXECUTABLE --opencode EXECUTABLE
-         --skip-prepare (use an already prepared checkout) --help
+         --skip-prepare (use an already prepared installation) --help
 Prerequisites: native uv, Bun 1.4.4, OpenCode 2. Preparation may download locked dependencies.
 No login, proxy, tool installation or application restart is performed.`;
 
@@ -106,10 +106,14 @@ export async function runInstaller(args: string[], runtime: InstallerRuntime = n
     configPath = selectConfigPath(configDir);
   }
   if (!skip) {
-    run([uv, "sync", "--locked", "--python", "3.12"]);
-    run([bun, "install", "--frozen-lockfile", "--ignore-scripts"], packagePath);
-    run([bun, "run", "typecheck"], packagePath);
-    run([bun, "run", "build"], packagePath);
+    const release = existsSync(join(root, "release.json"));
+    if (release) run([uv, "sync", "--locked", "--python", "3.12", "--no-dev", "--no-build"]);
+    else {
+      run([uv, "sync", "--locked", "--python", "3.12"]);
+      run([bun, "install", "--frozen-lockfile", "--ignore-scripts"], packagePath);
+      run([bun, "run", "typecheck"], packagePath);
+      run([bun, "run", "build"], packagePath);
+    }
   }
   if (!existsSync(join(packagePath, "dist", "index.js"))) throw new InstallerError("Built plugin missing; run preparation without --skip-prepare.");
   run([uv, "run", "--offline", "--no-sync", "--project", root, "python", "-c", "import sys, mvibe_auth; assert sys.version_info >= (3, 12)"]);

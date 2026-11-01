@@ -16,7 +16,9 @@ if ($Help) {
 try {
     $nativeBun = (Get-Command -Name $Bun -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     if ($nativeBun -match '[\\/]WindowsApps[\\/]') { throw 'A native Bun executable is required.' }
-    $installerArgs = @((Join-Path $PSScriptRoot 'packages/opencode-vibe-oidc/scripts/install.ts'), '--uv', $Uv, '--bun', $nativeBun, '--opencode', $OpenCode)
+    $installer = Join-Path $PSScriptRoot 'packages/opencode-vibe-oidc/scripts/install.js'
+    if (-not (Test-Path -LiteralPath $installer)) { $installer = Join-Path $PSScriptRoot 'packages/opencode-vibe-oidc/scripts/install.ts' }
+    $installerArgs = @($installer, '--uv', $Uv, '--bun', $nativeBun, '--opencode', $OpenCode)
     if ($ConfigPath) { $installerArgs += @('--config-path', $ConfigPath) }
     if ($SkipPrepare) { $installerArgs += '--skip-prepare' }
     & $nativeBun @installerArgs

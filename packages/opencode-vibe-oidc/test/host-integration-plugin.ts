@@ -1,6 +1,13 @@
 // Executed only inside the isolated host profile by host-integration.ts.
 import { Plugin } from "@opencode/plugin";
-import { setupVibe } from "../src/index.js";
+import { setupVibe as sourceSetupVibe } from "../src/index.js";
+import { pathToFileURL } from "node:url";
+
+// The explicit release gate exercises the extracted distribution in the real
+// host loader; ordinary offline tests retain the source-provider path.
+const setupVibe: typeof sourceSetupVibe = process.env.VIBE_TEST_PROVIDER_ENTRY
+  ? (await import(pathToFileURL(process.env.VIBE_TEST_PROVIDER_ENTRY).href)).setupVibe
+  : sourceSetupVibe;
 import { StdioBridge, BridgeError } from "../src/bridge.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
@@ -16,6 +23,7 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   const eventTypes: string[] = [];
   const warnings: string[] = [];
   const credentials = new HostFixtureCredentials();
+  let resolvedLines = 0;
   const originalWarn = console.warn;
   const originalRequest = StdioBridge.prototype.request;
   StdioBridge.prototype.request = async function(this: StdioBridge, method, params, signal) {
@@ -34,6 +42,14 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   // No fallback: every fetch in this host fixture is synthetic or fails closed.
   globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
+    if (process.env.VIBE_TEST_RESOLUTIONS) {
+      const lines = readFileSync(process.env.VIBE_TEST_RESOLUTIONS, "utf8").trim().split("\n");
+      for (const line of lines.slice(resolvedLines)) {
+        const item = JSON.parse(line) as { target: string; revision: string };
+        credentials.resolved(item.target, { Authorization: "Bearer synthetic-" + item.revision });
+      }
+      resolvedLines = lines.length;
+    }
     const expected = readFileSync(rotation, "utf8");
     const observed = credentials.assertRequest(request, expected);
     if (request.url.endsWith("/models")) {

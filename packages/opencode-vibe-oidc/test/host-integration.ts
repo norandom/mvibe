@@ -30,6 +30,7 @@ try {
     XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_STATE_HOME: join(root, "state"), XDG_CONFIG_HOME: join(root, "config"),
     OPENCODE_SERVER_PASSWORD: "synthetic-local-only", OPENCODE_TEST_HOME: root, OPENCODE_DISABLE_AUTOUPDATE: "true", OPENCODE_DISABLE_MODELS_FETCH: "true",
     PYTHONPATH: root + (process.platform === "win32" ? ";" : ":") + (process.env.VIBE_TEST_PROJECT_ROOT ?? resolve("../..")), VIBE_TEST_ROTATION: rotation,
+    ...(process.env.VIBE_TEST_PROVIDER_ENTRY ? { VIBE_TEST_PROVIDER_ENTRY: resolve(process.env.VIBE_TEST_PROVIDER_ENTRY), VIBE_TEST_RESOLUTIONS: join(root, "resolutions.ndjson") } : {}),
   };
   const current = Bun.spawnSync([host, "--version"], { env, timeout: 10_000 });
   assert.equal(current.exitCode, 0); version = current.stdout.toString().trim();

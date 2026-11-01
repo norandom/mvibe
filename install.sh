@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-bun= bun_path= args=("$@")
+bun=''
+bun_path=''
+args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[i]}" in
     --help|-h)
@@ -19,4 +21,8 @@ if [[ -z "$bun_path" || "$bun_path" == *WindowsApps* ]]; then
   printf '%s\n' 'Native Bun 1.4.4 is required; install it explicitly or supply --bun.' >&2
   exit 1
 fi
-exec "$bun_path" "$root/packages/opencode-vibe-oidc/scripts/install.ts" "${args[@]}"
+installer="$root/packages/opencode-vibe-oidc/scripts/install.ts"
+if [[ -f "$root/packages/opencode-vibe-oidc/scripts/install.js" ]]; then
+  installer="$root/packages/opencode-vibe-oidc/scripts/install.js"
+fi
+exec "$bun_path" "$installer" "${args[@]}"
