@@ -115,6 +115,13 @@ load that file. A remote or differently configured server has its own setup.
 
 ## New sessions and existing drafts
 
+After installing or reconnecting the provider, fully quit and reopen OpenCode
+Desktop. Restarting the background service alone can leave an open Desktop
+window with an outdated model list. If the CLI lists Vibe models but Desktop's
+model picker does not, reopen Desktop and clear the picker's search/filter.
+On this machine, the user confirmed that reopening restored the missing Vibe
+models on 2026-11-01; no separate Desktop plugin installation was needed.
+
 Desktop gives an explicit draft or session model choice precedence over the
 global default. Its source also considers agent configuration and recent models.
 Setting the global model does not overwrite those existing choices.

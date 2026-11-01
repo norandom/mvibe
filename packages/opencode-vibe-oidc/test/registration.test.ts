@@ -6,6 +6,17 @@ import { StdioBridge } from "../src/bridge.js";
 import { ControlledHTTP } from "./preload.js";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
 
+test.each(["oidc", "existing-vibe"])("integration appears as Mistral-Vibe while retaining IDs and %s authentication", async authSource => {
+  const f = fixture();
+  Object.assign(f.ctx.options, { authSource });
+  const cleanup = await setupVibe(f.ctx);
+  try {
+    expect([...f.integrations.values()]).toEqual([{ id: "vibe-oidc", name: "Mistral-Vibe" }]);
+    expect(f.methods).toMatchObject([{ integrationID: "vibe-oidc", method: { id: "vibe-browser", type: "command", command: expect.arrayContaining([authSource === "existing-vibe" ? "login-vibe" : "login"]) } }]);
+    expect(f.providers[0]).toMatchObject({ info: { id: "vibe-oidc" } });
+  } finally { await cleanup(); }
+});
+
 test("direct provider appears as Mistral-Vibe while retaining the credential ID", async () => {
   const f = fixture();
   const cleanup = await setupVibe(f.ctx);
@@ -24,12 +35,16 @@ function fixture(options: Plugin.Context["options"] = { audience: "https://infer
   const emit = (type: string) => { pending.push(type); notify?.(); };
   type ProviderEditor = Parameters<Parameters<RegistrationContext["provider"]["transform"]>[0]>[0];
   type IntegrationEditor = Parameters<Parameters<RegistrationContext["integration"]["transform"]>[0]>[0];
+  const integrations = new Map<string, Parameters<Parameters<IntegrationEditor["update"]>[1]>[0]>();
   // Only methods touched by setup are supplied; their signatures come from SDK.
   const providerEditor: Pick<ProviderEditor, "add" | "get"> = {
     add: input => { providers.push(input); },
     get: id => id === "mistral" ? { provider: Provider.Info.empty(Provider.ID.make("mistral")), models: hostModels } : undefined,
   };
-  const integrationEditor: Pick<IntegrationEditor, "method"> = { method: { update: input => { methods.push(input); }, list: () => [], remove: () => {} } };
+  const integrationEditor: Pick<IntegrationEditor, "method" | "update"> = {
+    method: { update: input => { methods.push(input); if (!integrations.has(input.integrationID)) integrations.set(input.integrationID, { id: input.integrationID, name: input.integrationID }); }, list: () => [], remove: () => {} },
+    update: (id, update) => { const integration = integrations.get(id); if (integration) update(integration); },
+  };
   const ctx = {
     options,
     app: { version: "2.2.5" },
@@ -39,7 +54,7 @@ function fixture(options: Plugin.Context["options"] = { audience: "https://infer
     provider: { reload: async () => { if (!lazyProvider) editorCallback?.(providerEditor as ProviderEditor); }, transform: async (edit: (editor: ProviderEditor) => void) => { editorCallback = edit; if (!lazyProvider) edit(providerEditor as ProviderEditor); return { dispose: async () => { disposed.push("provider"); } }; } },
     integration: { connection: { active: async () => active }, transform: async (edit: (editor: IntegrationEditor) => void) => { edit(integrationEditor as IntegrationEditor); return { dispose: async () => { disposed.push("integration"); } }; } },
   } as unknown as RegistrationContext;
-  return { ctx, providers, methods, disposed, hooks, hostModels, readProvider: () => editorCallback?.(providerEditor as ProviderEditor), connect: (event = "integration.updated") => { active = { type: "credential", id: "connection-one", label: "Vibe", method: "key" }; emit(event); }, disconnect: (event = "integration.updated") => { active = undefined; emit("credential.switched"); } };
+  return { ctx, providers, methods, disposed, hooks, hostModels, integrations, readProvider: () => editorCallback?.(providerEditor as ProviderEditor), connect: (event = "integration.updated") => { active = { type: "credential", id: "connection-one", label: "Vibe", method: "key" }; emit(event); }, disconnect: (event = "integration.updated") => { active = undefined; emit("credential.switched"); } };
 }
 
 test("distinct production V2 provider registers only browser command, preserves argv", async () => {

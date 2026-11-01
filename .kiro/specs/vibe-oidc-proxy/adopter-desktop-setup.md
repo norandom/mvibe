@@ -71,3 +71,19 @@ is in `reports/adopter-desktop-dagger.log`. PowerShell forwarding was checked
 separately on Windows. Local setup was executed through the guide's PowerShell
 command and confirmed through supported backend APIs; existing UI selections
 remain outside the verification claim.
+
+Desktop model visibility follow-up: the backend exposed 18 Vibe models in the
+Desktop project's context, while the user reported none in its model picker.
+An owned empty session using `vibe-oidc/mistral-large-4` was created and removed
+through the API without inference. The user then fully quit/reopened Desktop
+and confirmed the models appeared. The guide and steering record that recovery;
+no second module installation or credential change was required. This is a
+user-observed UI result, not UI automation or a new quota-counter test.
+
+A separate integration naming defect used raw ID `vibe-oidc` in Connect Provider.
+The SDK integration update now sets its display name to `Mistral-Vibe`, keeping
+IDs and auth commands intact. Both auth routes failed their new regression tests
+before the change and passed afterward; focused registration tests passed 24,
+the full Bun suite passed 1,049, and lint/typecheck/build passed. No background
+service restart was performed for this naming change during the user's session.
+The preceding cross-platform Actions run 41309805277 completed successfully.

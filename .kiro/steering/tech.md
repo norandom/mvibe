@@ -38,6 +38,9 @@ saved draft/session choices can override it. Do not edit opaque Desktop stores.
 The adopter installers offer terminal prompts and unattended `--yes` / `-Auto`
 flags. Restart/connect require explicit choices; model changes are global and
 opt-in. Local Desktop backend setup was verified with Mistral-Vibe Large 4.
+If backend/CLI Vibe models are present but Desktop's model picker omits them,
+fully quit and reopen Desktop before changing installation or credentials.
+The user confirmed this restored the models on 2026-11-01 after service setup.
 
 OpenCode orchestrates context compaction and calls the provider for its summary.
 The adapter forwards that request using shared auth. Reusing Vibe authentication

@@ -51,6 +51,7 @@ export async function setupVibe(ctx: RegistrationContext) {
     }));
     registrations.push(await ctx.integration.transform(editor => {
       editor.method.update({ integrationID: providerID, method: { id: "vibe-browser", type: "command", label: existingVibe ? "Use existing Vibe login" : "Mistral-Vibe", command: [command.executable, ...command.args.slice(0, -1), existingVibe ? "login-vibe" : "login"] } });
+      editor.update(providerID, integration => { integration.name = "Mistral-Vibe"; });
     }));
     registrations.push(await ctx.aisdk.hook("sdk", async event => {
       event.options.maxRetries = 0;
