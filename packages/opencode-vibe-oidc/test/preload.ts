@@ -8,7 +8,7 @@ import dns from "node:dns";
 import dgram from "node:dgram";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -112,13 +112,14 @@ function isolateEnvironment(root: string): void {
   }
 }
 // Quarantine environment before Bun evaluates test/application modules.
-const sessionRoot = mkdtempSync(join(tmpdir(), "vibe-offline-import-"));
+// macOS exposes /var through /private/var; fixture guards require canonical roots.
+const sessionRoot = realpathSync(mkdtempSync(join(tmpdir(), "vibe-offline-import-")));
 isolateEnvironment(sessionRoot);
 process.on("exit", () => rmSync(sessionRoot, { recursive: true, force: true }));
 let originalEnv: NodeJS.ProcessEnv;
 beforeEach(() => {
   originalEnv = { ...process.env };
-  state.root = mkdtempSync(join(tmpdir(), "vibe-offline-"));
+  state.root = realpathSync(mkdtempSync(join(tmpdir(), "vibe-offline-")));
   isolateEnvironment(state.root);
   state.clock = new Clock(); state.http = new ControlledHTTP(); state.workers = new Workers();
   for (const map of [state.store, state.identity, state.tenant, state.tls]) map.clear();

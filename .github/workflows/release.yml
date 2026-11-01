@@ -77,6 +77,7 @@ jobs:
           uv run --python 3.12 --script proxy.py --help
           cd packages/opencode-vibe-oidc
           bun install --frozen-lockfile --ignore-scripts
+          bun run build
       - name: Native offline regression tests
         shell: bash
         run: |
