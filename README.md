@@ -1,8 +1,12 @@
 # mvibe
 
-Use your Vibe subscription through browser OIDC from a local OpenAI-compatible
+Use Vibe browser OIDC from a local OpenAI-compatible
 proxy or the direct OpenCode 2 provider. Both use the same Python authentication
 library. No Mistral API key is needed.
+
+Vibe-versus-API quota attribution is under investigation after a reported API
+counter increase. A successful OIDC request does not establish which budget is
+charged. The first release is held pending this check.
 
 For a prebuilt install on Linux, Windows or macOS, download the ZIP and
 `SHA256SUMS` from [GitHub Releases](https://github.com/norandom/mvibe/releases),

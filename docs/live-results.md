@@ -1,5 +1,15 @@
 # Live verification evidence
 
+## Quota attribution report, 2026-11-01
+
+The user reports that OpenCode use increments the API counter instead of the
+expected Vibe quota. The successful inference/tool checks below establish
+functional authentication and transport, not subscription billing attribution.
+Publication is held. Local installed Vibe 3.0.4 source reveals deliberate
+client User-Agent metadata missing from both adapters; matching OIDC defaults
+alone do not establish equivalent quota classification. Offline header tests
+cannot substitute for observed counters or provider confirmation.
+
 ## Direct Large 4 file-tool continuation, 2026-11-01
 
 A user-reported HTTP 422 was traced to the SDK replaying assistant history with

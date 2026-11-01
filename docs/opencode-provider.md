@@ -19,6 +19,14 @@ loopback proxy. Both delegate login, refresh and tenant selection to the same
 Python library. There is no API-key fallback. Python 3.12+ installed and managed
 through uv is a prerequisite even for the TypeScript plugin.
 
+Both routes send the shared library's client `User-Agent`, identifying the
+Vibe-derived component and the independently versioned `mvibe-auth` adapter.
+The direct provider accepts only `User-Agent` as helper client metadata alongside
+the three credential/tenant headers; it replaces a caller User-Agent only when
+the helper supplies one. Other helper headers remain excluded. This metadata
+does not establish subscription/quota attribution; account counter behavior
+remains unverified. No plan, session or telemetry body fields are synthesized.
+
 ## Prepare the direct provider
 
 From this checkout, prepare Python and the locked plugin dependencies explicitly

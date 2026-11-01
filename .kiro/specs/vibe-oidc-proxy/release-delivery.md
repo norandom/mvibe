@@ -43,3 +43,40 @@ Fresh Windows archive installation and actual extracted-bundle OpenCode 2.2.5
 integration passed all 12 synthetic host checks. Python wheel/runtime imports,
 JSONC backup/idempotency and archive/wheel checksums passed independently.
 Effect and the plugin SDK remain host-provided; the installer is self-contained.
+
+## Quota attribution release hold
+
+Before publication, the user reported that the API usage counter increases
+instead of the expected Vibe quota. Publication is held; no release tag exists.
+Local Vibe 3.0.4 source confirms its deliberate client User-Agent is missing from
+both adapter routes. OIDC defaults/token kind/tenant-selection semantics match
+in source, but that does not establish actual account billing attribution.
+
+- [x] 3. Restore shared Vibe-derived client metadata with transparent adapter
+  identification, captured-request regressions for both routes, unchanged OIDC
+  and destination/redirect/no-replay policies, and independent review.
+
+Do not fabricate plan/session/telemetry fields or claim a billing fix from an
+HTTP success. Vibe's completion metadata also influences request analytics;
+the server's quota classification must be confirmed through observed counters
+or provider documentation/support before claiming subscription usage. Further
+live inference is deferred while that distinction is investigated.
+
+Task 3 independently APPROVED: shared resolved snapshots now include the
+Vibe-derived User-Agent plus the installed mvibe-auth version; the plugin accepts
+only this additional metadata header. Fresh canonical verification passed all
+11 stages, 1,041 Python tests, 987 Bun tests and 97 parent mappings:
+`reports/verification/7536cdc500d844ac9eb85bf4543f5578/acceptance.json`.
+No quota result is inferred from this offline evidence.
+
+The preceding release candidate passed Dagger and native Linux, Windows and
+macOS jobs in https://github.com/norandom/mvibe/actions/runs/41293805140.
+Publication remains held for quota attribution despite those functional gates.
+
+The user's subsequent disposed-helper error exposed OpenCode 2.2.5 retaining
+cached SDKs across watched plugin reloads. The bridge correctly stays disposed;
+do not resurrect it or change credentials. Builds of this live checkout trigger
+reloads. After builds completed, the actual background service was restarted
+with `opencode service restart`, successfully, for a clean user retest. Evidence
+and limits: `reports/disposed-helper-debug.md`. A durable host cache invalidation
+change belongs upstream and needs an isolated reload regression first.

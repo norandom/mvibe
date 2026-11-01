@@ -60,7 +60,15 @@ async def prepare_request(session, target_url):
     return snapshot.headers
 ```
 
-The immutable snapshot contains inference ID-token and tenant headers,
+The immutable snapshot contains inference ID-token and tenant headers plus a
+shared `User-Agent` identifying the Vibe-derived client and the adapter:
+`mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/<distribution-version>`.
+The Vibe component records source provenance; `mvibe-auth` uses the installed
+distribution version independently. Both consumers send this resolved metadata
+with the authoritative credentials. This adds client identification only;
+subscription/quota attribution remains unverified and cannot be inferred from
+an HTTP success. No plan, session or telemetry body fields are synthesized.
+The snapshot also contains
 `expires_at`, an opaque `revision` and the validated `target`. It contains no
 refresh token. Use the headers only for that target; do not forward them after
 a redirect. Snapshot representations hide headers, but explicit access to

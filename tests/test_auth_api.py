@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
+from importlib.metadata import version
 
 from keyring.errors import KeyringError
 from pydantic import SecretStr
@@ -28,7 +29,8 @@ async def test_public_snapshot_is_immutable_target_bound_and_reloads(session, lo
     first = await session.resolve(url)
     assert first.target == url and first.kind == 'id_token'
     assert first.headers == {'Authorization': 'Bearer synthetic-id',
-                             'x-external-organization-id': 'synthetic-org'}
+                             'x-external-organization-id': 'synthetic-org',
+                             'User-Agent': 'mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/' + version('mvibe-auth')}
     assert first.expires_at == datetime.fromtimestamp(1700000900, timezone.utc)
     assert 'synthetic-id' not in repr(first) and 'synthetic-refresh' not in repr(first)
     assert not hasattr(first, 'refresh_token')
@@ -42,6 +44,53 @@ async def test_public_snapshot_is_immutable_target_bound_and_reloads(session, lo
     assert login.callbacks == []
     assert capsys.readouterr().out == ''
     await session.close()
+
+
+@pytest.mark.anyio
+async def test_client_metadata_tracks_adapter_distribution_independently(session, login, monkeypatch):
+    from mvibe_auth import http
+
+    login.slot.external(tokens())
+    def installed_version(name):
+        assert name == 'mvibe-auth'
+        return '7.8.9'
+    monkeypatch.setattr(http, 'version', installed_version)
+    snapshot = await session.resolve('https://inference.invalid/v1/models')
+    assert snapshot.headers['User-Agent'] == 'mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/7.8.9'
+    assert http.get_user_agent('mistral') == 'mistral-client-python/Mistral-Vibe/3.0.4'
+    assert http.get_user_agent(None) == 'Mistral-Vibe/3.0.4'
+    await session.close()
+
+
+@pytest.mark.anyio
+async def test_proxy_sends_shared_client_metadata_with_authoritative_identity(session, login):
+    import httpx
+    import httpx2
+    import proxy
+
+    login.slot.external(tokens())
+    sent = []
+
+    async def upstream(request):
+        sent.append(request)
+        return httpx2.Response(401, content=b'{"error":"synthetic"}')
+
+    app = proxy.create_app(lambda: session, lambda **kwargs: httpx2.AsyncClient(
+        transport=httpx2.MockTransport(upstream), follow_redirects=False))
+    body = b'{ "messages": [], "stream": false }'
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            response = await client.post('/v1/chat/completions', content=body, headers={
+                'Authorization': 'Bearer caller', 'User-Agent': 'caller-agent',
+                'x-external-organization-id': 'caller-org', 'x-external-workspace-id': 'caller-space'})
+    assert response.status_code == 401
+    assert len(sent) == 1
+    request = sent[0]
+    assert request.headers['user-agent'] == 'mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/' + version('mvibe-auth')
+    assert request.headers['authorization'] == 'Bearer synthetic-id'
+    assert request.headers['x-external-organization-id'] == 'synthetic-org'
+    assert 'x-external-workspace-id' not in request.headers
+    assert request.content == body
 
 
 @pytest.mark.anyio

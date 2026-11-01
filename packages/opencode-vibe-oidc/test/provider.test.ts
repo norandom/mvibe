@@ -27,6 +27,34 @@ test("per-fetch rotation replaces caller credentials and preserves tool bytes, m
   }
   expect(f.resolved).toEqual([url, url]); expect(f.sent).toHaveLength(2);
 });
+test.each(["User-Agent", "user-agent", "USER-AGENT"])("shared %s metadata replaces caller identity without broadening helper headers", async name => {
+  const f = fixture();
+  const agent = "mistral-client-python/Mistral-Vibe/3.0.4 mvibe-auth/0.1.0";
+  f.snapshot(async target => ({ target, headers: {
+    Authorization: "Bearer synthetic-id", "x-external-organization-id": "org", "x-external-workspace-id": "space",
+    [name]: agent, "x-evil": "exclude", "call_source": "exclude", "x-affinity": "exclude", "content-type": "evil/type",
+  }, expires_at: Date.now()/1000+300, revision: "1" }));
+  const body = '{ "messages":[], "stream":true }';
+  await f.fetch(url, { method: "POST", body, headers: {
+    "user-agent": "caller-agent", Authorization: "Bearer caller", "x-external-organization-id": "caller-org",
+    "x-external-workspace-id": "caller-space", "content-type": "application/json",
+  } });
+  const request = f.sent[0]!;
+  expect(request.headers.get("user-agent")).toBe(agent);
+  expect(request.headers.get("authorization")).toBe("Bearer synthetic-id");
+  expect(request.headers.get("x-external-organization-id")).toBe("org");
+  expect(request.headers.get("x-external-workspace-id")).toBe("space");
+  for (const key of ["x-evil", "call_source", "x-affinity"]) expect(request.headers.has(key)).toBe(false);
+  expect(request.headers.get("content-type")).toBe("application/json");
+  expect(await request.text()).toBe(body);
+  expect(request.redirect).toBe("manual");
+  expect(f.sent).toHaveLength(1);
+});
+test("helper snapshots without client metadata preserve caller User-Agent", async () => {
+  const f = fixture();
+  await f.fetch(url, { headers: { "User-Agent": "caller-agent" } });
+  expect(f.sent[0]!.headers.get("user-agent")).toBe("caller-agent");
+});
 test.each(["https://evil.test/v1/models", audience + "/v1/users/me", audience + "/v1/chat/completions/../users", audience + "/v1/models#fragment", "https://user:pass@inference.example.test/v1/models"])("policy rejects before resolving %s", async target => {
  const f = fixture(); await expect(f.fetch(target)).rejects.toBeInstanceOf(BridgeError); expect(f.resolved).toHaveLength(0); expect(f.sent).toHaveLength(0);
 });

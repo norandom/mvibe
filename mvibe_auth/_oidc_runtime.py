@@ -22,7 +22,7 @@ from mvibe_auth._oidc_credentials import (
 )
 from mvibe_auth._oidc_service import OidcService
 from mvibe_auth.concurrency import run_sync
-from mvibe_auth.http import VibeAsyncHTTPClient, build_ssl_context
+from mvibe_auth.http import VibeAsyncHTTPClient, build_ssl_context, get_adapter_user_agent
 from mvibe_auth.oidc_marker import OIDC_API_KEY, OIDC_CACHE_KEY_PREFIX
 
 _WORKSPACE_PAGE_SIZE = 100
@@ -221,7 +221,8 @@ async def _resolve_material(config: AuthConfig, service: OidcService) -> tuple[d
             continue
         except OidcStorageError:
             raise OidcError("OIDC credential storage unavailable; retry resolution") from None
-        return {"Authorization": f"Bearer {token}", **tenant_headers}, tokens
+        return {"Authorization": f"Bearer {token}", **tenant_headers,
+                "User-Agent": get_adapter_user_agent()}, tokens
 
 
 class _TenantConflict(Exception):

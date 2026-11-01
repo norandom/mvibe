@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 export type ProviderFetchOptions = { diagnostics?: boolean };
 const credentialHeaders = new Set(["authorization", "x-external-organization-id", "x-external-workspace-id"]);
+const clientMetadataHeaders = new Set(["user-agent"]);
 
 /** Independent outbound guard; the shared library remains the authority for auth. */
 export function providerBaseURL(audience: string): string {
@@ -41,7 +42,9 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
       if (snapshot.target !== target.href || !Number.isFinite(snapshot.expires_at) || snapshot.expires_at <= Date.now() / 1000) throw new BridgeError("snapshot", "Authentication helper returned an unusable request snapshot.");
       const headers = new Headers(request.headers);
       for (const name of [...credentialHeaders, "x-api-key", "api-key", "proxy-authorization"]) headers.delete(name);
-      for (const [name, value] of Object.entries(snapshot.headers)) if (credentialHeaders.has(name.toLowerCase())) headers.set(name, value);
+      for (const [name, value] of Object.entries(snapshot.headers)) {
+        if (credentialHeaders.has(name.toLowerCase()) || clientMetadataHeaders.has(name.toLowerCase())) headers.set(name, value);
+      }
       diagnostic.phase = "acquisition";
       diagnostic.hint = "Check Vibe connectivity and configuration before an explicit retry; no inference was replayed.";
       // Request construction transfers the body stream without reading it. The
