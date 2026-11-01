@@ -135,6 +135,35 @@ The backend checks above verify provider loading, model availability and the
 server default. They do not establish the currently displayed model in a Desktop
 window. No UI automation is needed for installation or those checks.
 
+## Recover a disposed authentication helper
+
+`Authentication helper is disposed` means the request reached a plugin instance
+whose cleanup already ran. It does not by itself mean the Vibe credential expired.
+In the observed OpenCode 2.2.5 failure, rebuilding the loaded checkout reloaded
+the plugin while the host retained a cached SDK referencing its old helper.
+
+Restart the background service, then reconnect the terminal client:
+
+```powershell
+opencode service restart
+opencode -c
+```
+
+If `opencode` is not on PATH, use the bundled CLI path described above for
+`service restart`. Fully quit/reopen Desktop afterward if using its interface.
+Restarting the service interrupts active OpenCode work. Ctrl+C followed by
+`opencode -c` alone can reconnect to the same service and retain the error.
+Reauthentication is not required by this lifecycle error alone.
+
+Keep the installed plugin in a stable extracted release directory, separate
+from a checkout you edit or build. Finish preparation before loading it, and
+restart the service after an upgrade. A local recovery on 2026-11-01 moved the
+plugin and helper to a packaged snapshot outside the checkout, preserved the
+existing-login configuration and restarted the actual service. The new server
+loaded that snapshot and exposed all 18 Vibe models; inference recovery remained
+for the user's next prompt to confirm. This avoids the observed development-build
+trigger; it is not a host cache-invalidation fix or an idle-duration guarantee.
+
 ## Context compression belongs to the client
 
 Native Vibe performs a separate summarization request for context compaction;

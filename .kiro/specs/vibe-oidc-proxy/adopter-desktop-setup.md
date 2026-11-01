@@ -87,3 +87,19 @@ before the change and passed afterward; focused registration tests passed 24,
 the full Bun suite passed 1,049, and lint/typecheck/build passed. No background
 service restart was performed for this naming change during the user's session.
 The preceding cross-platform Actions run 41309805277 completed successfully.
+
+Disposed-helper recurrence and installation correction, 2026-11-01: rebuilding
+the loaded checkout at 13:22:40 UTC caused plugin reloads; the server's 13:24:09
+failure stack reached a disposed bridge through its cached SDK. Terminal Ctrl+C
+and `opencode -c` reused the same server. Independent root-cause investigation
+confirmed the host cache/lifecycle mismatch. No credential expiry was inferred.
+Rather than resurrect disposed helpers or add an unvalidated cache-key workaround,
+a bundled snapshot of source `440a35a` was built outside source dist, passed the
+native archive installation/backup/idempotency/import smoke, and was prepared
+with locked uv dependencies under the user's local application data directory.
+An independently reviewed one-off migration changed only the owned package and
+helper project paths, preserved existing-vibe auth and made a JSONC backup.
+Explicit service restart replaced run `2b27445f` with `37b4f031`; logs confirmed
+the stable snapshot loaded, and supported APIs reported 18 Vibe models and the
+Large 4 default. No paid inference was sent. User inference recovery is pending;
+host hot-reload cache invalidation remains outside this operational correction.

@@ -105,7 +105,7 @@ available to your account, then check the usage counter after the first request.
 | CLI lists Vibe models but Desktop does not | Fully quit and reopen Desktop, then clear the model picker's search/filter. Restarting the service alone may not refresh the window. |
 | Desktop shows another model | Start a new session or change that session's selection; an existing draft can override the global default. |
 | Provider missing | Check the global config and Desktop's server using the [Desktop guide](docs/desktop-setup.md). |
-| Helper is disposed | Finish any build, then restart the OpenCode service. Avoid rebuilding the loaded checkout during a request. |
+| Helper is disposed | Run `opencode service restart`, then reopen/reconnect the client. Ctrl+C followed by `opencode -c` can reuse the same service. Keep the installed plugin separate from development builds; see [helper recovery](docs/desktop-setup.md#recover-a-disposed-authentication-helper). |
 | Model unavailable | List models available to your account; the example name does not grant access. |
 | API usage increases | Verify `authSource: "existing-vibe"` and preserve that sign-in path when collecting evidence. |
 

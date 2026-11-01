@@ -41,6 +41,12 @@ opt-in. Local Desktop backend setup was verified with Mistral-Vibe Large 4.
 If backend/CLI Vibe models are present but Desktop's model picker omits them,
 fully quit and reopen Desktop before changing installation or credentials.
 The user confirmed this restored the models on 2026-11-01 after service setup.
+Never rebuild a checkout while the user's service loads its plugin. On OpenCode
+2.2.5, plugin reload can leave a cached SDK referencing a disposed bridge.
+Ctrl+C and `opencode -c` do not necessarily replace that service; use an explicit
+service restart after preparing an upgrade. Local installation now uses a stable
+packaged snapshot outside this checkout. Keep it immutable during development.
+Do not resurrect disposed bridges or replay requests to mask stale host caches.
 
 OpenCode orchestrates context compaction and calls the provider for its summary.
 The adapter forwards that request using shared auth. Reusing Vibe authentication
