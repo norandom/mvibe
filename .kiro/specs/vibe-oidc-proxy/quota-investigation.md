@@ -56,3 +56,14 @@ suites passed 1,120 tests; the plugin suite passed 1,008 tests. The rebuilt loca
 provider and configured helper produced lookup-derived `Pro` in an intercepted
 outgoing request, without live inference. OpenCode service restart succeeded.
 Quota attribution still needs a subsequent user counter check.
+
+## Actual OpenCode HTTP capture
+
+The user again reports API costs and requested HTTP payload instrumentation.
+The next diagnostic step is opt-in capture at the provider's final fetch
+boundary, after auth and metadata adaptation, with correlated original upstream
+status and headers. See [http-capture.md](http-capture.md). This records the
+application request before TLS; it does not claim packet-level transport headers
+or server billing classification. No new inference is sent by instrumentation.
+Compare a subsequent user request against the native source/SDK evidence before
+changing attribution fields again. Release publication remains held.

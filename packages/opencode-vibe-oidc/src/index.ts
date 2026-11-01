@@ -30,7 +30,7 @@ export async function setupVibe(ctx: RegistrationContext) {
   const baseURL = providerBaseURL(audience);
   const bridge = new StdioBridge({ command, audience });
   const providerID = Provider.ID.make("vibe-oidc");
-  const fetch = createProviderFetch(bridge, audience, globalThis.fetch, { diagnostics: ctx.options.diagnostics === true });
+  const fetch = createProviderFetch(bridge, audience, globalThis.fetch, { diagnostics: ctx.options.diagnostics === true, ...(typeof ctx.options.captureDirectory === "string" ? { captureDirectory: ctx.options.captureDirectory } : {}), captureBody: ctx.options.captureBody === true });
   let hostModels: ReadonlyMap<string, unknown> = new Map();
   const catalog = createModelCatalog({ active: () => ctx.integration.connection.active(providerID), reload: () => ctx.provider.reload(), bridge, fetch, baseURL, metadata: () => metadataFromHostCatalog(hostModels, ctx.options.modelMetadata ?? {}), report: message => console.warn(message) });
   const events = new AbortController();

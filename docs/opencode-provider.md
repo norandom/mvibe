@@ -189,3 +189,37 @@ plugin directory run `bun run compatibility:current --discover-current`, then
 The latter prepares a separate `.compat/<version>/provider`, runs the same native
 host gate and records a separate report. It refuses to overwrite an existing
 prepared pair. Discovery alone is never a compatibility pass.
+
+### Local HTTP capture for quota diagnosis
+
+Capture is off by default and independent of `diagnostics`. In the provider's
+options, set `captureDirectory` to an absolute local directory outside tracked
+source (for this checkout, `D:/Source/mvibe/reports/http-capture` is ignored by Git).
+Set `captureBody: true` separately to include the final adapted chat JSON. Restart
+OpenCode after changing these options. Remove both options and restart to disable.
+
+Each provider instance creates a `session-<random UUID>` directory. Request and
+response JSON files share `request_id`; inspect `body.model`, `body.metadata`,
+client headers and the original response `status`, `x-request-id`, `request-id`,
+`x-correlation-id` and `traceparent`. The response's `x-should-retry` value is
+recorded before the provider disables retries. Capture never reads response
+content or SSE, and never makes an additional inference request. Query values
+and unknown header values are redacted. Tenant identifiers are pseudonyms stable
+only within that capture session; authorization, cookies, credential-like JSON
+fields and known resolved credential strings are redacted.
+
+**Body captures contain conversations and tool content.** Arbitrary secrets in
+prompts/tool text cannot be reliably recognized. Keep captures local and private;
+review/redact them before sharing. The implementation creates exclusive files
+with mode 0600 and session directories with mode 0700 on Unix; on Windows it
+restricts the new session directory ACL to the current user before writing.
+If ACL setup or writing fails, capture stops without changing inference.
+
+Limits per provider instance: 64 requests, 256 KiB per outgoing JSON body,
+384 KiB per record, 8 MiB total. Oversized bodies are omitted completely, with
+`body_state` explaining why; session/record exhaustion writes a `capture_limit`
+marker. Bodies unavailable as already-adapted chat JSON are not read from a
+stream and are marked unavailable. Depth beyond 40 is explicitly omitted.
+No response body is captured. IO failure may leave an incomplete pair or an empty
+session directory. Restart creates a new bounded session; old captures are not
+automatically deleted, so delete the diagnostic directory when finished.

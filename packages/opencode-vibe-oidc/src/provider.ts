@@ -1,3 +1,4 @@
+import { createHttpCapture, type CaptureOptions } from "./http-capture.js";
 import type { StdioBridge } from "./bridge.js";
 import { BridgeError } from "./bridge.js";
 import { randomUUID } from "node:crypto";
@@ -6,7 +7,7 @@ import { REQUEST_CONTEXT_HEADER } from "./request-context.js";
 import type { RequestContext } from "./protocol.js";
 
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-export type ProviderFetchOptions = { diagnostics?: boolean };
+export type ProviderFetchOptions = CaptureOptions & { diagnostics?: boolean; capture?: ReturnType<typeof createHttpCapture> };
 const credentialHeaders = new Set(["authorization", "x-external-organization-id", "x-external-workspace-id"]);
 const clientMetadataHeaders = new Set(["user-agent"]);
 
@@ -20,6 +21,7 @@ export function providerBaseURL(audience: string): string {
   } catch { throw new BridgeError("destination", "Invalid provider audience configuration."); }
 }
 export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audience: string, transport: ProviderFetch = globalThis.fetch, options: ProviderFetchOptions = {}): ProviderFetch & Pick<typeof globalThis.fetch, "preconnect"> {
+  const capture = options.capture ?? createHttpCapture(options);
   const base = new URL(providerBaseURL(audience));
   const paths = new Set(["models", "chat/completions", "embeddings"].map(path => base.pathname + "/" + path));
   const fetch: ProviderFetch = async (input, init) => {
@@ -84,7 +86,15 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
       // Enforce removal on the final Request as well as the replacement set.
       outbound.headers.delete(REQUEST_CONTEXT_HEADER);
       if (body !== undefined) outbound.headers.delete("content-length");
-      const response = await transport(outbound);
+      let captured: ReturnType<typeof capture.request>;
+      try { captured = capture.request(outbound, body, snapshot.headers); }
+      catch { /* All capture work is best effort, including sanitization. */ }
+      const captureFailure = () => { try { captured?.failed(); } catch { /* Best effort. */ } };
+      if (request.signal.aborted) { captureFailure(); throw new BridgeError("cancelled"); }
+      let response: Response;
+      try { response = await transport(outbound); }
+      catch (error) { captureFailure(); throw error; }
+      try { captured?.response(response); } catch { /* Best effort. */ }
       diagnostic.status = response.status;
       diagnostic.phase = "response_headers";
       diagnostic.outcome = response.status >= 400 ? "upstream_error" : "headers_received";
