@@ -59,7 +59,7 @@ def get_platform_version() -> str | None:
     return value or None
 
 
-def build_request_metadata(context: RequestContext | None = None) -> dict[str, str]:
+def build_request_metadata(context: RequestContext | None = None, *, user_plan: str | None = None) -> dict[str, str]:
     context = context or RequestContext()
     call_type = ('smart_approve' if context.purpose == 'classify' else
                  'title_generation' if context.purpose == 'title' else
@@ -69,10 +69,12 @@ def build_request_metadata(context: RequestContext | None = None) -> dict[str, s
     values.update(os=get_platform_id(), arch=platform.machine().lower(),
                   os_version=get_platform_version(), version=__version__,
                   call_type=call_type, call_source='vibe_code', host_kind='local')
+    if user_plan is not None:
+        values['user_plan'] = user_plan
     return {key: str(value) for key, value in values.items() if value is not None}
 
 
-def attach_request_metadata(body: bytes, context: RequestContext | None = None) -> bytes:
+def attach_request_metadata(body: bytes, context: RequestContext | None = None, *, user_plan: str | None = None) -> bytes:
     """Merge owned attribution only for JSON objects; leave other bytes intact."""
     try:
         payload = json.loads(body, parse_constant=_reject_constant)
@@ -85,6 +87,8 @@ def attach_request_metadata(body: bytes, context: RequestContext | None = None) 
         metadata = {}
     if not isinstance(metadata, dict):
         return body
+    # Account attribution is server-owned, including its unavailable state.
+    metadata.pop('user_plan', None)
     if context is None:
         messages = payload.get('messages', [])
         iteration = 0
@@ -96,7 +100,7 @@ def attach_request_metadata(body: bytes, context: RequestContext | None = None) 
                     elif message.get('role') in {'assistant', 'tool'}:
                         iteration = 1
         context = RequestContext(iteration=iteration)
-    payload['metadata'] = {**metadata, **build_request_metadata(context)}
+    payload['metadata'] = {**metadata, **build_request_metadata(context, user_plan=user_plan)}
     return json.dumps(payload, separators=(',', ':')).encode('utf-8')
 
 

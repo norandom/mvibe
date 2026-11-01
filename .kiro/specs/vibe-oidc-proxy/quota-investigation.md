@@ -1,0 +1,42 @@
+# Quota investigation, 2026-11-01
+
+The user retested installed commit `0b69a29` and reported API allowance usage.
+This is not a successful Vibe quota result. Release publication remains held.
+
+## Evidence
+
+- A fresh read-only runtime audit found the configured checkout provider and
+  native uv offline/no-sync helper, not another installation. In-memory
+  TypeScript emit matched all eight installed JavaScript artifacts. The
+  background service started after the build and loaded that provider.
+- A read-only query of V2 `session_message` selected only creation timestamps
+  and assistant model/provider fields. The latest ten assistant records at
+  10:22:09–10:24:13 UTC all select `vibe-oidc/mistral-large-4`; there is no
+  evidence those requests switched to the built-in Mistral provider. This
+  verifies persisted routing intent, not upstream billing attribution.
+- Native source OIDC registration, audience, scopes, ID-token choice and
+  tenant headers match the adapter. An offline capture using the native pinned
+  Mistral SDK 3.5.0 confirmed the completion endpoint and exact Vibe User-Agent.
+  The capture used a synthetic token and an in-memory transport, with no account
+  or inference calls. Artifact: `reports/native-sdk-wire-synthetic.json`.
+- The user confirmed the plan is Pro. A single read-only native OIDC account
+  lookup returned HTTP 200, `plan_type=CHAT`, `plan_name=INDIVIDUAL`, paid Vibe
+  entitlement true and an API base matching the configured audience. No
+  inference request was made. No tokens or account identifiers were printed.
+- Native `vibe/setup/auth/whoami.py` uses `/api/vibe/account-context` for OIDC
+  and maps `CHAT` / `INDIVIDUAL` to `Pro`. The previous adapter had no account
+  lookup and therefore omitted `user_plan`. Its absence is a metadata gap;
+  it has not been established as the billing cause.
+
+## Bounded next step
+
+The shared account-context task is implemented and independently reviewed in
+[native-request-parity.md](native-request-parity.md). Query the trusted account
+endpoint before attaching a plan, validate the response, reuse bounded cached
+results only for the same authenticated identity and tenant, and omit the field
+if lookup fails or the plan is unknown. No hardcoded account or plan assumption,
+API-key fallback, extra inference, or claimed billing fix. Both final full Python
+suites passed 1,120 tests; the plugin suite passed 1,008 tests. The rebuilt local
+provider and configured helper produced lookup-derived `Pro` in an intercepted
+outgoing request, without live inference. OpenCode service restart succeeded.
+Quota attribution still needs a subsequent user counter check.

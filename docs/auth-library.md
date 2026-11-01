@@ -167,7 +167,25 @@ bytes. Response streams remain unbuffered.
 
 Unknown launch/session/account fields are omitted. OpenCode reports its actual
 client version and name rather than claiming to be `vibe_cli`; unavailable plan
-labels are never synthesized. Main turn, continuation/compaction, classification
+labels are never synthesized. Before chat forwarding, both adapters use the
+shared optional OIDC account resolver to query `/api/vibe/account-context` on
+the configured issuer registration's trusted console origin with the already
+resolved ID token and tenant headers. Native Vibe's plan mapping derives
+`user_plan` from the returned plan type/name; callers cannot supply that field
+through private request context. Account attribution owns caller metadata's
+`user_plan`: a known server result replaces it, and an unavailable result omits
+it. Other metadata remains preserved.
+
+The lookup has a three-second total deadline, a 64 KiB response limit, no
+redirects and no retries. Its adapter-session memory cache holds at most 32
+entries keyed by credential revision and resolved organization/workspace,
+for five minutes on success or 30 seconds on failure, capped by credential
+lifetime. Concurrent lookups coalesce; cancellation of the final waiter cancels
+the request. Shutdown drains lookups and closes the owned client. Unknown
+registrations, endpoint failures and unknown plans omit the optional label.
+Account response URLs never change destinations. No account data is persisted.
+
+Main turn, continuation/compaction, classification
 and title purposes use the native call-type mapping. The committed golden in
 `tests/fixtures/native-request-metadata.json` was produced by executing the native
 Vibe builder from commit `338ad4bf0f73c4dd879d667cf7ab011555ae1751` with synthetic

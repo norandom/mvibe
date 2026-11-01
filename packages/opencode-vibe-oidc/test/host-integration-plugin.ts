@@ -74,7 +74,7 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     assert.equal(metadata.version, "3.0.4");
     assert.ok(Object.values(metadata).every(value => typeof value === "string"));
     assert.ok(metadata.os && metadata.arch && metadata.call_type);
-    assert.equal(metadata.user_plan, undefined, "fixture has no claimed plan");
+    assert.equal(metadata.user_plan, "Pro", "plan comes from the synthetic account-context lookup");
     const toolResult = Array.isArray(body.messages) && body.messages.some(message => message?.role === "tool");
     nativeRequests.push({ metadata, toolResult });
     if (mode === "metadata") {

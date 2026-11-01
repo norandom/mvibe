@@ -5,10 +5,13 @@
 The user reports that OpenCode use increments the API counter instead of the
 expected Vibe quota. The successful inference/tool checks below establish
 functional authentication and transport, not subscription billing attribution.
-Publication is held. Local installed Vibe 3.0.4 source reveals deliberate
-client User-Agent metadata missing from both adapters; matching OIDC defaults
-alone do not establish equivalent quota classification. Offline header tests
-cannot substitute for observed counters or provider confirmation.
+Publication is held. The user retested installed commit `0b69a29` after its
+native User-Agent and completion metadata changes; usage still counted as API.
+A read-only OIDC account-context lookup confirmed the Pro plan and paid Vibe
+entitlement. The adapters previously omitted the account-derived plan metadata;
+the shared lookup is now implemented without claiming this explains billing. See
+[investigation evidence](../.kiro/specs/vibe-oidc-proxy/quota-investigation.md).
+Offline header tests cannot substitute for observed counters or provider confirmation.
 
 ## Direct Large 4 file-tool continuation, 2026-11-01
 

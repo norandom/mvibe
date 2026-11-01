@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from mvibe_auth.request_metadata import attach_request_metadata
+from mvibe_auth.account_plan import AccountPlanResolver
 
 import argparse
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -114,11 +115,13 @@ def create_app(
     auth_factory: Callable[[], AuthSession] = _default_auth_factory,
     client_factory: Callable[..., VibeAsyncHTTPClient] = VibeAsyncHTTPClient,
     *, force_login: bool = False,
+    account_plan_factory: Callable[[AuthConfig], AccountPlanResolver] = AccountPlanResolver,
 ) -> FastAPI:
     """Construct an inert app; lifespan owns the public session and HTTP client."""
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session = auth_factory()
+        account_plan = account_plan_factory(session.config)
         try:
             state = await session.status()
             if force_login or not (state['signed_in'] and state['config_match']):
@@ -130,11 +133,15 @@ def create_app(
                 app.state.auth = session
                 app.state.client = client
                 app.state.stream_owner = ProxyStreamOwner(client)
+                app.state.account_plan = account_plan
                 yield
             finally:
                 await app.state.stream_owner.shutdown()
         finally:
-            await session.close()
+            try:
+                await account_plan.close()
+            finally:
+                await session.close()
 
     app = FastAPI(lifespan=lifespan, title='Vibe local proxy', description=_API_DESCRIPTION)
     app.add_middleware(ProxyDiagnostics)
@@ -165,7 +172,8 @@ def create_app(
             client = request.app.state.client
             body = await request.body()
             if path == 'chat/completions':
-                body = attach_request_metadata(body)
+                plan = await request.app.state.account_plan.resolve(snapshot)
+                body = attach_request_metadata(body, user_plan=plan)
             return await client.send(client.build_request(
                 request.method, target, headers=headers,
                 content=body), stream=True, follow_redirects=False)

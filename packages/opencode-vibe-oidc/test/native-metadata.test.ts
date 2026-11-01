@@ -5,6 +5,21 @@ import { registerRequestContext, REQUEST_CONTEXT_HEADER } from "../src/request-c
 import type { Plugin, Provider } from "@opencode/plugin";
 import type { Params } from "../src/protocol.js";
 
+for (const plan of [undefined, "Team"]) test(`server owns optional user_plan (${plan})`, async () => {
+  let body: any;
+  const bridge = { request: async (_method: string, params: Params["resolve"]) => ({
+    target: params.target_url, headers: {}, expires_at: Date.now() / 1000 + 60, revision: "one",
+    metadata: { call_source: "vibe_code", ...(plan ? { user_plan: plan } : {}) },
+  }) } as Pick<StdioBridge, "request">;
+  const fetch = createProviderFetch(bridge, "https://inference.example", async input => {
+    body = await (input as Request).json(); return new Response();
+  });
+  await fetch("https://inference.example/v1/chat/completions", { method: "POST",
+    body: '{"messages":[],"metadata":{"user_plan":"Pro","custom":"kept"}}' });
+  expect(body.metadata.user_plan).toBe(plan);
+  expect(body.metadata.custom).toBe("kept");
+});
+
 test("final serialized body merges helper metadata once and consumes private context", async () => {
   const calls: Params["resolve"][] = [], sent: Request[] = [];
   const bridge = { request: async (_method: string, params: Params["resolve"]) => {

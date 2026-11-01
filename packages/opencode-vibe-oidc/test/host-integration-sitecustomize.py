@@ -5,9 +5,9 @@ import socket
 import sys
 import webbrowser
 from datetime import datetime, timezone, timedelta
-from types import SimpleNamespace
 
 import keyring
+import httpx2
 
 
 def deny(*args, **kwargs):
@@ -35,13 +35,14 @@ for name in ('open', 'open_new', 'open_new_tab', 'get'):
 for name in ('get_keyring', 'get_password', 'get_credential', 'set_password', 'delete_password'):
     setattr(keyring, name, deny)
 
-from mvibe_auth import LoginHandle, LoginCompleted, AuthSnapshot
+from mvibe_auth import AuthConfig, LoginHandle, LoginCompleted, AuthSnapshot
+from mvibe_auth.account_plan import AccountPlanResolver
 import mvibe_auth.bridge as bridge
 import mvibe_auth.login_cli as cli
 
 
 class Session:
-    config = SimpleNamespace(audience='https://inference.example.test')
+    config = AuthConfig(enabled=True, audience='https://inference.example.test')
 
     def __init__(self, config=None):
         pass
@@ -75,3 +76,15 @@ class Session:
 
 bridge.create_session = Session
 cli.AuthSession = Session
+
+
+def account_plan_resolver(config):
+    async def account(request):
+        assert str(request.url) == 'https://console.mistral.ai/api/vibe/account-context'
+        assert request.headers['authorization'].startswith('Bearer synthetic-')
+        return httpx2.Response(200, json={'plan_type': 'CHAT', 'plan_name': 'INDIVIDUAL',
+            'has_paid_vibe_entitlement': True, 'api_base': 'https://inference.example.test'})
+    return AccountPlanResolver(config, transport=httpx2.MockTransport(account))
+
+
+bridge.AccountPlanResolver = account_plan_resolver

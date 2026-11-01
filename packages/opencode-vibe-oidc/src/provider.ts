@@ -70,6 +70,7 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
           if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
             const object = payload as Record<string, unknown>;
             if (object.metadata === undefined || object.metadata === null || typeof object.metadata === "object" && !Array.isArray(object.metadata)) {
+              if (object.metadata) delete (object.metadata as Record<string, unknown>).user_plan;
               object.metadata = { ...(object.metadata as Record<string, unknown> | undefined), ...snapshot.metadata };
               body = JSON.stringify(object);
             }

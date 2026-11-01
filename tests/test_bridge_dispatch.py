@@ -1,5 +1,6 @@
 """Synthetic dispatcher checks; no test dependencies selected by wire input."""
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import os
@@ -113,7 +114,9 @@ async def test_methods_and_request_scoped_resolution():
 
 @pytest.mark.anyio
 async def test_native_metadata_is_request_scoped_and_optional():
-    async with Pipes() as p:
+    session = Session()
+    session.config = replace(session.config, issuer='https://issuer.invalid')
+    async with Pipes(session) as p:
         url = 'https://api.mistral.ai/v1/chat/completions'
         await p.send('resolve', 'legacy', target_url=url)
         assert 'metadata' not in (await p.receive())['result']

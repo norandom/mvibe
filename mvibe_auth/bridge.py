@@ -16,6 +16,7 @@ import os
 import sys
 
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
+from mvibe_auth.account_plan import AccountPlanResolver
 from mvibe_auth._bridge_protocol import (
     AuthError as WireError, Failure, MAX_FRAME_BYTES, ProtocolError,
     Request, RESULT_MODELS, Success, parse_request,
@@ -48,6 +49,7 @@ async def serve(
     read_frame: Callable[[int], Awaitable[bytes]],
     write_frame: Callable[[bytes], Awaitable[None]],
     *, session_factory: Callable[[], AuthSession] | None = None,
+    account_plan_factory: Callable[[AuthConfig], AccountPlanResolver] | None = None,
 ) -> None:
     """Serve bounded frames with concurrent operations and serialized output.
 
@@ -59,6 +61,7 @@ async def serve(
     """
     factory = session_factory or create_session
     session: AuthSession | None = None
+    account_plan: AccountPlanResolver | None = None
     active: dict[str, asyncio.Task[None]] = {}
     suppressed: set[str] = set()
     responding: set[str] = set()
@@ -85,9 +88,10 @@ async def serve(
             error=WireError(code=code, message=message, retryable=retryable)), suppressible=suppressible)
 
     def owner() -> AuthSession:
-        nonlocal session
+        nonlocal session, account_plan
         if session is None:
             session = factory()
+            account_plan = (account_plan_factory or AccountPlanResolver)(session.config)
         return session
 
     async def result(request: Request) -> dict:
@@ -116,7 +120,8 @@ async def serve(
                                revision=snapshot.revision, target=snapshot.target)
                 if request.params.request_context is not None:
                     from mvibe_auth.request_metadata import build_request_metadata
-                    payload['metadata'] = build_request_metadata(request.params.request_context)
+                    plan = await account_plan.resolve(snapshot)
+                    payload['metadata'] = build_request_metadata(request.params.request_context, user_plan=plan)
                 return payload
         raise ProtocolError('unknown_method')
 
@@ -151,6 +156,8 @@ async def serve(
         if session is not None:
             await session.close()
         await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
+        if account_plan is not None:
+            await account_plan.close()
 
     try:
         while True:
