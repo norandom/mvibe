@@ -39,7 +39,7 @@ for line in sys.stdin:
     request = json.loads(line)
     method = request["method"]
     if method == "hello":
-        reply(request, dict(protocol=1, api_version="0.1.0", audience="https://inference.example.test"))
+        reply(request, dict(protocol=1, api_version="1.0.0", audience="https://inference.example.test"))
     elif method == "status":
         reply(request, dict(signed_in=(root / "committed").exists(), config_match=True))
         if mode == "exit-after-status" and not (root / "committed").exists():

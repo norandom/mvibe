@@ -17,14 +17,20 @@ import argparse
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
+import ipaddress
 import os
+import re
+import sys
 import webbrowser
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
+import json
 from urllib.parse import urlencode
+from mvibe_proxy import compat
 from mvibe_proxy.streaming import ProxyStreamOwner
-from mvibe_proxy.diagnostics import ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout
+from mvibe_proxy.diagnostics import ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout, configure_exporter, clear_exporter
+from mvibe_proxy.observability import ObserveConfig, ObserveConfigError, OpenObserveExporter, start_telemetry, inject_traceparent
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
 from mvibe_auth.existing_vibe import ExistingVibeSession
 from mvibe_auth.http import VibeAsyncHTTPClient
@@ -120,17 +126,31 @@ async def login(session: AuthSession | ExistingVibeSession, *, force: bool = Fal
         raise AuthError(outcome)
 
 
+def _request_model(body: bytes) -> str | None:
+    """Model id only; the body itself is never logged or exported."""
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return None
+    if isinstance(payload, dict) and isinstance(payload.get('model'), str):
+        return payload['model']
+    return None
+
+
 def create_app(
     auth_factory: Callable[[], AuthSession | ExistingVibeSession] = _default_auth_factory,
     client_factory: Callable[..., VibeAsyncHTTPClient] = VibeAsyncHTTPClient,
     *, force_login: bool = False,
     account_plan_factory: Callable[[AuthConfig], AccountPlanResolver] = AccountPlanResolver,
+    observe_config: ObserveConfig | None = None,
 ) -> FastAPI:
     """Construct an inert app; lifespan owns the public session and HTTP client."""
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session = auth_factory()
         account_plan = account_plan_factory(session.config)
+        exporter = OpenObserveExporter(observe_config) if observe_config is not None else None
+        telemetry = start_telemetry() if observe_config is not None else None
         try:
             state = await session.status()
             if force_login or not (state['signed_in'] and state['config_match']):
@@ -143,9 +163,18 @@ def create_app(
                 app.state.client = client
                 app.state.stream_owner = ProxyStreamOwner(client)
                 app.state.account_plan = account_plan
+                app.state.telemetry = telemetry
+                if exporter is not None:
+                    await exporter.start()
+                    configure_exporter(exporter)
                 yield
             finally:
                 await app.state.stream_owner.shutdown()
+                if exporter is not None:
+                    clear_exporter()
+                    await exporter.shutdown()
+                if telemetry is not None:
+                    telemetry.shutdown()
         finally:
             try:
                 await account_plan.close()
@@ -155,10 +184,42 @@ def create_app(
     app = FastAPI(lifespan=lifespan, title='Vibe local proxy', description=_API_DESCRIPTION)
     app.add_middleware(ProxyDiagnostics)
     app.state.force_login = force_login
+    app.state.telemetry = None
 
     @app.get('/health')
     async def health() -> dict[str, str]:
         return {'status': 'ok'}
+
+    def make_acquire(request: Request, path: str, body: bytes | None = None, diagnostic=None):
+        """Shared per-request auth snapshot + upstream send for any /v1 target."""
+        async def acquire():
+            session = request.app.state.auth
+            url = session.config.audience.rstrip('/') + '/v1/' + path
+            telemetry = getattr(request.app.state, 'telemetry', None)
+            if telemetry is not None:
+                with telemetry.tracer.start_as_current_span('auth.resolve'):
+                    snapshot = await session.resolve(url)
+            else:
+                snapshot = await session.resolve(url)
+            headers = dict(snapshot.headers)
+            if telemetry is not None:
+                inject_traceparent(headers)
+            headers['Content-Type'] = 'application/json'
+            # HTTPX QueryParams groups keys; encode ordered Starlette pairs
+            # directly into the URL to preserve interleaved repeated values.
+            query = urlencode(request.query_params.multi_items())
+            target = url + ('?' + query if query else '')
+            client = request.app.state.client
+            payload = body if body is not None else await request.body()
+            if path == 'chat/completions':
+                if diagnostic is not None:
+                    diagnostic.model = _request_model(payload)
+                plan = await request.app.state.account_plan.resolve(snapshot)
+                payload = attach_request_metadata(payload, user_plan=plan)
+            return await client.send(client.build_request(
+                request.method, target, headers=headers,
+                content=payload), stream=True, follow_redirects=False)
+        return acquire
 
     @app.api_route('/v1/{path:path}', methods=['GET', 'POST'], response_model=None, include_in_schema=False)
     async def proxy(path: str, request: Request) -> Response:
@@ -168,33 +229,77 @@ def create_app(
         }:
             diagnostic.failure('unsupported')
             return JSONResponse({'error': {'message': 'Unsupported endpoint'}}, status_code=404)
-        async def acquire():
-            session = request.app.state.auth
-            url = session.config.audience.rstrip('/') + '/v1/' + path
-            snapshot = await session.resolve(url)
-            headers = dict(snapshot.headers)
-            headers['Content-Type'] = 'application/json'
-            # HTTPX QueryParams groups keys; encode ordered Starlette pairs
-            # directly into the URL to preserve interleaved repeated values.
-            query = urlencode(request.query_params.multi_items())
-            target = url + ('?' + query if query else '')
-            client = request.app.state.client
-            body = await request.body()
-            if path == 'chat/completions':
-                plan = await request.app.state.account_plan.resolve(snapshot)
-                body = attach_request_metadata(body, user_plan=plan)
-            return await client.send(client.build_request(
-                request.method, target, headers=headers,
-                content=body), stream=True, follow_redirects=False)
+        return request.app.state.stream_owner.response(
+            make_acquire(request, path, diagnostic=diagnostic), diagnostic)
 
-        return request.app.state.stream_owner.response(acquire, diagnostic)
+    def adapter_post(dialect: str, *, target: str, translate_request, make_transform, inspect=None):
+        """POST route translating an adapter dialect body to the upstream /v1 target."""
+        async def handler(request: Request) -> Response:
+            diagnostic = request.scope.get('mvibe.diagnostic') or RequestDiagnostic()
+            try:
+                raw = await request.body()
+                adapter_body = json.loads(raw) if raw else {}
+                if not isinstance(adapter_body, dict):
+                    raise compat.CompatError('body must be a JSON object')
+                upstream_body = translate_request(adapter_body)
+                model = upstream_body.get('model')
+                if isinstance(model, str):
+                    diagnostic.model = model
+            except compat.CompatError as error:
+                diagnostic.failure('invalid')
+                status, payload = compat.adapter_error(dialect, 400, str(error))
+                return JSONResponse(payload, status_code=status)
+            except ValueError:
+                diagnostic.failure('invalid')
+                status, payload = compat.adapter_error(dialect, 400, 'body must be valid JSON')
+                return JSONResponse(payload, status_code=status)
+            acquire = make_acquire(request, target, json.dumps(upstream_body).encode(), diagnostic)
+            try:
+                upstream = await acquire()
+            except AuthError:
+                diagnostic.failure('auth')
+                return JSONResponse({'error': {'message': 'Vibe authentication failed; run proxy.py --login'}}, status_code=401)
+            except Exception:
+                diagnostic.failure('connection')
+                return JSONResponse({'error': {'message': 'Upstream connection failed'}}, status_code=502)
+            if upstream.status_code >= 400:
+                await upstream.aclose()
+                diagnostic.upstream(upstream.status_code)
+                status, payload = compat.adapter_error(dialect, upstream.status_code,
+                                                       compat.upstream_error_hint(upstream.status_code))
+                return JSONResponse(payload, status_code=status)
+            if inspect is not None:
+                early = await inspect(upstream, adapter_body)
+                if early is not None:
+                    await upstream.aclose()
+                    return early
+            transform = make_transform(upstream_body, adapter_body)
 
-    # Registered before the catch-all to expose useful operations while retaining
-    # its legacy fallback behavior for wrong methods and unknown endpoints.
-    fallback = app.router.routes.pop()
+            async def replay():
+                return upstream
+            return request.app.state.stream_owner.response(replay, diagnostic, transform)
+        return handler
+
+    @app.api_route('/api/{path:path}', methods=['GET', 'POST'], response_model=None, include_in_schema=False)
+    async def api_catchall(path: str, request: Request) -> Response:
+        diagnostic = request.scope.get('mvibe.diagnostic') or RequestDiagnostic()
+        diagnostic.failure('unsupported')
+        _, payload = compat.adapter_error('ollama', 404, 'Unsupported endpoint')
+        return JSONResponse(payload, status_code=404)
+
+    # Registered before the catch-alls to expose useful operations while retaining
+    # their legacy fallback behavior for wrong methods and unknown endpoints.
+    api_fallback = app.router.routes.pop()   # /api/{path:path}
+    fallback = app.router.routes.pop()       # /v1/{path:path}
 
     @app.get('/v1/models', response_model=None, openapi_extra=_operation('models'))
     async def models(request: Request) -> Response:
+        if request.headers.get('anthropic-version'):
+            # Anthropic-dialect model list; OpenAI shape is unchanged otherwise.
+            diagnostic = request.scope.get('mvibe.diagnostic') or RequestDiagnostic()
+            return request.app.state.stream_owner.response(
+                make_acquire(request, 'models', b'', diagnostic), diagnostic,
+                compat.BufferJson(compat.anthropic_models_list, 'anthropic'))
         return await proxy('models', request)
 
     @app.post('/v1/chat/completions', response_model=None, openapi_extra=_operation('chat'))
@@ -205,7 +310,67 @@ def create_app(
     async def embeddings(request: Request) -> Response:
         return await proxy('embeddings', request)
 
+    @app.post('/v1/messages', response_model=None, openapi_extra={
+        'summary': 'Anthropic-compatible messages (translated to chat/completions)',
+        'responses': {'200': {'description': 'Anthropic message object, or SSE event stream when stream=true.'}}})
+    async def anthropic_messages(request: Request) -> Response:
+        return await adapter_post('anthropic', target='chat/completions',
+            translate_request=compat.anthropic_messages_request,
+            make_transform=lambda upstream_body, _adapter: (
+                compat.AnthropicStreamTranslator(upstream_body['model']) if upstream_body.get('stream')
+                else compat.BufferJson(compat.anthropic_messages_response, 'anthropic')))(request)
+
+    _OLLAMA_DOC = {'responses': {'200': {'description': 'Ollama-shaped response (NDJSON stream when stream=true).'},
+                                  '400': {'description': 'Invalid adapter body.'},
+                                  'default': {'description': 'Upstream statuses preserved; error bodies are Ollama-shaped with safe hints.'}}}
+
+    @app.get('/api/version', response_model=None, openapi_extra={'summary': 'Ollama-compatible version', **_OLLAMA_DOC})
+    async def ollama_version_route() -> Response:
+        return JSONResponse(compat.ollama_version())
+
+    @app.get('/api/tags', response_model=None, openapi_extra={'summary': 'Ollama-compatible model list', **_OLLAMA_DOC})
+    async def ollama_tags_route(request: Request) -> Response:
+        diagnostic = request.scope.get('mvibe.diagnostic') or RequestDiagnostic()
+        return request.app.state.stream_owner.response(
+            make_acquire(request, 'models', b'', diagnostic), diagnostic,
+            compat.BufferJson(compat.ollama_tags, 'ollama'))
+
+    app.post('/api/chat', response_model=None, openapi_extra={'summary': 'Ollama-compatible chat', **_OLLAMA_DOC})(
+        adapter_post('ollama', target='chat/completions',
+            translate_request=compat.ollama_chat_request,
+            make_transform=lambda upstream_body, _adapter: (
+                compat.OllamaStreamTranslator(upstream_body['model'], kind='chat') if upstream_body.get('stream')
+                else compat.BufferJson(lambda obj: compat.ollama_chat_response(obj, upstream_body['model']), 'ollama'))))
+
+    app.post('/api/generate', response_model=None, openapi_extra={'summary': 'Ollama-compatible generate', **_OLLAMA_DOC})(
+        adapter_post('ollama', target='chat/completions',
+            translate_request=compat.ollama_generate_request,
+            make_transform=lambda upstream_body, _adapter: (
+                compat.OllamaStreamTranslator(upstream_body['model'], kind='generate') if upstream_body.get('stream')
+                else compat.BufferJson(lambda obj: compat.ollama_generate_response(obj, upstream_body['model']), 'ollama'))))
+
+    async def show_inspect(upstream, adapter_body):
+        raw = await upstream.aread()
+        try:
+            result = compat.ollama_show(json.loads(raw), adapter_body['model'])
+        except compat.CompatError as error:
+            _, payload = compat.adapter_error('ollama', 404, str(error))
+            return JSONResponse(payload, status_code=404)
+        return JSONResponse(result)
+
+    app.post('/api/show', response_model=None, openapi_extra={'summary': 'Ollama-compatible model info', **_OLLAMA_DOC})(
+        adapter_post('ollama', target='models',
+            translate_request=lambda body: {'model': compat.require_str(body, 'model')},
+            make_transform=lambda _upstream, _adapter: None,
+            inspect=show_inspect))
+
+    app.post('/api/embed', response_model=None, openapi_extra={'summary': 'Ollama-compatible embeddings', **_OLLAMA_DOC})(
+        adapter_post('ollama', target='embeddings',
+            translate_request=compat.ollama_embed_request,
+            make_transform=lambda _upstream, _adapter: compat.BufferJson(compat.ollama_embed_response, 'ollama')))
+
     app.router.routes.append(fallback)
+    app.router.routes.append(api_fallback)
 
     return app
 
@@ -223,22 +388,56 @@ def _port(value: str) -> int:
     return port
 
 
+def _host(value: str) -> str:
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        pass
+    if re.fullmatch(r'[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?', value):
+        return value
+    raise argparse.ArgumentTypeError('Host must be an IP address or a hostname')
+
+
+def _is_loopback(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == 'localhost'
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description='Local OpenAI-compatible proxy using existing Vibe authentication by default')
     parser.add_argument('--auth-source', choices=['oidc', 'existing-vibe'], default='existing-vibe', help='Read existing native Vibe credentials (default), or explicitly select experimental OIDC')
+    parser.add_argument('--host', type=_host, default='127.0.0.1', help='Bind address (default: 127.0.0.1 loopback; 0.0.0.0 exposes all interfaces and prints a warning, since the proxy has no caller authentication)')
     parser.add_argument('--port', type=_port, default=8765)
     parser.add_argument('--login', action='store_true', help='Validate existing native Vibe credentials before serving; with --auth-source oidc, sign in again')
     parser.add_argument('--log', action='store_true', help='Emit safe structured request diagnostics to stdout (default: off)')
+    parser.add_argument('--observe', action='store_true', help='Export allowlisted diagnostics to an OpenObserve-style backend configured by MVIBE_OBSERVE_* env vars (default: off)')
     args = parser.parse_args(argv)
     if args.log:
         configure_stdout()
     else:
         disable_stdout()
+    if not _is_loopback(args.host):
+        print(f'WARNING: binding to {args.host} exposes the proxy beyond loopback. '
+              'The proxy has no caller authentication; anyone who can reach the port '
+              'can use the selected Vibe credentials.', file=sys.stderr)
+    observe_config = None
+    try:
+        observe_config = ObserveConfig.from_env()
+    except ObserveConfigError as error:
+        if args.observe:
+            # Explicit request with incomplete configuration fails fast.
+            parser.exit(2, f'error: {error}\n')
+        print(f'WARNING: {error}', file=sys.stderr)
+    if args.observe and observe_config is None:
+        parser.exit(2, 'error: --observe requires MVIBE_OBSERVE_URL, MVIBE_OBSERVE_USER and MVIBE_OBSERVE_TOKEN\n')
     if args.auth_source == 'oidc':
-        selected_app = create_app(auth_factory=_oidc_auth_factory, force_login=args.login)
+        selected_app = create_app(auth_factory=_oidc_auth_factory, force_login=args.login,
+                                  observe_config=observe_config)
     else:
-        selected_app = create_app(force_login=args.login)
-    uvicorn.run(selected_app, host='127.0.0.1', port=args.port, access_log=False)
+        selected_app = create_app(force_login=args.login, observe_config=observe_config)
+    uvicorn.run(selected_app, host=args.host, port=args.port, access_log=False)
 
 
 if __name__ == '__main__':

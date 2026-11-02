@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import replace
 from importlib.metadata import version
 import json
@@ -25,6 +25,20 @@ from mvibe_auth._bridge_protocol import (
 
 MAX_ACTIVE_REQUESTS = 32
 _SETUP_MESSAGE = 'Vibe OIDC setup failed; check the installed mvibe-auth runtime and OIDC configuration.'
+
+
+def _trace_span(name: str, attributes: dict[str, str] | None = None):
+    """Optional OTel span context; inert when the optional extra is absent.
+
+    Without opentelemetry installed this is a nullcontext, and without a
+    configured provider the span is non-recording: no invented trace IDs.
+    """
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        return nullcontext()
+    span = trace.get_tracer('mvibe.auth').start_span(name, attributes=attributes)
+    return trace.use_span(span, end_on_exit=True)
 
 
 def create_session() -> AuthSession:
@@ -127,26 +141,27 @@ async def serve(
         raise ProtocolError('unknown_method')
 
     async def dispatch(request: Request) -> None:
-        try:
-            payload = await result(request)
-            await emit(Success(version=1, id=request.id, ok=True,
-                result=RESULT_MODELS[request.method].model_validate(payload)), suppressible=True)
-        except asyncio.CancelledError:
-            if request.id not in suppressed:
-                error = AuthFailure('cancelled')
-                await failure(request.id, error.code, error.message, suppressible=True)
-        except AuthError as error:
-            safe = error.failure
-            # Construction/configuration failures need actionable setup guidance.
-            message = safe.message if session is not None else _SETUP_MESSAGE
-            if isinstance(session, ExistingVibeSession) and safe.code == 'missing':
-                message = NATIVE_SIGN_IN_MESSAGE
-            await failure(request.id, safe.code, message, safe.retryable, suppressible=True)
-        except Exception:
-            await failure(request.id, 'transient', _SETUP_MESSAGE if session is None else 'Vibe authentication is temporarily unavailable; retry.', True, suppressible=True)
-        finally:
-            active.pop(request.id, None)
-            responding.discard(request.id)
+        with _trace_span('bridge.call', {'bridge.method': request.method}):
+            try:
+                payload = await result(request)
+                await emit(Success(version=1, id=request.id, ok=True,
+                    result=RESULT_MODELS[request.method].model_validate(payload)), suppressible=True)
+            except asyncio.CancelledError:
+                if request.id not in suppressed:
+                    error = AuthFailure('cancelled')
+                    await failure(request.id, error.code, error.message, suppressible=True)
+            except AuthError as error:
+                safe = error.failure
+                # Construction/configuration failures need actionable setup guidance.
+                message = safe.message if session is not None else _SETUP_MESSAGE
+                if isinstance(session, ExistingVibeSession) and safe.code == 'missing':
+                    message = NATIVE_SIGN_IN_MESSAGE
+                await failure(request.id, safe.code, message, safe.retryable, suppressible=True)
+            except Exception:
+                await failure(request.id, 'transient', _SETUP_MESSAGE if session is None else 'Vibe authentication is temporarily unavailable; retry.', True, suppressible=True)
+            finally:
+                active.pop(request.id, None)
+                responding.discard(request.id)
 
     async def close() -> None:
         tasks = tuple(active.items())

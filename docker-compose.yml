@@ -1,0 +1,57 @@
+# Local Vibe proxy in a container. The port is published on 127.0.0.1 only;
+# the proxy has no caller authentication, so do not publish 0.0.0.0 without
+# understanding that anyone who can reach the port can use the Vibe credentials.
+#
+# Credential mounts (read-only), resolved on the Docker host:
+#   MVIBE_AUTH_DATA     encrypted OIDC store directory containing
+#                       credentials.v1.enc
+#                       (Linux/macOS: ~/.local/share/mvibe-auth,
+#                        Windows: %LOCALAPPDATA%\mvibe-auth)
+#   MVIBE_KEYRING_DATA  file-based keyring directory containing
+#                       python_keyring/keyring_pass.cfg (Linux default:
+#                       ~/.local/share/python_keyring; on this Windows
+#                       workstation exported via WSL to
+#                       /mnt/c/Users/mariu/AppData/Local/Python Keyring).
+#                       Windows Credential Manager is not a file. Export once
+#                       without printing the secret (run on the Windows host):
+#                         uv run --locked --extra docker -- python -c "import keyring; v = keyring.get_password('ai.mistral.vibe', 'MISTRAL_API_KEY'); import keyring.core; keyring.set_keyring(keyring.core.load_keyring('keyrings.alt.file.PlaintextKeyring')); keyring.set_password('ai.mistral.vibe', 'MISTRAL_API_KEY', v); print('exported' if v else 'no native credential found')"
+#                       For OIDC also export service 'ai.mistral.vibe.oidc',
+#                       entry 'mvibe-auth:v1:fernet-key'. Entries are stored
+#                       escaped + base64 in keyring_pass.cfg: always generate
+#                       the file through keyring.set_password, never hand-edit.
+#                       Alternatively sign in inside the container (see
+#                       docs/proxy-guide.md).
+#
+# Examples:
+#   docker compose up --build                 # existing-vibe auth (default)
+#   docker compose run --rm --service-ports proxy --auth-source oidc --login
+#   MVIBE_PROXY_PORT=8799 docker compose up    # different host port
+name: mvibe-proxy
+
+services:
+  proxy:
+    build: .
+    image: mvibe-proxy:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MVIBE_PROXY_PORT:-8765}:8765"
+    volumes:
+      - "${MVIBE_AUTH_DATA:-${HOME}/.local/share/mvibe-auth}:/data/mvibe-auth:ro"
+      - "${MVIBE_KEYRING_DATA:-${HOME}/.local/share/python_keyring}:/data/python_keyring:ro"
+      # This workstation (Docker in WSL Debian), for example:
+      #   MVIBE_AUTH_DATA=/mnt/c/Users/mariu/AppData/Local/mvibe-auth
+      #   MVIBE_KEYRING_DATA=/mnt/c/Users/mariu/AppData/Local/Python Keyring
+    environment:
+      XDG_DATA_HOME: /data
+      # keyring core has no file backend in a container; the docker extra
+      # (keyrings.alt) reads the mounted keyring_pass.cfg instead.
+      PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+    # Same default auth flow as the tested OpenCode provider: existing-vibe.
+    command: ["--host", "0.0.0.0", "--port", "8765"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

@@ -29,6 +29,7 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
     const started = performance.now();
     const diagnostic = {
       event: "provider_request", request_id: randomUUID(), endpoint: "unsupported",
+      model: null as string | null,
       phase: "routing", outcome: "failed", status: null as number | null,
       hint: "Use the configured models, chat/completions or embeddings endpoint.",
     };
@@ -72,6 +73,8 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
           const payload: unknown = JSON.parse(serialized);
           if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
             const object = payload as Record<string, unknown>;
+            // Model id only; message content is never part of diagnostics.
+            if (typeof object.model === "string") diagnostic.model = object.model;
             if (object.metadata === undefined || object.metadata === null || typeof object.metadata === "object" && !Array.isArray(object.metadata)) {
               if (object.metadata) delete (object.metadata as Record<string, unknown>).user_plan;
               object.metadata = { ...(object.metadata as Record<string, unknown> | undefined), ...snapshot.metadata };

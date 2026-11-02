@@ -1,5 +1,34 @@
 # Live verification evidence
 
+## Proxy adapter dialects + embeddings live smoke, 2026-11-02
+
+The proxy (default `existing-vibe` shared session, loopback `127.0.0.1:8765`) was
+exercised on 2026-11-02 with the reusable `smoketests/smoke.ps1` (curl.exe) and
+`smoketests/smoke.sh` (bash/curl) scripts — both 12/12 PASS, exit 0:
+
+| Check | Observed result |
+| --- | --- |
+| `GET /health` | PASS: HTTP 200, `{"status":"ok"}` |
+| `GET /v1/models` (OpenAI shape) | PASS: HTTP 200, 70 models incl. `mistral-embed`, `mistral-embed-2312`, `codestral-embed`, `codestral-embed-2505` |
+| `POST /v1/chat/completions` | PASS: HTTP 200, `ministral-8b-latest`, public prompt answered `OK`, `finish_reason: stop` |
+| same with `stream=true` | PASS: HTTP 200, SSE data frames ending `data: [DONE]`, assembled content `OK` |
+| `POST /v1/embeddings` | PASS: HTTP 200, `mistral-embed`, input `hello`, one 1024-dimensional vector, `prompt_tokens: 4` |
+| `POST /v1/messages` (`anthropic-version: 2023-06-01`) | PASS: HTTP 200, `type: message`, `stop_reason: end_turn`, content `OK` |
+| same with `stream=true` | PASS: HTTP 200, SSE events `message_start → content_block_start → content_block_delta → content_block_stop → message_delta → message_stop` |
+| `GET /v1/models` with `anthropic-version` header | PASS: HTTP 200, Anthropic paginated shape, 64 models, `has_more: false` |
+| `GET /api/version`, `GET /api/tags` (Ollama) | PASS: HTTP 200, `0.0.0-mvibe`; 64 models |
+| `POST /api/chat` (Ollama) | PASS: HTTP 200, `done: true`, message `OK` |
+| `GET /api/nope` | PASS: HTTP 404, adapter-shaped `{"error":"Unsupported endpoint"}` |
+
+This verifies live-verification scenario 8 (**embeddings**) for the `proxy`
+consumer only; the direct-provider embedding interface remains UNVERIFIED (a
+proxy request cannot stand in for direct-provider evidence). It supersedes the
+"embeddings were not tested" note in the 2026-10-31 proxy smoke for the proxy
+route. Still unverified: native/MCP tool exchange, token refresh, cancellation
+timing, search execution, OpenCode 2.2.6 (tested host: 2.2.5). Only public test
+prompts ("Reply with exactly OK.", "hello") and model IDs were used; no
+credentials, tokens or private payloads are recorded.
+
 ## Existing Vibe authentication accepted, 2026-11-01
 
 The user confirmed that OpenCode after the existing-login integration at

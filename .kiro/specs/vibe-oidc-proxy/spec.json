@@ -1,7 +1,7 @@
 {
   "feature_name": "vibe-oidc-proxy",
   "created_at": "2026-10-31T07:03:56Z",
-  "updated_at": "2026-10-31T14:52:40Z",
+  "updated_at": "2026-11-02T19:02:38Z",
   "language": "en",
   "phase": "implementation-complete",
   "approvals": {
@@ -28,8 +28,11 @@
     "validation_report": "validation.md",
     "offline": "passed",
     "local_startup": "passed",
-    "live": "proxy and direct-provider OIDC/models/chat CLI smoke passed; native/MCP tool execution, refresh and embeddings unverified",
+    "live": "proxy and direct-provider OIDC/models/chat CLI smoke passed; embeddings through the proxy verified 2026-11-02 (mistral-embed 1024-dim via POST /v1/embeddings, smoketests/ 12/12 PASS, docs/live-results.md); native/MCP tool execution, refresh and OpenCode 2.2.6 unverified",
     "tested_opencode": "2.2.5",
-    "reported_opencode": "2.2.6 (unverified)"
+    "reported_opencode": "2.2.6 (unverified)",
+    "post_completion_amendments": [
+      "2026-11-02 host-docker-amendment.md: --host bind flag (default 127.0.0.1, 0.0.0.0 with warning), start_proxy.sh/.ps1, Dockerfile + docker-compose.yml with read-only credential mounts, host/openapi regression tests; live smoke re-passed with existing-vibe"
+    ]
   }
 }

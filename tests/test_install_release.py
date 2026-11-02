@@ -12,13 +12,13 @@ def test_release_artifact_contract(tmp_path):
     spec = importlib.util.spec_from_file_location("build_release", ROOT / "scripts/build_release.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    stage = tmp_path / "mvibe-0.1.0"
+    stage = tmp_path / "mvibe-1.0.0"
     stage.mkdir()
-    for name in ["release.json", "uv.lock", "pyproject.toml", "wheels/mvibe_auth-0.1.0-py3-none-any.whl",
+    for name in ["release.json", "uv.lock", "pyproject.toml", "wheels/mvibe_auth-1.0.0-py3-none-any.whl",
                  "packages/opencode-vibe-oidc/dist/index.js", "packages/opencode-vibe-oidc/scripts/install.js"]:
         path = stage / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"version": "0.1.0"}) if name == "release.json" else "artifact")
+        path.write_text(json.dumps({"version": "1.0.0"}) if name == "release.json" else "artifact")
     archive = module.archive_release(stage, tmp_path)
     with zipfile.ZipFile(archive) as bundle:
         names = bundle.namelist()
@@ -27,7 +27,7 @@ def test_release_artifact_contract(tmp_path):
         assert not any("node_modules" in name or name.endswith(".ts") for name in names)
     checksums = [line.split() for line in (tmp_path / "SHA256SUMS").read_text().splitlines()]
     assert checksums[0] == [hashlib.sha256(archive.read_bytes()).hexdigest(), archive.name]
-    wheel = tmp_path / "mvibe_auth-0.1.0-py3-none-any.whl"
+    wheel = tmp_path / "mvibe_auth-1.0.0-py3-none-any.whl"
     assert checksums[1] == [hashlib.sha256(wheel.read_bytes()).hexdigest(), wheel.name]
 
 
@@ -40,7 +40,7 @@ def test_builder_stages_wheel_and_bundles_without_shipping_build_inputs(tmp_path
     def prepared_tool(command, cwd):
         calls.append(command)
         if command[1:3] == ["build", "--wheel"]:
-            (Path(command[-1]) / "mvibe_auth-0.1.0-py3-none-any.whl").write_bytes(b"wheel fixture")
+            (Path(command[-1]) / "mvibe_auth-1.0.0-py3-none-any.whl").write_bytes(b"wheel fixture")
         elif command[0] == "native-bun":
             Path(command[-1]).write_text("export const bundled = true;")
         elif command[1] == "lock":
@@ -52,13 +52,13 @@ def test_builder_stages_wheel_and_bundles_without_shipping_build_inputs(tmp_path
     archive = module.build(tmp_path, "native-uv", "native-bun")
     with zipfile.ZipFile(archive) as bundle:
         names = bundle.namelist()
-        prefix = "mvibe-0.1.0/"
+        prefix = "mvibe-1.0.0/"
         manifest = json.loads(bundle.read(prefix + "release.json"))
         assert prefix + manifest["wheel"] in names
         assert not any("node_modules" in name or "/src/" in name or name.endswith(".ts") for name in names)
         runtime = bundle.read(prefix + "pyproject.toml").decode()
-        assert 'mvibe-auth[proxy]==0.1.0' in runtime
-        assert 'wheels/mvibe_auth-0.1.0-py3-none-any.whl' in runtime
+        assert 'mvibe-auth[proxy]==1.0.0' in runtime
+        assert 'wheels/mvibe_auth-1.0.0-py3-none-any.whl' in runtime
         assert '[build-system]' not in runtime
         wrapper = bundle.read(prefix + "install.sh").decode()
         assert 'scripts/install.js' in wrapper

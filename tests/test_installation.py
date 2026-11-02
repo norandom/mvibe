@@ -67,7 +67,7 @@ assert importlib.util.find_spec('fastapi') is None
 assert importlib.util.find_spec('uvicorn') is None
 import mvibe_auth, mvibe_proxy
 assert not pathlib.Path(mvibe_auth.__file__).is_relative_to(pathlib.Path(sys.argv[1]))
-assert importlib.metadata.version('mvibe-auth') == '0.1.0'
+assert importlib.metadata.version('mvibe-auth') == '1.0.0'
 """
     run([str(runtime), "-I", "-c", probe, str(source)], cwd=tmp_path)
     # Wait for each reply before EOF: EOF deliberately cancels pending dispatch.
@@ -94,7 +94,7 @@ assert importlib.metadata.version('mvibe-auth') == '0.1.0'
     hello = next(reply for reply in replies if reply["id"] == "hello")
     assert hello["ok"], hello
     assert hello["result"]["protocol"] == 1
-    assert hello["result"]["api_version"] == "0.1.0"
+    assert hello["result"]["api_version"] == "1.0.0"
     mismatch = next(reply for reply in replies if not reply["ok"])
     assert mismatch["error"]["code"] == "unsupported_version"
     assert "install compatible" in mismatch["error"]["message"].lower()

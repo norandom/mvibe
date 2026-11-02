@@ -148,6 +148,42 @@ def test_cli_selects_native_by_default_and_oidc_only_explicitly(monkeypatch, sou
     assert served[0][1]['host'] == '127.0.0.1'
 
 
+@pytest.mark.parametrize(('host', 'expected', 'warns'), [
+    (None, '127.0.0.1', False),
+    ('127.0.0.1', '127.0.0.1', False),
+    ('localhost', 'localhost', False),
+    ('::1', '::1', False),
+    ('0.0.0.0', '0.0.0.0', True),
+])
+def test_cli_host_binds_requested_address_and_warns_off_loopback(monkeypatch, capsys, host, expected, warns):
+    served = []
+    monkeypatch.setattr(proxy, 'create_app', lambda **kwargs: 'app')
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *args, **kwargs: served.append((args, kwargs)))
+    proxy.main([] if host is None else ['--host', host])
+    assert served[0][1]['host'] == expected
+    assert ('WARNING' in capsys.readouterr().err) is warns
+
+
+def test_cli_rejects_invalid_host(monkeypatch):
+    monkeypatch.setattr(proxy, 'create_app', lambda **kwargs: 'app')
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *args, **kwargs: None)
+    with pytest.raises(SystemExit):
+        proxy.main(['--host', 'not a host'])
+
+
+@pytest.mark.anyio
+async def test_swagger_and_openapi_document_the_supported_operations():
+    app, session, sent, _ = harness()
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            docs = await client.get('/docs')
+            schema = await client.get('/openapi.json')
+    assert docs.status_code == 200 and 'swagger' in docs.text.lower()
+    assert schema.status_code == 200
+    assert {'/health', '/v1/models', '/v1/chat/completions', '/v1/embeddings'} <= set(schema.json()['paths'])
+    assert not sent and session.events == ['status', 'close']
+
+
 @pytest.mark.parametrize('setting,enabled', [(None, True), ('false', False), ('true', True)])
 def test_explicit_oidc_factory_preserves_enablement_override(monkeypatch, setting, enabled):
     if setting is None:

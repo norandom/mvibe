@@ -41,6 +41,77 @@ renew it. Use `--port 8766` for another port and update client URLs accordingly.
 To deliberately test the separate ID-token route, pass `--auth-source oidc`.
 Only that mode uses the experimental browser login and encrypted OIDC store.
 
+### Start scripts and bind address
+
+`./start_proxy.sh` (Bash/WSL) and `./start_proxy.ps1` (PowerShell) wrap the
+command above in the locked project environment and forward extra arguments:
+
+```powershell
+./start_proxy.ps1                 # 127.0.0.1:8765
+./start_proxy.ps1 -Host 0.0.0.0   # all interfaces; prints a warning
+./start_proxy.ps1 --port 8799 --log
+```
+
+```bash
+./start_proxy.sh                  # 127.0.0.1:8765
+./start_proxy.sh --host 0.0.0.0   # all interfaces; prints a warning
+./start_proxy.sh --port 8799 --log
+```
+
+`--host` defaults to `127.0.0.1` (loopback). Binding `0.0.0.0` (or any
+non-loopback address) works but prints a warning, because the proxy has no
+caller authentication: anyone who can reach the port can use your Vibe
+credential. Prefer loopback, or front the port with your own authenticated
+proxy. The same flag exists on `proxy.py` itself (`python proxy.py --host
+0.0.0.0`).
+
+### Run in Docker
+
+`Dockerfile` + `docker-compose.yml` run only the proxy endpoint. Compose
+publishes `127.0.0.1:${MVIBE_PROXY_PORT:-8765}:8765` (loopback on the host;
+inside the container the proxy binds `0.0.0.0`, which port publishing requires)
+and mounts the Vibe credentials read-only:
+
+```bash
+# On this workstation the Docker daemon runs in WSL Debian, so run compose there:
+wsl -d Debian bash -c 'cd /mnt/d/Source/mvibe && docker compose up --build'
+# The mount paths resolve in the WSL filesystem; point them at the Windows
+# profile via /mnt/c, e.g.:
+wsl -d Debian bash -c 'cd /mnt/d/Source/mvibe && MVIBE_AUTH_DATA=/mnt/c/Users/mariu/AppData/Local/mvibe-auth MVIBE_KEYRING_DATA=/home/mc/.local/share/python_keyring docker compose up --build'
+# plain Linux/macOS host:
+docker compose up --build
+# override the credential locations on the Docker host if needed:
+#   MVIBE_AUTH_DATA     dir with credentials.v1.enc  (default ~/.local/share/mvibe-auth; Windows host via WSL: /mnt/c/Users/<you>/AppData/Local/mvibe-auth)
+#   MVIBE_KEYRING_DATA  dir with python_keyring/keyring_pass.cfg
+#                       (default ~/.local/share/python_keyring; Windows host via WSL: /mnt/c/Users/<you>/AppData/Local/Python Keyring)
+# explicit OIDC login inside the container (publishes the callback port too):
+docker compose run --rm --service-ports proxy --auth-source oidc --login
+```
+
+Windows Credential Manager is not a file, so export the native Vibe entry once
+into the file keyring (never prints the secret; run on the Windows host with
+the `docker` extra installed):
+
+```powershell
+uv run --locked --extra docker -- python -c "import keyring; v = keyring.get_password('ai.mistral.vibe', 'MISTRAL_API_KEY'); import keyring.core; keyring.set_keyring(keyring.core.load_keyring('keyrings.alt.file.PlaintextKeyring')); keyring.set_password('ai.mistral.vibe', 'MISTRAL_API_KEY', v); print('exported' if v else 'no native credential found')"
+# for --auth-source oidc also export: service 'ai.mistral.vibe.oidc', entry 'mvibe-auth:v1:fernet-key'
+```
+
+`keyring_pass.cfg` stores entries escaped and base64-encoded; always generate
+it through `keyring.set_password` as above, never hand-edit it. Inside the
+container the proxy reads it via `PYTHON_KEYRING_BACKEND=keyrings.alt.file.
+PlaintextKeyring` (the `docker` extra) with `XDG_DATA_HOME=/data`, because a
+container has no OS keyring/D-Bus.
+
+The container uses the same default `existing-vibe` auth flow as the tested
+OpenCode provider. It reads the keyring through a file backend
+(`PYTHON_KEYRING_BACKEND=keyrings.alt.file.PlaintextKeyring`, installed via the
+optional `docker` extra), because a container has no OS keyring/D-Bus. Windows
+Credential Manager is not a file: export the two entries once into the mounted
+`keyring_pass.cfg`, or sign in inside the container as shown above. The mounts
+are read-only, so in-container OIDC refresh cannot persist a renewed token;
+the default existing-vibe flow leaves renewal to normal Vibe.
+
 ## 3. Check health, models and a chat response with curl
 
 Open terminal B. Use `curl.exe` to avoid the PowerShell curl alias:
@@ -131,6 +202,37 @@ Require an assistant answer from OpenCode and the corresponding chat request in
 terminal A. A visible model list alone does not prove inference. Stop on failure;
 repeated sign-ins will not resolve an endpoint or model mismatch.
 
+## Ollama- and Anthropic-compatible endpoints
+
+The proxy also speaks two adapter dialects, translated to the same upstream
+passthrough with the same auth flow (default existing-vibe) and diagnostics:
+
+| Dialect | Endpoints |
+| --- | --- |
+| Ollama | `GET /api/version`, `GET /api/tags`, `POST /api/chat`, `POST /api/generate`, `POST /api/show`, `POST /api/embed` (streaming = NDJSON `done` frames) |
+| Anthropic | `POST /v1/messages` (SSE events when `stream=true`), `GET /v1/models` returns the Anthropic paginated shape when an `anthropic-version` header is sent |
+
+Unknown `/api/*` paths return an Ollama-shaped 404; adapter error bodies never
+contain upstream payloads. Live smoke (terminal B, proxy running in terminal A):
+
+```powershell
+curl.exe -s http://127.0.0.1:8765/api/version
+curl.exe -s http://127.0.0.1:8765/api/tags
+$body = @{ model = 'mistral-large-4'; messages = @(@{ role = 'user'; content = 'Reply with exactly OK.' }); stream = $false } | ConvertTo-Json -Depth 6
+curl.exe -s http://127.0.0.1:8765/api/chat -H 'Content-Type: application/json' --data-binary $body
+$body = @{ model = 'mistral-large-4'; prompt = 'Reply with exactly OK.' } | ConvertTo-Json -Depth 6
+curl.exe -s http://127.0.0.1:8765/api/generate -H 'Content-Type: application/json' --data-binary $body
+$body = @{ model = 'mistral-large-4'; max_tokens = 16; messages = @(@{ role = 'user'; content = 'Reply with exactly OK.' }) } | ConvertTo-Json -Depth 6
+curl.exe -s -N http://127.0.0.1:8765/v1/messages -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' --data-binary $body
+```
+
+Streaming calls return NDJSON (Ollama) or `event:`/`data:` SSE frames
+(Anthropic). Both shapes are pinned by offline contract tests in
+`tests/test_compat.py`; see `.kiro/specs/proxy-endpoint-compatibility/`.
+Reusable live smoke scripts covering all three dialects plus embeddings:
+`smoketests/smoke.ps1` (Windows) and `smoketests/smoke.sh` (bash); see
+`smoketests/README.md`.
+
 ## What about searches?
 
 The proxy supports models, chat completions (including streaming and tool-call
@@ -162,6 +264,8 @@ encrypted bundle in a file and only a short key in the OS keyring. See
 embeddings and tool execution remain unverified. The direct provider was
 subsequently verified separately as described above.
 
-The server binds to loopback and has no local caller authentication. Any local
-process that can reach the port can use it. Keep tokens, callback URLs and raw
-credential exports out of logs, issues and test evidence.
+By default the server binds to loopback (`--host 127.0.0.1`) and has no local
+caller authentication. Any local process that can reach the port can use it;
+`--host 0.0.0.0` extends this to the network and prints a warning. Keep
+tokens, callback URLs and raw credential exports out of logs, issues and test
+evidence.

@@ -14,13 +14,14 @@ test.each([false, true])("diagnostics opt in %s: safe stderr status, untouched b
   const response = new Response("secret-upstream-body", { status: 422, headers: { "x-request-id": "secret-upstream-id" } });
   const fetch = createProviderFetch(bridge, audience, async input => { sends++; expect((input as Request).bodyUsed).toBe(false); return response; }, enabled ? { diagnostics: true } : undefined);
   try {
-    const result = await fetch(url, { method: "POST", body: '{"model":"secret-model","messages":"secret-prompt"}', headers: { "x-request-id": "secret-caller-id" } });
+    const result = await fetch(url, { method: "POST", body: '{"model":"mistral-large-4","messages":"secret-prompt"}', headers: { "x-request-id": "secret-caller-id" } });
     expect(result.body).toBe(response.body); expect(response.bodyUsed).toBe(false); expect(sends).toBe(1);
     expect(stdout).not.toHaveBeenCalled(); expect(stderr.mock.calls).toHaveLength(enabled ? 1 : 0);
     if (enabled) {
       const row = JSON.parse(stderr.mock.calls[0]![0]);
       expect(row).toMatchObject({ event: "provider_request", phase: "response_headers", outcome: "upstream_error", status: 422, endpoint: "chat/completions" });
       expect(row.request_id).toMatch(/^[a-f0-9-]{36}$/); expect(row.elapsed_ms).toBeGreaterThanOrEqual(0);
+      expect(row.model).toBe("mistral-large-4"); // allowlisted: model id only, never message content
       expect(row.hint).toContain("reasoning"); expect(row.hint).toContain("schema");
       expect(JSON.stringify(row)).not.toMatch(/secret|private|example/);
     }
@@ -61,7 +62,7 @@ test.each(["401", "resolve"])("existing Vibe login gives secret-safe native sign
   let sends = 0;
   const fetch = createProviderFetch(source, audience, async () => { sends++; return response; }, { diagnostics: true, authSource: "existing-vibe" });
   try {
-    const result = fetch(url, { method: "POST", body: '{"model":"secret-model","messages":"secret-prompt"}', headers: { "x-request-id": "secret-caller-header" } });
+    const result = fetch(url, { method: "POST", body: '{"model":"mistral-large-4","messages":"secret-prompt"}', headers: { "x-request-id": "secret-caller-header" } });
     if (failure === "resolve") await expect(result).rejects.toBeInstanceOf(BridgeError);
     else {
       const returned = await result;
@@ -76,6 +77,19 @@ test.each(["401", "resolve"])("existing Vibe login gives secret-safe native sign
     expect(JSON.stringify(row)).not.toMatch(/secret|private|example|OIDC/);
     expect(Object.hasOwn(row, "headers")).toBe(false); expect(Object.hasOwn(row, "body")).toBe(false);
   } finally { stderr.mockRestore(); stdout.mockRestore(); }
+});
+
+test("parity with proxy event schema: request_id present, model null off chat, no body-derived fields", async () => {
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const fetch = createProviderFetch(bridge, audience, async () => new Response(null, { status: 200 }), { diagnostics: true });
+    await fetch(audience + "/v1/models");
+    const row = JSON.parse(stderr.mock.calls[0]![0]);
+    expect(row.event).toBe("provider_request");
+    expect(row.request_id).toMatch(/^[a-f0-9-]{36}$/);
+    expect(row.model).toBe(null);
+    expect(Object.keys(row).sort()).toEqual(["elapsed_ms", "endpoint", "event", "hint", "model", "outcome", "phase", "request_id", "status"]);
+  } finally { stderr.mockRestore(); }
 });
 
 test.each(["resolve", "transport", "policy", "cancelled"])("safe failure diagnostics: %s", async failure => {

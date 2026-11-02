@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mvibe-auth"
-version = "0.1.0"
+version = "1.0.0"
 description = "Shared Vibe OIDC authentication helpers"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -28,6 +28,12 @@ dependencies = [
 
 [project.optional-dependencies]
 proxy = ["fastapi", "uvicorn", "structlog==25.5.0"]
+# Container-only: keyring core has no file backend, so the Docker image reads
+# the mounted credential keyring file through keyrings.alt (PYTHON_KEYRING_BACKEND).
+docker = ["keyrings.alt>=5.0"]
+# Optional observability export (proxy-observability spec): OTLP/HTTP spans and
+# metrics, e.g. to OpenObserve via OTEL_EXPORTER_OTLP_* env. Inert without it.
+otel = ["opentelemetry-sdk==1.45.1", "opentelemetry-exporter-otlp-proto-http==1.45.1"]
 
 [dependency-groups]
 dev = [

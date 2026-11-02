@@ -15,7 +15,7 @@ function fixture() {
     const requests: any[] = [];
     const stdin = new Writable({ write(data, _encoding, done) {
       const request = JSON.parse(data.toString()); requests.push(request);
-      if (request.method === "hello" && autoHello) reply(request.id, { protocol: 1, api_version: "0.1.0", audience });
+      if (request.method === "hello" && autoHello) reply(request.id, { protocol: 1, api_version: "1.0.0", audience });
       done();
     } });
     function raw(value: unknown) { stdout.write(Buffer.from(JSON.stringify(value) + "\n")); }
@@ -58,7 +58,7 @@ for (const invalid of ["wrong-version", "wrong-api", "wrong-audience", "unknown-
   const p = f.bridge.request("status", {}).catch(e => e); await flush();
   const c = f.children[0]!, id = c.requests.at(-1).id;
   if (invalid === "wrong-version") c.raw({ version: 2, id, ok: true, result: {} });
-  else if (invalid === "wrong-api" || invalid === "wrong-audience") c.reply(id, { protocol: 1, api_version: invalid === "wrong-api" ? "4.0.0" : "0.1.0", audience: invalid === "wrong-audience" ? "https://wrong.test" : audience });
+  else if (invalid === "wrong-api" || invalid === "wrong-audience") c.reply(id, { protocol: 1, api_version: invalid === "wrong-api" ? "4.0.0" : "1.0.0", audience: invalid === "wrong-audience" ? "https://wrong.test" : audience });
   else if (invalid === "unknown-id") c.reply("unknown", {});
   else if (invalid === "bad-result") c.reply(id, { headers: { authorization: "synthetic-secret" } });
   else if (invalid === "malformed") c.stdout.write("{synthetic-secret\n");

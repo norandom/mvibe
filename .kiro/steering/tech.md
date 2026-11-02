@@ -25,6 +25,28 @@ Windows/macOS checks remain separate evidence. Tests must not require a local
 Vibe installation, real keyring contents or network access; use pinned fixtures
 for native contracts and explicit mocked OS credential boundaries.
 
+## Local container tooling on this Windows workstation (2026-11-02)
+
+- The Docker daemon lives in **WSL Debian** (default distro, WSL2; observed
+  Docker 29.9.2, Compose v5.6.1, WSL home `/home/mc`). Run compose from there,
+  e.g. `wsl -d Debian bash -c 'cd /mnt/d/Source/mvibe && docker compose up --build'`.
+  Docker Desktop is not installed on the Windows side.
+- Consequence for `docker-compose.yml`: `${HOME}` and the `MVIBE_AUTH_DATA` /
+  `MVIBE_KEYRING_DATA` defaults resolve against the **WSL** filesystem, not
+  Windows. On this workstation set them explicitly, e.g.
+  `MVIBE_AUTH_DATA=/mnt/c/Users/mariu/AppData/Local/mvibe-auth` (Windows
+  `LOCALAPPDATA` via `/mnt/c`) and `MVIBE_KEYRING_DATA` to the exported
+  `python_keyring` directory. Windows Credential Manager is not visible to the
+  WSL Docker daemon, so the native keyring entries must exist as the mounted
+  `keyring_pass.cfg` file (see docs/proxy-guide.md, "Run in Docker").
+- **Dagger also runs through WSL Debian** (same pipeline as GitHub Actions):
+  `cd /mnt/d/Source/mvibe && dagger run uv run --locked --project .dagger --python 3.12 python .dagger/ci.py check|build`
+  with `UV_PROJECT_ENVIRONMENT="$HOME/.cache/mvibe-dagger-runtime"` (see
+  docs/ci.md). Dagger 0.21.8, pinned SDK, no Dagger Cloud account needed.
+- The `bash` available to the agent shell here is WSL bash; the WinGet `uv.exe`
+  is not on the WSL PATH. On Windows use `start_proxy.ps1`/PowerShell (or pass
+  `--uv` to `start_proxy.sh`); inside WSL use a Linux uv.
+
 OpenCode auto-updates. Record actual host versions and hashes separately from
 the pinned SDK/CLI reference. Do not treat a user-reported version as verified.
 Do not run paid inference solely to satisfy an offline test gate. Keep live

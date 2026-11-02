@@ -2,7 +2,9 @@
 
 The GitHub Actions workflow runs the same Dagger Python SDK pipeline used
 locally. Dagger 0.21.8 and SDK dependencies are pinned; no Dagger Cloud account is
-required. Docker must be running. On this Windows workstation, use WSL Debian:
+required. Docker must be running. On this Windows workstation, use WSL Debian
+(the Docker daemon lives there; see `.kiro/steering/tech.md`, "Local container
+tooling"):
 
 ```bash
 cd /mnt/d/Source/mvibe

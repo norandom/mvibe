@@ -84,3 +84,31 @@ in that route. Native file/command and MCP execution remain unverified live.
 The separate opencode-vibe-tool-compatibility requirements draft and proposed
 end-to-end matrix cover both requested tool families; approval/design/tasks are
 pending rather than being inferred from this installation.
+
+## Post-completion amendment (2026-11-02): bind host, start scripts, Docker
+
+Implemented directly after the 31/31-task gate (not a pipeline task); see
+[host-docker-amendment.md](host-docker-amendment.md) for the full record.
+
+- `proxy.py --host` (default `127.0.0.1`; `0.0.0.0` allowed with a stderr
+  warning, since the proxy has no caller authentication).
+- `start_proxy.sh` / `start_proxy.ps1` launchers (`--host`/`-Host`, default
+  loopback; remaining args forwarded to `proxy.py`).
+- `Dockerfile`, `.dockerignore`, `docker-compose.yml`: loopback-published
+  container running `proxy.py --host 0.0.0.0`, mounting the Vibe credential
+  store read-only (`MVIBE_AUTH_DATA` -> `/data/mvibe-auth:ro` with
+  `XDG_DATA_HOME=/data`) and a file keyring (`MVIBE_KEYRING_DATA` ->
+  `/data/python_keyring:ro` via `PYTHON_KEYRING_BACKEND=keyrings.alt.file.
+  PlaintextKeyring`, new optional `docker` extra with `keyrings.alt>=5.0`).
+  Default container auth source is `existing-vibe`, the same flow as the
+  tested OpenCode provider.
+- New regression tests in `tests/test_proxy.py`: host binding/warning/invalid
+  rejection and `/docs` + `/openapi.json` operation listing.
+
+Evidence 2026-11-02: ruff clean; 49 proxy tests passed; live smoke via
+`./start_proxy.ps1 --port 8799` (existing-vibe): `/health` ok, `/docs` swagger
+UI, `/openapi.json` lists `/health` + the three `/v1` operations, live
+`/v1/models` returned 64 models, live chat (`ministral-3b-2512`, "Reply with
+exactly OK.") returned `OK` with HTTP 200; second instance on
+`--host 0.0.0.0 --port 8798` bound `0.0.0.0`, answered `/health`, and printed
+the off-loopback warning. See [way-forward.md](way-forward.md) for open items.

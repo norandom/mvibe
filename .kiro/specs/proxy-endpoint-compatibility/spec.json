@@ -1,0 +1,30 @@
+{
+  "feature_name": "proxy-endpoint-compatibility",
+  "created_at": "2026-11-02T09:00:00Z",
+  "updated_at": "2026-11-02T18:09:24Z",
+  "language": "en",
+  "phase": "implementation-complete",
+  "implementation": {
+    "status": "complete",
+    "completed_tasks": 9,
+    "total_tasks": 9,
+    "validation": "GO-offline; live smoke ran against the real proxy with the default existing-vibe credential (all adapter endpoints, both dialects, stream + non-stream)",
+    "validation_report": "implementation-log.md",
+    "offline": "passed: verify.ps1 run d290287ad8a9453f93c8f675c34cd105, all 11 steps, 1212 Python + 1050 Bun tests, tool-baseline 4/4 probes; only pre-existing unverified live/documentary criteria 9.4-9.6 remain. (Intermediate run 0247e3c8 hit the known bridge-process timing flake 12.9/12.10 under load; green on re-run.)"
+  },
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": false
+}

@@ -90,8 +90,8 @@ class ProxyStreamOwner:
             scope.cancel()
         await self._protected(self._close_client())
 
-    def response(self, acquire: Callable[[], Awaitable], diagnostic=None):
-        return _OwnedResponse(self, acquire, diagnostic)
+    def response(self, acquire: Callable[[], Awaitable], diagnostic=None, transform=None):
+        return _OwnedResponse(self, acquire, diagnostic, transform)
 
 
 class _OwnedByteStream(httpx2.AsyncByteStream):
@@ -111,11 +111,29 @@ class _OwnedByteStream(httpx2.AsyncByteStream):
 
 
 class _OwnedResponse(Response):
-    def __init__(self, owner: ProxyStreamOwner, acquire: Callable[[], Awaitable], diagnostic=None):
+    def __init__(self, owner: ProxyStreamOwner, acquire: Callable[[], Awaitable], diagnostic=None, transform=None):
         super().__init__(content=b'')
         self.owner = owner
         self.acquire = acquire
         self.diagnostic = diagnostic
+        # Optional adapter transform: feed(chunk)->bytes, finish()->bytes tail.
+        # None keeps the raw passthrough byte-exact.
+        self.transform = transform
+
+    @staticmethod
+    async def _stream_body(upstream, send, transform=None) -> None:
+        if upstream.status_code not in (204, 205, 304) and upstream.status_code >= 200:
+            async for chunk in upstream.aiter_bytes():
+                if transform is not None:
+                    out = transform.feed(chunk)
+                    if out:
+                        await send({'type': 'http.response.body', 'body': out, 'more_body': True})
+                else:
+                    await send({'type': 'http.response.body', 'body': chunk, 'more_body': True})
+            if transform is not None:
+                tail = transform.finish()
+                if tail:
+                    await send({'type': 'http.response.body', 'body': tail, 'more_body': True})
 
     async def __call__(self, scope, receive, send) -> None:
         upstream = None
@@ -164,9 +182,14 @@ class _OwnedResponse(Response):
                     await send({'type': 'http.response.start', 'status': upstream.status_code,
                                 'headers': [(b'content-type', upstream.headers.get('content-type', 'application/json').encode('latin-1')),
                                             (b'cache-control', b'no-cache')]})
-                    if upstream.status_code not in (204, 205, 304) and upstream.status_code >= 200:
-                        async for chunk in upstream.aiter_bytes():
-                            await send({'type': 'http.response.body', 'body': chunk, 'more_body': True})
+                    if self.diagnostic is not None and self.diagnostic.outcome == 'completed':
+                        self.diagnostic.phase = 'stream'
+                    telemetry = getattr(scope['app'].state, 'telemetry', None) if 'app' in scope else None
+                    if telemetry is not None:
+                        with telemetry.tracer.start_as_current_span('proxy.stream'):
+                            await self._stream_body(upstream, send, self.transform)
+                    else:
+                        await self._stream_body(upstream, send, self.transform)
                     # Bodyless/cached responses may bypass iterator auto-close.
                     # Finish ownership before declaring downstream completion.
                     await upstream.aclose()
