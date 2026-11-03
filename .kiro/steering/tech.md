@@ -79,3 +79,17 @@ Do not resurrect disposed bridges or replay requests to mask stale host caches.
 OpenCode orchestrates context compaction and calls the provider for its summary.
 The adapter forwards that request using shared auth. Reusing Vibe authentication
 does not import Vibe's agent runtime, compaction policy or tool executor.
+
+## Release versioning invariant (confirmed by the 2026-11-03 v2.0.0 CI failure)
+
+The Python helper reports its **distribution version** as `api_version` in the
+`hello` handshake (`mvibe_auth/bridge.py`), and the provider bridge accepts only
+the `HELPER_API_MAJOR` major (`packages/opencode-vibe-oidc/src/bridge.ts`).
+Therefore the release major and `HELPER_API_MAJOR` are coupled: bump them
+together, along with the synthetic hello doubles (`test/bridge.test.ts`,
+`test/synthetic-bridge.py`), `pyproject.toml`, `packages/opencode-vibe-oidc/package.json`
+and `uv.lock` (`uv lock --offline`). The GitHub release tag must equal `v` + the
+`pyproject.toml` version (the publish job enforces this). A release-major bump
+without the `HELPER_API_MAJOR` bump makes the shipped helper look incompatible
+and fails every native CI job. `tests/test_version_coupling.py` enforces all of
+this offline; keep it green before pushing any release tag.

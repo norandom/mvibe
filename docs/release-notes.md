@@ -40,9 +40,12 @@ also needs `--print-logs` for visible events.
   host binding, launchers, Docker packaging, observability and endpoint
   adapters from v1.0.0.
 - Version metadata moved 1.1.0 → 2.0.0 in `pyproject.toml`,
-  `packages/opencode-vibe-oidc/package.json` and `uv.lock`. The authentication
-  helper protocol major stays at 1, so v2.0.0 remains compatible with the
-  v1.x helper.
+  `packages/opencode-vibe-oidc/package.json` and `uv.lock`. Because the
+  helper reports its distribution version as the API version, the provider's
+  expected helper API major moved 1 → 2 with the release: v2.0.0 installs
+  the v2 helper and provider together from the same archive, and v1.x
+  helpers are rejected as incompatible. A repository test now enforces that
+  the release major and the helper API major stay in lockstep.
 
 ## New in 1.1.0
 
