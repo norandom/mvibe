@@ -1,4 +1,4 @@
-# mvibe 1.0.0 — first major release
+# mvibe 2.0.0 — second major release
 
 For students, researchers and educators only. This is untested, experimental
 software, not production software. Original mvibe contributions use the Beerware
@@ -11,7 +11,7 @@ API-key entry. Experimental direct ID-token OIDC remains a separate opt-in route
 it counted as API usage on the tested account. The existing-login route consumed
 the expected Vibe allowance in user-confirmed OpenCode tests.
 
-Download `mvibe-1.1.0.zip` and `SHA256SUMS`, verify the checksum, then extract to a
+Download `mvibe-2.0.0.zip` and `SHA256SUMS`, verify the checksum, then extract to a
 permanent directory outside a development checkout. Complete normal Vibe browser
 sign-in under the same native OS/user first. With uv, Bun 1.4.4 and OpenCode 2 installed:
 
@@ -31,6 +31,18 @@ The standalone wheel is also available for Python library consumers. The archive
 includes the optional proxy with `/openapi.json`, Swagger `/docs`, and opt-in
 `--log` diagnostics. Plugin diagnostics use `options.diagnostics: true`; the CLI
 also needs `--print-logs` for visible events.
+
+## New in 2.0.0
+
+- Major version bump to 2.0.0. There are no breaking changes and no code changes
+  since v1.1.0 beyond version metadata; this release carries the full v1.x
+  feature set, including the curated thinking variants from v1.1.0 and the
+  host binding, launchers, Docker packaging, observability and endpoint
+  adapters from v1.0.0.
+- Version metadata moved 1.1.0 → 2.0.0 in `pyproject.toml`,
+  `packages/opencode-vibe-oidc/package.json` and `uv.lock`. The authentication
+  helper protocol major stays at 1, so v2.0.0 remains compatible with the
+  v1.x helper.
 
 ## New in 1.1.0
 
@@ -52,7 +64,7 @@ archive and restart the OpenCode service; v1.0.0 does not contain these variants
 
 ## Verification status
 
-The v1.1.0 candidate passed Windows source and extracted-bundle OpenCode 2.2.5
+The v2.0.0 tree is code-identical to the v1.1.0 candidate, which passed Windows source and extracted-bundle OpenCode 2.2.5
 checks for model variants and outgoing `reasoning_effort` (`low`, `high`, `max`,
 `off` to `none`, and no selection). Native archive installation, JSONC backup
 and rerun checks passed in an isolated path with spaces. These checks use
