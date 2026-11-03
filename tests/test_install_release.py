@@ -3,6 +3,7 @@ from pathlib import Path
 import importlib.util
 import hashlib
 import json
+import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,7 @@ def test_release_artifact_contract(tmp_path):
 
 
 def test_builder_stages_wheel_and_bundles_without_shipping_build_inputs(tmp_path, monkeypatch):
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     spec = importlib.util.spec_from_file_location("build_release", ROOT / "scripts/build_release.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -40,7 +42,7 @@ def test_builder_stages_wheel_and_bundles_without_shipping_build_inputs(tmp_path
     def prepared_tool(command, cwd):
         calls.append(command)
         if command[1:3] == ["build", "--wheel"]:
-            (Path(command[-1]) / "mvibe_auth-1.0.0-py3-none-any.whl").write_bytes(b"wheel fixture")
+            (Path(command[-1]) / f"mvibe_auth-{version}-py3-none-any.whl").write_bytes(b"wheel fixture")
         elif command[0] == "native-bun":
             Path(command[-1]).write_text("export const bundled = true;")
         elif command[1] == "lock":
@@ -52,13 +54,13 @@ def test_builder_stages_wheel_and_bundles_without_shipping_build_inputs(tmp_path
     archive = module.build(tmp_path, "native-uv", "native-bun")
     with zipfile.ZipFile(archive) as bundle:
         names = bundle.namelist()
-        prefix = "mvibe-1.0.0/"
+        prefix = f"mvibe-{version}/"
         manifest = json.loads(bundle.read(prefix + "release.json"))
         assert prefix + manifest["wheel"] in names
         assert not any("node_modules" in name or "/src/" in name or name.endswith(".ts") for name in names)
         runtime = bundle.read(prefix + "pyproject.toml").decode()
-        assert 'mvibe-auth[proxy]==1.0.0' in runtime
-        assert 'wheels/mvibe_auth-1.0.0-py3-none-any.whl' in runtime
+        assert f'mvibe-auth[proxy]=={version}' in runtime
+        assert f'wheels/mvibe_auth-{version}-py3-none-any.whl' in runtime
         assert '[build-system]' not in runtime
         wrapper = bundle.read(prefix + "install.sh").decode()
         assert 'scripts/install.js' in wrapper

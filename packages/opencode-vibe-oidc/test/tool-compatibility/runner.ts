@@ -20,6 +20,19 @@ export function requireOwnedPath(root: string, target: string): string {
 export function requireLocation(expected: string, actual: string): void {
   if (resolve(expected) !== resolve(actual)) throw new Error("HOST_LOCATION");
 }
+/** Retry only cold plugin activation on read-only startup RPCs, within startup's budget. */
+export async function waitForLocationPlugins<T>(request: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  while (!signal.aborted) {
+    try { return await request(); }
+    catch (error) {
+      if (!(error instanceof Error) || !("_tag" in error) || error._tag !== "ServiceUnavailableError"
+        || !("service" in error) || error.service !== "plugin"
+        || error.message !== "Location plugins did not finish activating") throw error;
+      if (!signal.aborted) await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
+  throw new Error("HOST_READINESS");
+}
 export function offlineEnvironment(root: string, inherited: NodeJS.ProcessEnv): Record<string, string> {
   return { PATH: inherited.PATH ?? "", PATHEXT: ".EXE", SystemRoot: inherited.SystemRoot ?? "C:\\Windows", HOME: root, USERPROFILE: root,
     APPDATA: join(root, "roaming"), LOCALAPPDATA: join(root, "local"), TEMP: join(root, "tmp"), TMP: join(root, "tmp"), TMPDIR: join(root, "tmp"),
@@ -137,9 +150,9 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
       try { await client.server.info(requestOptions); break; } catch { if (abort.signal.aborted) throw new Error("HOST_READINESS"); await new Promise(resolve => setTimeout(resolve, 25)); }
     }
     const location = { directory: cwd };
-    const actual = await client.location.get({ location }, requestOptions);
+    const actual = await waitForLocationPlugins(() => client.location.get({ location }, requestOptions), abort.signal);
     requireLocation(cwd, actual.directory);
-    await client.provider.list({ location }, requestOptions);
+    await waitForLocationPlugins(() => client.provider.list({ location }, requestOptions), abort.signal);
     clearTimeout(timer); timer = setTimeout(cancel, options.executionMs);
     while (!existsSync(readiness)) {
       if (abort.signal.aborted || child.exitCode !== null) throw new Error("HOST_READINESS");

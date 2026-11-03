@@ -152,6 +152,44 @@ async def test_ollama_generate_wraps_prompt():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(('think', 'expected'), [
+    (False, 'none'), ('low', 'low'), ('medium', 'medium'), ('high', 'high'),
+    (True, None), ('xhigh', None), (7, None),
+])
+async def test_ollama_chat_think_maps_to_reasoning_effort(think, expected):
+    app, requests = compat_app(json_upstream(CHAT_UPSTREAM))
+    body = {'model': 'mistral-large-4', 'messages': [{'role': 'user', 'content': 'hi'}], 'stream': False, 'think': think}
+    async with app.router.lifespan_context(app):
+        response = await call(app, 'POST', '/api/chat', body=json.dumps(body).encode())
+    assert response.status_code == 200
+    sent = json.loads(requests[0].content)
+    if expected is None:
+        assert 'reasoning_effort' not in sent
+    else:
+        assert sent['reasoning_effort'] == expected
+
+
+@pytest.mark.anyio
+async def test_ollama_generate_think_maps_to_reasoning_effort():
+    app, requests = compat_app(json_upstream(CHAT_UPSTREAM))
+    body = json.dumps({'model': 'mistral-large-4', 'prompt': 'Say OK.', 'think': False}).encode()
+    async with app.router.lifespan_context(app):
+        response = await call(app, 'POST', '/api/generate', body=body)
+    assert response.status_code == 200
+    assert json.loads(requests[0].content)['reasoning_effort'] == 'none'
+
+
+@pytest.mark.anyio
+async def test_ollama_chat_without_think_adds_no_field():
+    app, requests = compat_app(json_upstream(CHAT_UPSTREAM))
+    body = json.dumps({'model': 'mistral-large-4', 'messages': [{'role': 'user', 'content': 'hi'}]}).encode()
+    async with app.router.lifespan_context(app):
+        response = await call(app, 'POST', '/api/chat', body=body)
+    assert response.status_code == 200
+    assert 'reasoning_effort' not in json.loads(requests[0].content)
+
+
+@pytest.mark.anyio
 async def test_ollama_show_and_embed():
     app, requests = compat_app(lambda request: httpx2.Response(
         200, json=MODELS_UPSTREAM if request.url.path.endswith('/models') else EMBED_UPSTREAM))
@@ -227,6 +265,53 @@ async def test_anthropic_messages_stream_events():
     assert delta['delta'] == {'type': 'text_delta', 'text': 'OK'}
     md = [data for name, data in events if name == 'message_delta'][0]
     assert md['delta']['stop_reason'] == 'end_turn' and md['usage']['output_tokens'] == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('thinking', 'expected'), [
+    ({'type': 'disabled'}, 'none'),
+    ({'type': 'enabled', 'budget_tokens': 32000}, 'high'),
+    ({'type': 'enabled', 'budget_tokens': 20000}, 'medium'),
+    ({'type': 'enabled', 'budget_tokens': 4096}, 'low'),
+    ({'type': 'enabled', 'budget_tokens': 1024}, 'low'),
+    ({'type': 'enabled'}, 'high'),
+    ({'type': 'enabled', 'effort': 'xhigh'}, 'xhigh'),
+    ({'type': 'adaptive'}, None),
+    ({'type': 'enabled', 'budget_tokens': 'bad'}, None),
+    ({'type': 'enabled', 'budget_tokens': -1}, None),
+    ({'type': 'enabled', 'budget_tokens': True}, None),
+    ({'type': 'enabled', 'budget_tokens': None}, None),
+    ({'type': 'enabled', 'effort': []}, None),
+    ({'type': 'enabled', 'effort': ''}, None),
+    ({'type': 'enabled', 'effort': '   '}, None),
+    ('not-a-dict', None),
+])
+async def test_anthropic_messages_thinking_maps_to_reasoning_effort(thinking, expected):
+    app, requests = compat_app(json_upstream(CHAT_UPSTREAM))
+    body = json.dumps({'model': 'mistral-large-4', 'max_tokens': 16,
+                       'messages': [{'role': 'user', 'content': 'hi'}],
+                       'thinking': thinking}).encode()
+    async with app.router.lifespan_context(app):
+        response = await call(app, 'POST', '/v1/messages', body=body,
+                              headers={'anthropic-version': '2023-06-01'})
+    assert response.status_code == 200
+    sent = json.loads(requests[0].content)
+    if expected is None:
+        assert 'reasoning_effort' not in sent
+    else:
+        assert sent['reasoning_effort'] == expected
+
+
+@pytest.mark.anyio
+async def test_anthropic_messages_without_thinking_adds_no_field():
+    app, requests = compat_app(json_upstream(CHAT_UPSTREAM))
+    body = json.dumps({'model': 'mistral-large-4', 'max_tokens': 16,
+                       'messages': [{'role': 'user', 'content': 'hi'}]}).encode()
+    async with app.router.lifespan_context(app):
+        response = await call(app, 'POST', '/v1/messages', body=body,
+                              headers={'anthropic-version': '2023-06-01'})
+    assert response.status_code == 200
+    assert 'reasoning_effort' not in json.loads(requests[0].content)
 
 
 @pytest.mark.anyio

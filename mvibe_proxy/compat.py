@@ -30,6 +30,53 @@ def require_str(body: dict, key: str) -> str:
 _require_str = require_str
 
 
+# Upstream Mistral chat field carrying the thinking level; off is "none"
+# (same wire mapping as the Vibe reference: off -> "none", levels as written).
+_REASONING_EFFORT = 'reasoning_effort'
+_WIRE_OFF = 'none'
+# Ollama `think` accepts a boolean or low/medium/high.
+_OLLAMA_THINK_LEVELS = frozenset({'low', 'medium', 'high'})
+
+
+def _ollama_reasoning_effort(body: dict) -> str | None:
+    think = body.get('think')
+    if think is False:
+        return _WIRE_OFF
+    if isinstance(think, str) and think in _OLLAMA_THINK_LEVELS:
+        return think
+    # think: true means the server default; any other value is ignored.
+    return None
+
+
+# Anthropic thinking budgets mapped to levels, mirroring the Vibe reference's
+# THINKING_BUDGET_TOKENS (low 4096, medium 16384, high 32000).
+_ANTHROPIC_BUDGET_LEVELS: tuple[tuple[int, str], ...] = ((32_000, 'high'), (16_384, 'medium'), (4_096, 'low'))
+
+
+def _anthropic_reasoning_effort(thinking: Any) -> str | None:
+    if not isinstance(thinking, dict):
+        return None
+    kind = thinking.get('type')
+    if kind == 'disabled':
+        return _WIRE_OFF
+    if kind != 'enabled':
+        return None
+    effort = thinking.get('effort')
+    if 'effort' in thinking:
+        if not isinstance(effort, str) or not effort.strip():
+            return None
+        return effort
+    budget = thinking.get('budget_tokens')
+    if 'budget_tokens' in thinking:
+        if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+            return None
+        for threshold, level in _ANTHROPIC_BUDGET_LEVELS:
+            if budget >= threshold:
+                return level
+        return 'low'
+    return 'high'
+
+
 def _ollama_options(body: dict) -> dict:
     options = body.get('options')
     out: dict[str, Any] = {}
@@ -40,6 +87,9 @@ def _ollama_options(body: dict) -> dict:
             out['top_p'] = options['top_p']
         if isinstance(options.get('num_predict'), int):
             out['max_tokens'] = options['num_predict']
+    effort = _ollama_reasoning_effort(body)
+    if effort is not None:
+        out[_REASONING_EFFORT] = effort
     return out
 
 
@@ -324,6 +374,9 @@ def anthropic_messages_request(body: dict) -> dict:
         out['tools'] = converted_tools
     if 'tool_choice' in body:
         out['tool_choice'] = body['tool_choice']
+    effort = _anthropic_reasoning_effort(body.get('thinking'))
+    if effort is not None:
+        out[_REASONING_EFFORT] = effort
     return out
 
 

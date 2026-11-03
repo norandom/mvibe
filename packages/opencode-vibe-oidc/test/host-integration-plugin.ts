@@ -21,6 +21,8 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   let release: (() => void) | undefined;
   const observedCredentials: string[] = [];
   const nativeRequests: Array<{ metadata: Record<string, string>; toolResult: boolean }> = [];
+  const efforts: unknown[] = [];
+  const optionKeys: string[] = [];
   const metadataSessionIDs = new Set<string>();
   let toolExecutions = 0;
   const eventTypes: string[] = [];
@@ -61,7 +63,8 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     assert.equal(request.headers.get("x-mvibe-request-context"), null, "private context must not reach upstream");
     if (request.url.endsWith("/models")) {
       models++;
-      return Response.json({ data: [{ id: "synthetic-model", name: "Synthetic", capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 131072, output: 4096 }, time: { released: 0 }, status: "active", cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] }] });
+      const entry = (id: string) => ({ id, name: id, capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 131072, output: 4096 }, time: { released: 0 }, status: "active" as const, cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] });
+      return Response.json({ data: [entry("synthetic-model"), entry("mistral-large-4"), entry("mistral-medium-latest")] });
     }
     assert.ok(request.url.endsWith("/chat/completions"));
     inference++;
@@ -77,6 +80,7 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     assert.equal(metadata.user_plan, "Pro", "plan comes from the synthetic account-context lookup");
     const toolResult = Array.isArray(body.messages) && body.messages.some(message => message?.role === "tool");
     nativeRequests.push({ metadata, toolResult });
+    efforts.push(body.reasoning_effort);
     if (mode === "metadata") {
       if (!toolResult) await wait(() => [...metadataSessionIDs].every(id => nativeRequests.some(item => item.metadata.session_id === id)), "both session requests must overlap");
       if (toolResult) assert.ok(JSON.stringify(body.messages).includes("owned metadata bytes"), "native read result reaches continuation");
@@ -104,8 +108,9 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   }, { preconnect() {} });
   let cleanup: (() => Promise<void>) | undefined;
   const registrations: Array<{ dispose(): Promise<void> }> = [];
-  const wait = async (predicate: () => boolean, label: string) => {
-    for (let i = 0; i < 200 && !predicate(); i++) await new Promise(resolve => setTimeout(resolve, 25));
+  const wait = async (predicate: () => boolean, label: string, timeoutMs = 5_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     assert.ok(predicate(), label);
   };
   cleanup = await setupVibe(ctx);
@@ -124,7 +129,8 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     assert.ok(connection);
     assert.deepEqual(await ctx.integration.connection.resolve(connection), { type: "key", key: "vibe-oidc-connected-v1" });
     checks.markerOnly = true;
-    await wait(() => models > 0, "authenticated discovery");
+    // Cold packaged-host/helper startup can exceed the ordinary event budget.
+    await wait(() => models > 0, "authenticated discovery", 20_000);
     let visible = false;
     for (let i = 0; i < 100 && !visible; i++) {
       visible = JSON.stringify(await ctx.model.list()).includes("synthetic-model");
@@ -132,7 +138,13 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     }
     assert.ok(visible, "authenticated inventory visible through native host model API");
     checks.modelDiscovery = true;
-    registrations.push(await ctx.aisdk.hook("sdk", event => { sdkCalls++; assert.equal(event.options.maxRetries, 0); assert.ok(event.sdk); }, { providerID: "vibe-oidc" }));
+    const listed = await ctx.model.list();
+    const large4 = listed.data.find(model => String(model.id) === "mistral-large-4");
+    assert.ok(large4, "curated model visible through native host model API");
+    assert.deepEqual(large4!.variants.map(variant => String(variant.id)), ["low", "high", "max"], "variants offered");
+    assert.deepEqual(large4!.variants.map(variant => variant.settings), [{ reasoningEffort: "low" }, { reasoningEffort: "high" }, { reasoningEffort: "max" }], "variant settings overlays");
+    assert.ok(!large4!.variants.some(variant => variant.settings && "reasoningEffort" in variant.settings && variant.settings.reasoningEffort === "none"), "large-4 rejects none, so no off variant");
+    registrations.push(await ctx.aisdk.hook("sdk", event => { sdkCalls++; assert.equal(event.options.maxRetries, 0); assert.ok(event.sdk); optionKeys.push(JSON.stringify(Object.keys(event.options ?? {}))); }, { providerID: "vibe-oidc" }));
     registrations.push(await ctx.aisdk.hook("language", event => { languageCalls++; assert.ok(event.language ?? event.sdk); }, { providerID: "vibe-oidc" }));
     registrations.push(await ctx.session.hook("context", event => {
       if (mode === "metadata") { assert.ok(event.tools.read, "native read is offered"); event.tools = { read: event.tools.read }; }
@@ -153,6 +165,21 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     }
     assert.deepEqual(observedCredentials, ["one", "two"]);
     checks.currentCredentials = true;
+    for (const [id, variant, expected] of [
+      ["mistral-large-4", "low", "low"],
+      ["mistral-large-4", "high", "high"],
+      ["mistral-large-4", "max", "max"],
+      ["mistral-medium-latest", "off", "none"],
+      ["mistral-large-4", undefined, undefined],
+    ] as const) {
+      const effortBefore = efforts.length;
+      const variantSession = await ctx.session.create({ title: "variant overlay", model: { id, providerID: "vibe-oidc", ...(variant ? { variant } : {}) } });
+      await ctx.session.prompt({ sessionID: variantSession.id, text: "synthetic" });
+      await ctx.session.wait({ sessionID: variantSession.id });
+      assert.equal(efforts.length, effortBefore + 1, "one upstream request for the variant session");
+      assert.equal(efforts[efforts.length - 1], expected, "host merges the selected variant settings overlay and the SDK emits reasoning_effort");
+    }
+    checks.variantSettingsOverlay = true;
     mode = "metadata";
     const metadataSessions: Array<Awaited<ReturnType<typeof ctx.session.create>>> = [];
     for (const label of ["one", "two"]) {
@@ -253,7 +280,7 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
       await cleanup?.(); checks.cleanup = true;
     } catch { failure = "Owned fixture/provider cleanup failed"; }
     globalThis.fetch = originalFetch; console.warn = originalWarn; StdioBridge.prototype.request = originalRequest; monitor.abort();
-    writeFileSync(evidence, JSON.stringify({ status: failure ? "failed" : "passed", checks, ...(failure ? { failure, warnings, eventTypes } : {}), counts: { inference, models, sdkCalls, languageCalls } }, null, 2));
+    writeFileSync(evidence, JSON.stringify({ status: failure ? "failed" : "passed", checks, ...(failure ? { failure, warnings, eventTypes } : {}), counts: { inference, models, sdkCalls, languageCalls }, optionKeys }, null, 2));
   } };
   setTimeout(() => { void run(); }, 50);
   return async () => { await cleanup?.(); globalThis.fetch = originalFetch; };

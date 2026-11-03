@@ -18,7 +18,7 @@ def run(args: list[str], cwd: Path, env: dict[str, str]) -> str:
     return result.stdout
 
 
-def smoke(archive: Path, uv: str, bun: str, opencode: str | None) -> None:
+def smoke(archive: Path, uv: str, bun: str, opencode: str | None, powershell: str = "pwsh") -> None:
     uv = str(Path(shutil.which(uv) or uv).resolve())
     bun = str(Path(shutil.which(bun) or bun).resolve())
     with tempfile.TemporaryDirectory(prefix="mvibe release spaces ") as temporary:
@@ -49,7 +49,7 @@ def smoke(archive: Path, uv: str, bun: str, opencode: str | None) -> None:
         else:
             opencode = str(Path(shutil.which(opencode) or opencode).resolve())
         if os.name == "nt":
-            command = ["pwsh", "-NoProfile", "-File", str(root / "install.ps1"), "-ConfigPath", str(config),
+            command = [shutil.which(powershell) or powershell, "-NoProfile", "-File", str(root / "install.ps1"), "-ConfigPath", str(config),
                        "-Uv", uv, "-Bun", bun, "-OpenCode", opencode]
         else:
             command = ["bash", str(root / "install.sh"), "--config-path", str(config), "--uv", uv,
@@ -84,8 +84,9 @@ def main() -> None:
     parser.add_argument("--uv", default=os.environ.get("MVIBE_UV", "uv"))
     parser.add_argument("--bun", default=os.environ.get("MVIBE_BUN", "bun"))
     parser.add_argument("--opencode")
+    parser.add_argument("--powershell", default="pwsh", help="Native PowerShell executable for the isolated Windows smoke")
     args = parser.parse_args()
-    smoke(args.archive.resolve(), args.uv, args.bun, args.opencode)
+    smoke(args.archive.resolve(), args.uv, args.bun, args.opencode, args.powershell)
 
 
 if __name__ == "__main__":

@@ -41,6 +41,19 @@ test("authenticated models use current snapshot and explicit metadata only for u
   expect(f.resolves()).toBe(1); expect(f.http.requests[0]!.headers.get("authorization")).toBe("Bearer synthetic");
   expect(f.http.requests[0]!.redirect).toBe("manual");
 });
+test("curated thinking variants attach to known models only and never from operator metadata", async () => {
+  const f = fixture({ data: [{ id: "mistral-large-4" }, { id: "mistral-medium-latest" }, { id: "mistral-large-latest" }, { id: "available" }] });
+  const result = await discoverModels(f.fetch, base, { "mistral-large-4": metadata, "mistral-medium-latest": metadata, "mistral-large-latest": metadata, available: metadata });
+  const byId = new Map(result.models.map(model => [String(model.id), model]));
+  expect(byId.get("mistral-large-4")!.variants.map(variant => String(variant.id))).toEqual(["low", "high", "max"]);
+  expect(byId.get("mistral-large-4")!.variants.map(variant => variant.settings)).toEqual([{ reasoningEffort: "low" }, { reasoningEffort: "high" }, { reasoningEffort: "max" }]);
+  expect(byId.get("mistral-medium-latest")!.variants.map(variant => String(variant.id))).toEqual(["high", "off"]);
+  expect(byId.get("mistral-medium-latest")!.variants[1]!.settings).toEqual({ reasoningEffort: "none" });
+  expect(byId.get("mistral-large-latest")!.variants).toEqual([]);
+  expect(byId.get("available")!.variants).toEqual([]);
+  const injected = await discoverModels(fixture({ data: [{ id: "mistral-large-4" }] }).fetch, base, { "mistral-large-4": { ...metadata, variants: [{ id: "invented", settings: { reasoningEffort: "max" } }] } });
+  expect(injected.models[0]!.variants.map(variant => String(variant.id))).toEqual(["low", "high", "max"]);
+});
 test("verified upstream metadata maps without SDK defaults; partial inventory survives omissions", async () => {
   const f = fixture({ data: [{ id: "complete", ...metadata }, { id: "incomplete" }] });
   const result = await discoverModels(f.fetch, base);

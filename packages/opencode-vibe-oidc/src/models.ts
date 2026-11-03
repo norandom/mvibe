@@ -2,6 +2,7 @@ import { Model, Provider } from "@opencode/plugin";
 import type { Plugin } from "@opencode/plugin";
 import type { StdioBridge } from "./bridge.js";
 import type { ProviderFetch } from "./provider.js";
+import { variantsFor } from "./thinking.js";
 
 const metadataGuidance = "Some upstream models were omitted: configure options.modelMetadata[upstreamID] with name, capabilities (tools/input/output), positive token limit (context/output), time.released, status and nonnegative cost (input/output/cache.read/cache.write, USD per million tokens).";
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -56,9 +57,11 @@ function mapModel(id: string, upstream: Record<string, unknown>, operator: unkno
     capabilities: { tools: cap.tools, input: [...cap.input], output: [...cap.output], ...(typeof cap.temperature === "boolean" ? { temperature: cap.temperature } : {}) },
     limit: { context: limit.context, output: limit.output, ...(typeof limit.input === "number" ? { input: limit.input } : {}) },
     time: { released: time.released }, status: source.status as Model.Info["status"], cost: costs,
-    // No fabricated variants; visibility is a plugin policy, entitlement comes
+    // Variants come only from the curated thinking-level table in thinking.ts
+    // (mirroring the Vibe reference's known-model rows); nothing is fabricated
+    // and model visibility remains a plugin policy — entitlement comes
     // exclusively from the authenticated upstream inventory.
-    variants: [], enabled: true,
+    variants: variantsFor(id), enabled: true,
   };
 }
 type Inventory = { entries: Record<string, unknown>[]; incomplete: boolean; diagnostics: string[] };

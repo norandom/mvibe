@@ -1,0 +1,23 @@
+{
+  "feature_name": "thinking-levels",
+  "created_at": "2026-11-03T12:05:00Z",
+  "updated_at": "2026-11-03T13:11:42.263620+00:00",
+  "language": "en",
+  "phase": "implementation-complete",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true,
+  "notes": "v1.1.0 candidate prepared and independently reviewed on 2026-11-03; see validation.md for fresh source/bundle/installer/tool-baseline evidence and corrective RED/GREEN results. OpenCode 2.2.5 variants use settings.reasoningEffort, not body overlays. Optional live task 4.3 remains open. Human review of fast-tracked requirements/design/tasks is still owed before merge/publication. Install only the published repository release, never the local candidate or development checkout."
+}

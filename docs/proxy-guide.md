@@ -229,6 +229,40 @@ curl.exe -s -N http://127.0.0.1:8765/v1/messages -H 'Content-Type: application/j
 Streaming calls return NDJSON (Ollama) or `event:`/`data:` SSE frames
 (Anthropic). Both shapes are pinned by offline contract tests in
 `tests/test_compat.py`; see `.kiro/specs/proxy-endpoint-compatibility/`.
+
+### Thinking levels
+
+Release availability: **v1.0.0** already forwards OpenAI request fields,
+including `reasoning_effort`. The Anthropic `thinking` and Ollama `think`
+mappings below are introduced in **v1.1.0** and absent from v1.0.0.
+The proxy does not install the direct provider's OpenCode reasoning picker.
+
+Chat requests can carry a thinking level, forwarded to the Mistral API as the
+top-level `reasoning_effort` field (`none` = off; levels are sent as written,
+e.g. `low`/`high`/`max` for mistral-large-4, which rejects `none`):
+
+- OpenAI dialect: set `"reasoning_effort": "high"` in the `/v1/chat/completions` body (passed through verbatim).
+- Anthropic dialect: `"thinking": {"type": "disabled"}` maps to `"none"`; `{"type": "enabled", "budget_tokens": N}` maps to `low`/`medium`/`high` at the 4096/16384/32000 thresholds (default `high`); a non-standard `"effort"` string is sent as written.
+- Ollama dialect: `"think": false` maps to `"none"`; `"low"`/`"medium"`/`"high"` map as written; `true` adds no field (server default).
+
+A level the model rejects surfaces as the provider's own error. See
+`.kiro/specs/thinking-levels/`.
+
+This is request-option support, not full reasoning compatibility across dialects:
+
+| Route | Reasoning behavior |
+| --- | --- |
+| `/v1/chat/completions` | Forwards the supplied request and upstream response without translating reasoning history. Clients must supply Mistral-compatible assistant history. |
+| `/v1/messages` | Translates the request setting in v1.1.0; the response adapter does not emit Anthropic thinking blocks, and thinking history blocks are unsupported. |
+| `/api/chat`, `/api/generate` | Translate the request setting in v1.1.0; response adapters do not expose a dedicated Ollama thinking field or translate thinking history. |
+
+Mappings are not model-aware: for example, a budget mapping to `medium` can
+fail on Large 4, whose curated levels are `low`, `high`, and `max`. `think: true`
+omits the effort field; it does not force reasoning on. For explicit control
+and unmodified reasoning responses, use the OpenAI route with the model's
+accepted `reasoning_effort` value. Live acceptance of every model/level pair
+remains separate from offline forwarding tests.
+
 Reusable live smoke scripts covering all three dialects plus embeddings:
 `smoketests/smoke.ps1` (Windows) and `smoketests/smoke.sh` (bash); see
 `smoketests/README.md`.

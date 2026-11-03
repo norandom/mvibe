@@ -1,6 +1,27 @@
 import { test, expect } from "bun:test";
 import { resolve, join } from "node:path";
-import { requireOwnedPath, requireLocation, offlineEnvironment, requireBudget, parseDebugPaths, validateDebugPaths, smokeOfflineHost } from "./tool-compatibility/runner.js";
+import { requireOwnedPath, requireLocation, offlineEnvironment, requireBudget, parseDebugPaths, validateDebugPaths, smokeOfflineHost, waitForLocationPlugins } from "./tool-compatibility/runner.js";
+
+const activationError = () => Object.assign(new Error("Location plugins did not finish activating"), { _tag: "ServiceUnavailableError", service: "plugin" });
+test("startup RPC retries cold plugin activation and preserves other errors", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  expect(await waitForLocationPlugins(async () => { if (++calls === 1) throw activationError(); return "ready"; }, controller.signal)).toBe("ready");
+  expect(calls).toBe(2);
+  for (const error of [new Error("unrelated"), Object.assign(activationError(), { service: "other" }), Object.assign(activationError(), { _tag: "OtherError" }), Object.assign(activationError(), { message: "another plugin failure" })]) {
+    calls = 0;
+    await expect(waitForLocationPlugins(async () => { calls++; throw error; }, controller.signal)).rejects.toBe(error);
+    expect(calls).toBe(1);
+  }
+});
+test("cold activation retry stops at the existing startup abort budget", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  await expect(waitForLocationPlugins(async () => { calls++; controller.abort(); throw activationError(); }, controller.signal)).rejects.toThrow("HOST_READINESS");
+  expect(calls).toBe(1);
+  await expect(waitForLocationPlugins(async () => { calls++; return "unused"; }, controller.signal)).rejects.toThrow("HOST_READINESS");
+  expect(calls).toBe(1);
+});
 
 test("all private host directories are owned and inherited secrets/config are scrubbed", () => {
   const root = resolve("owned-root");

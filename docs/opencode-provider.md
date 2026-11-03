@@ -153,6 +153,33 @@ check the tested OpenCode 2 SDK pair and rerun compatibility. Auth failures:
 reconnect deliberately; model 401/403 also requires checking account access.
 These errors give setup/reconnection guidance and never offer API-key fallback.
 
+## Thinking levels
+
+Release availability: thinking variants are introduced in **v1.1.0**. The
+v1.0.0 provider has no variants. Install the v1.1.0 repository release before
+expecting these choices; use the prebuilt release rather than a development
+checkout, then restart the OpenCode background service.
+
+Reasoning-capable `vibe-oidc` models expose curated variants, mirroring the
+known-model rows of the Vibe reference: `mistral-large-4` offers `low`, `high`
+and `max` (the Mistral API rejects `none` for it, so there is no off variant),
+the `mistral-medium-3.5`/`-2604`/`-latest` family offers `high` and `off`, and
+`zai-glm-5-3` (aliases `zai-glm-5`, `zai-glm-latest`) offers `low`, `high`, `max`.
+The flash model has no curated row. Every other model has no variants.
+Pick one with the host's variant picker or a model ref suffix, e.g.
+`vibe-oidc/mistral-large-4#high`; the level is sent upstream as the
+`reasoning_effort` chat field (`off` as `none`). With no variant selected no
+field is sent and the server default applies. Assistant thinking chunks are
+replayed only for models that take reasoning input. A level the model rejects
+fails with the provider's error, as in Vibe.
+
+If OpenCode reports `Authentication helper is disposed`, restart its background
+service with `opencode service restart`. This indicates a closed plugin instance,
+not proof that the native Vibe login expired. Keep the installed release outside
+the development checkout and do not edit or rebuild the loaded plugin. After
+restarting, use `opencode models` to verify discovery; fully quit and reopen
+Desktop if its picker still shows a stale catalog.
+
 ## Loopback proxy uses the same existing Vibe login
 
 Prepare `uv sync --locked --python 3.12 --extra proxy`, then run

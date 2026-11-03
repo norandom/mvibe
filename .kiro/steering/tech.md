@@ -68,6 +68,11 @@ Never rebuild a checkout while the user's service loads its plugin. On OpenCode
 Ctrl+C and `opencode -c` do not necessarily replace that service; use an explicit
 service restart after preparing an upgrade. Local installation now uses a stable
 packaged snapshot outside this checkout. Keep it immutable during development.
+User requirement confirmed 2026-11-03: install only published repository release
+artifacts into the user's OpenCode environment, never the development checkout
+or a locally built development snapshot. Verify the release checksum and keep
+both the plugin and Python helper in the release installation. Unreleased
+features require a new repository release before local installation.
 The user confirmed inference recovered after that migration and service restart.
 Do not resurrect disposed bridges or replay requests to mask stale host caches.
 

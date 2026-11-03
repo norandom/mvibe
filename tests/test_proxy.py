@@ -1,4 +1,5 @@
 """Offline public-factory route contract; every external boundary is injected."""
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -79,6 +80,25 @@ async def test_allowed_routes_use_only_current_public_snapshot(method, path):
     assert options[0]['auth_config'] is session.config
     assert options[0]['follow_redirects'] is False
     assert session.events[-1] == 'close'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('stream', [False, True])
+async def test_chat_completions_forwards_reasoning_effort_and_extra_fields(stream):
+    app, session, sent, _ = harness()
+    body = json.dumps({'model': 'mistral-large-4', 'reasoning_effort': 'high',
+                       'messages': [{'role': 'user', 'content': 'hi'}],
+                       'stream': stream, 'custom_field': {'kept': True}}).encode()
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            response = await client.post('/v1/chat/completions', content=body)
+    assert response.status_code == 200
+    forwarded = json.loads(sent[0].content)
+    assert forwarded['reasoning_effort'] == 'high'
+    assert forwarded['custom_field'] == {'kept': True}
+    assert forwarded['model'] == 'mistral-large-4' and forwarded['stream'] is stream
+    # Response path stays byte-exact passthrough.
+    assert response.content == b'{"result":"synthetic"}'
 
 
 @pytest.mark.anyio
