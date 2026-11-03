@@ -1,0 +1,23 @@
+{
+  "feature_name": "proxy-econ-client",
+  "created_at": "2026-11-03T11:10:00Z",
+  "updated_at": "2026-11-03T11:40:00Z",
+  "language": "en",
+  "phase": "tasks-generated",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true,
+  "notes": "Fast-tracked (-y) on 2026-11-03 for handover to a separate implementation session. Companion spec: ../mmhmem/.kiro/specs/shunt-content-tool (implement first, or stub its contract in tests)."
+}
