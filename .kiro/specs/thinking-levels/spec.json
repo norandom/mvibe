@@ -19,5 +19,5 @@
     }
   },
   "ready_for_implementation": true,
-  "notes": "v1.1.0 candidate prepared and independently reviewed on 2026-11-03; see validation.md for fresh source/bundle/installer/tool-baseline evidence and corrective RED/GREEN results. OpenCode 2.2.5 variants use settings.reasoningEffort, not body overlays. Optional live task 4.3 remains open. Human review of fast-tracked requirements/design/tasks is still owed before merge/publication. Install only the published repository release, never the local candidate or development checkout."
+  "notes": "v1.1.0 candidate prepared and independently reviewed on 2026-11-03; see validation.md for fresh source/bundle/installer/tool-baseline evidence and corrective RED/GREEN results. OpenCode 2.2.5 variants use settings.reasoningEffort, not body overlays. Optional live task 4.3 remains open. User approved requirements/design/tasks and v1.1.0 publication/installation in this session on 2026-11-03. Install only the published repository release, never the local candidate or development checkout."
 }

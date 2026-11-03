@@ -3,8 +3,8 @@
 Date: 2026-11-03. Candidate only: not published or installed in the user's profile.
 
 Decision: offline implementation and packaged-artifact checks VERIFIED.
-Publication remains MANUAL_VERIFY_REQUIRED for outstanding human specification
-review and the repository's cross-platform release workflow.
+Human specification review and publication/installation were approved by the user
+on 2026-11-03. Publication remains gated by the repository release workflow.
 
 ## Scope and outcome
 
@@ -90,7 +90,7 @@ local candidate into that profile. Publish through the repository's gated releas
 workflow, then download/checksum/install the published artifact and restart the
 service. Final user-profile model-catalog verification belongs after that install.
 
-Human review of the fast-tracked specification remains required before merge.
+Human review of the fast-tracked specification was approved on 2026-11-03.
 The release workflow must pass Linux, Windows and macOS checks before publication.
 Optional live model/level acceptance (task 4.3) remains unverified. The historical
 escaping report has not been reproduced as a provider defect; current preservation
