@@ -6,7 +6,9 @@ client (proxy-econ-client 2.3), the background warm-up queue (proxy-econ-client 
 the request-path rewrite with marker and counters (proxy-econ-client 2.5), the
 diagnostics allowlist with the per-request and warm econ events (proxy-econ-client 3.1),
 and the proxy wiring: --econ switch, lifespan-owned shunt and supervised stdio child,
-and the fail-open hook in make_acquire (proxy-econ-client 3.2)."""
+and the fail-open hook in make_acquire (proxy-econ-client 3.2), and the end-to-end
+fail-open and determinism sweep of the whole wired app against every fake failure
+mode (proxy-econ-client 4.1)."""
 import asyncio
 import copy
 import dataclasses
@@ -2321,13 +2323,17 @@ def test_no_econ_environment_passes_a_disabled_app_factory(monkeypatch):
 
 
 @asynccontextmanager
-async def wired_app(mode: str = 'summarized', **kwargs):
+async def wired_app(mode: str = 'summarized', *, config: EconConfig | None = None,
+                    **kwargs):
     """A full app with economics wired: EconShunt on app.state.econ over an
-    injected-stream client (FakeMmhmem behind it), so nothing ever spawns."""
+    injected-stream client (FakeMmhmem behind it), so nothing ever spawns.
+    ``config`` overrides the default econ_config() — 4.1's e2e cases drive
+    their own back-off windows and timeouts through the real wiring."""
     fake = FakeMmhmem(mode, **kwargs)
     await fake.start()
     client = econ.StdioMcpClient(SENTINEL_BIN, reader=fake.reader, writer=fake.writer)
-    app, _session, requests = econ_harness(econ_settings=econ_config(), econ_client=client)
+    app, _session, requests = econ_harness(econ_settings=config or econ_config(),
+                                           econ_client=client)
     try:
         yield app, requests, client, fake
     finally:
@@ -2529,3 +2535,354 @@ async def test_bodies_without_tool_results_never_reach_apply(no_spawn):
             assert seen == []
             assert tools_calls(fake) == 0
     assert len(requests) == 2
+
+
+# --- 4.1: fail-open and determinism end to end --------------------------------------
+#
+# The whole app from 3.2 — econ_harness wiring: switch-level EconConfig, a
+# lifespan-owned EconShunt, the hook inside make_acquire — driven against the
+# fake child in its error, hang, malformed and bypass modes (Req 6.1): every
+# POST relays raw until a summary exists, failures and bypasses are memoized
+# with back-off and recovery (Req 4.3), replacement is byte-identical across
+# many requests in one process (Req 3.3), the bounded memo's eviction costs
+# exactly one further raw relay before re-warm (Req 4.4), and no emitted
+# record ever carries content, hints or hashes (Req 1.4) — completing Req
+# 6.2's coverage list beside the suite-wide gates of Req 6.4.
+
+E2E_RETRY_S = 0.3      # sub-second back-off window, test-only (as in 2.4)
+E2E_TIMEOUT_MS = 100   # a hanging child resolves fast, never blocking a POST
+HANG_TIMEOUT_MS = 250  # long enough to POST again while the fetch is pending
+E2E_POSTS = 10         # 'many requests' for the one-process determinism sweep
+
+
+def hist_result(body: dict) -> str:
+    """The historical read result's content in an upstream-shaped body."""
+    [message] = [message for message in body['messages']
+                 if message.get('tool_call_id') == HIST_READ_ID]
+    return message['content']
+
+
+def body_with_hist_content(content: str) -> bytes:
+    """The OpenAI fixture with the historical read result's content swapped."""
+    body = openai_econ_body()
+    body['messages'][HIST_READ_INDEX]['content'] = content
+    return json.dumps(body).encode()
+
+
+async def post_chat(client: httpx.AsyncClient, raw: bytes) -> httpx.Response:
+    """One full-app chat POST; a fail-open proxy always answers 200 here."""
+    response = await client.post('/v1/chat/completions', content=raw)
+    assert response.status_code == 200
+    return response
+
+
+@pytest.mark.anyio
+async def test_e2e_tool_error_relays_raw_backs_off_then_recovers(no_spawn):
+    # Req 4.3 e2e (tool error): the first POST relays raw, the failure is
+    # memoized, no POST inside the back-off window reaches the child again,
+    # and after expiry exactly one retry against a recovered child replaces
+    # the content from then on.
+    config = econ_config(retry_s=E2E_RETRY_S)
+    content = synthetic_read_content()
+    sha = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    raw = json.dumps(openai_econ_body()).encode()
+    async with wired_app('tool_error', config=config) as (app, requests, _c, fake):
+        async with app.router.lifespan_context(app):
+            shunt = app.state.econ
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                         base_url='http://local') as client:
+                await post_chat(client, raw)
+                assert hist_result(json.loads(requests[0].content)) == content
+                assert await eventually(lambda: tools_calls(fake) == 1)
+                failed = shunt.memo.get(sha)
+                assert failed is not None
+                assert (failed.kind, failed.reason) == ('failed', 'McpError')
+                # Three more POSTs inside the back-off window: raw,
+                # byte-identical, and the child stays silent.
+                for _ in range(3):
+                    await post_chat(client, raw)
+                await asyncio.sleep(0.05)  # a wrong refetch would have landed
+                assert tools_calls(fake) == 1
+                assert {request.content for request in requests} == {
+                    requests[0].content}
+                # Back-off expiry with a recovered child: one retry fetch.
+                fake.mode = 'summarized'
+                assert await eventually(lambda: shunt.memo.retry_due(
+                    failed, config.retry_s, time.monotonic()))
+                await post_chat(client, raw)
+                assert await eventually(lambda: tools_calls(fake) == 2)
+                summary = shunt.memo.get(sha)
+                assert summary is not None and summary.kind == 'summary'
+                marker = econ.MARKER.format(hint=HIST_READ_PATH,
+                                            lines=len(content.splitlines()),
+                                            sha12=sha[:12])
+                assert summary.summary is not None
+                assert summary.summary.startswith(marker)
+                # The next POST carries the marker replacement.
+                await post_chat(client, raw)
+                assert hist_result(json.loads(requests[-1].content)) == summary.summary
+    assert len(requests) == 6
+
+
+@pytest.mark.anyio
+async def test_e2e_hang_times_out_fail_open_and_app_stays_responsive(no_spawn):
+    # Req 4.3/4.1 e2e (hang): the POST never waits on the child, the hanging
+    # fetch is deduplicated, times out into one memoized failure, the warm
+    # queue drains, and the app keeps serving byte-identical raw relays inside
+    # the back-off — with no unbounded task growth.
+    config = econ_config(timeout_ms=HANG_TIMEOUT_MS, retry_s=300)
+    content = synthetic_read_content()
+    sha = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    raw = json.dumps(openai_econ_body()).encode()
+    async with wired_app('hang', config=config) as (app, requests, _c, fake):
+        async with app.router.lifespan_context(app):
+            shunt = app.state.econ
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                         base_url='http://local') as client:
+                baseline = len(asyncio.all_tasks())
+                await post_chat(client, raw)
+                assert sha in shunt.warm._tasks  # exactly one fetch in flight
+                # Another POST succeeds while the hang is pending (Req 4.1).
+                await post_chat(client, raw)
+                assert tools_calls(fake) == 1  # deduplicated (Req 4.2)
+                assert requests[1].content == requests[0].content  # raw both
+                # The timeout memoizes one failure and drains the queue.
+                assert await eventually(lambda: shunt.memo.get(sha) is not None
+                                        and shunt.memo.get(sha).kind == 'failed')
+                assert shunt.warm._tasks == {}
+                # Subsequent POSTs stay raw with no further child call.
+                await post_chat(client, raw)
+                await asyncio.sleep(0.05)
+                assert tools_calls(fake) == 1
+                assert hist_result(json.loads(requests[-1].content)) == content
+                # No unbounded task growth across the whole sequence.
+                assert len(asyncio.all_tasks()) <= baseline + 2
+    assert len(requests) == 3
+
+
+@pytest.mark.anyio
+async def test_e2e_malformed_line_relays_raw_backs_off_then_recovers(no_spawn):
+    # Req 4.3 e2e (protocol error): a non-JSON stdout line memoizes one
+    # failure, every POST relays raw until the back-off expires, and the
+    # recovered child's summary replaces the content from then on.
+    config = econ_config(retry_s=E2E_RETRY_S)
+    content = synthetic_read_content()
+    sha = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    raw = json.dumps(openai_econ_body()).encode()
+    async with wired_app('malformed', config=config) as (app, requests, _c, fake):
+        async with app.router.lifespan_context(app):
+            shunt = app.state.econ
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                         base_url='http://local') as client:
+                await post_chat(client, raw)
+                assert await eventually(lambda: tools_calls(fake) == 1)
+                failed = shunt.memo.get(sha)
+                assert failed is not None
+                assert (failed.kind, failed.reason) == ('failed', 'McpError')
+                for _ in range(2):
+                    await post_chat(client, raw)
+                await asyncio.sleep(0.05)
+                assert tools_calls(fake) == 1  # silent inside the back-off
+                for request in requests:
+                    assert hist_result(json.loads(request.content)) == content
+                fake.mode = 'summarized'  # the child starts behaving
+                assert await eventually(lambda: shunt.memo.retry_due(
+                    failed, config.retry_s, time.monotonic()))
+                await post_chat(client, raw)
+                assert await eventually(lambda: tools_calls(fake) == 2)
+                await post_chat(client, raw)
+                marker = econ.MARKER.format(hint=HIST_READ_PATH,
+                                            lines=len(content.splitlines()),
+                                            sha12=sha[:12])
+                replaced = hist_result(json.loads(requests[-1].content))
+                assert replaced.startswith(marker)
+                assert f'SUM<{sha[:8]}>' in replaced
+                assert shunt.memo.get(sha).kind == 'summary'
+    assert len(requests) == 5
+
+
+@pytest.mark.anyio
+async def test_e2e_bypass_is_permanent_raw_relay_with_zero_further_calls(
+        no_spawn, capsys):
+    # Req 4.3 e2e (bypass): a security_critical bypass is memoized
+    # permanently — every POST relays raw, the child is called exactly once
+    # (retry_s=0 proves the bypass outlives any back-off), and the request
+    # event reports bypassed=1 once the decision is memoized.
+    from mvibe_proxy import diagnostics
+    diagnostics.configure_stdout()
+    try:
+        config = econ_config(retry_s=0)
+        content = synthetic_read_content()
+        sha = hashlib.sha256(content.encode('utf-8')).hexdigest()
+        raw = json.dumps(openai_econ_body()).encode()
+        async with wired_app('bypassed', bypass_reason='security_critical',
+                             config=config) as (app, requests, _c, fake):
+            async with app.router.lifespan_context(app):
+                shunt = app.state.econ
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                             base_url='http://local') as client:
+                    await post_chat(client, raw)
+                    assert await eventually(lambda: shunt.memo.get(sha) is not None)
+                    bypassed = shunt.memo.get(sha)
+                    assert bypassed is not None
+                    assert (bypassed.kind, bypassed.reason) == (
+                        'bypassed', 'security_critical')
+                    for _ in range(5):
+                        await post_chat(client, raw)
+                    assert tools_calls(fake) == 1  # never refetched, ever
+                    for request in requests:
+                        assert hist_result(json.loads(request.content)) == content
+    finally:
+        diagnostics.disable_stdout()
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    request_rows = [row for row in rows if row.get('event') == 'proxy_request']
+    assert len(request_rows) == 6
+    assert request_rows[0]['econ_pending'] == 1  # first sight: raw + scheduled
+    for row in request_rows[1:]:
+        assert (row['econ_bypassed'], row['econ_replaced'],
+                row['econ_pending']) == (1, 0, 0)
+    warm_rows = [row for row in rows if row.get('event') == 'econ_warm']
+    assert [row['econ_outcome'] for row in warm_rows] == ['bypassed']
+
+
+@pytest.mark.anyio
+async def test_e2e_replacement_byte_identical_across_many_requests(no_spawn):
+    # Req 3.3 e2e: after one warm-up the same body POSTed ten times in one
+    # app process forwards byte-identical upstream bodies — equal to the
+    # disabled control with exactly the historical content swapped for the
+    # marker text — from exactly one child call (Req 4.2).
+    raw = json.dumps(openai_econ_body()).encode()
+    control_app, _, control_requests = econ_harness()
+    async with control_app.router.lifespan_context(control_app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(control_app),
+                                     base_url='http://local') as client:
+            await post_chat(client, raw)
+    control_bytes = control_requests[0].content
+    control_body = json.loads(control_bytes)
+
+    content = synthetic_read_content()
+    sha = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    async with wired_app('summarized') as (app, requests, _c, fake):
+        async with app.router.lifespan_context(app):
+            shunt = app.state.econ
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                         base_url='http://local') as client:
+                await post_chat(client, raw)
+                assert requests[0].content == control_bytes  # raw first sight
+                assert await eventually(lambda: shunt.memo.get(sha) is not None
+                                        and shunt.memo.get(sha).kind == 'summary')
+                for _ in range(E2E_POSTS):
+                    await post_chat(client, raw)
+                assert tools_calls(fake) == 1  # one call per distinct hash
+    assert len(requests) == 1 + E2E_POSTS
+    memoized = shunt.memo.get(sha)
+    assert memoized is not None and memoized.summary is not None
+    expected = copy.deepcopy(control_body)
+    expected['messages'][HIST_READ_INDEX]['content'] = memoized.summary
+    assert len({request.content for request in requests[1:]}) == 1  # Req 3.3
+    assert json.loads(requests[1].content) == expected  # only that content
+    assert hist_result(json.loads(requests[1].content)) == memoized.summary
+
+
+@pytest.mark.anyio
+async def test_e2e_memo_lru_bounds_eviction_costs_one_raw_relay(no_spawn):
+    # Req 4.4 e2e: a two-entry memo evicts the oldest warmed hash once a
+    # third distinct content arrives; the evicted hash relays raw exactly one
+    # more time, re-warms and is replaced again — never an error.
+    config = econ_config(memo_max=2)
+    contents = [synthetic_read_content(path=f'src/synthetic_lru_{n}.py')
+                for n in range(3)]
+    shas = [hashlib.sha256(content.encode('utf-8')).hexdigest()
+            for content in contents]
+    raws = [body_with_hist_content(content) for content in contents]
+    async with wired_app('summarized', config=config) as (app, requests, _c, fake):
+        async with app.router.lifespan_context(app):
+            shunt = app.state.econ
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                         base_url='http://local') as client:
+                for raw, sha in zip(raws[:2], shas[:2]):
+                    await post_chat(client, raw)
+                    assert await eventually(
+                        lambda sha=sha: shunt.memo.get(sha) is not None
+                        and shunt.memo.get(sha).kind == 'summary')
+                assert len(shunt.memo) == 2
+                await post_chat(client, raws[2])  # a third distinct hash
+                assert await eventually(
+                    lambda: len(shunt.memo) == 2
+                    and shunt.memo.get(shas[2]) is not None)
+                assert shunt.memo.get(shas[0]) is None  # oldest evicted
+                assert tools_calls(fake) == 3
+                # The evicted hash: one further raw relay, then a fresh fetch.
+                await post_chat(client, raws[0])
+                assert hist_result(json.loads(requests[-1].content)) == contents[0]
+                assert await eventually(lambda: tools_calls(fake) == 4)
+                assert await eventually(
+                    lambda: shunt.memo.get(shas[0]) is not None
+                    and shunt.memo.get(shas[0]).kind == 'summary')
+                await post_chat(client, raws[0])
+                marker = econ.MARKER.format(hint='src/synthetic_lru_0.py',
+                                            lines=len(contents[0].splitlines()),
+                                            sha12=shas[0][:12])
+                replaced = hist_result(json.loads(requests[-1].content))
+                assert replaced.startswith(marker)
+                assert f'SUM<{shas[0][:8]}>' in replaced
+    assert len(requests) == 5  # warm x3, one raw relay after eviction, one replaced
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['summarized', 'tool_error', 'malformed',
+                                  'hang', 'bypassed'])
+async def test_e2e_no_content_hint_or_hash_in_any_emitted_record(
+        no_spawn, capsys, mode):
+    # Req 1.4 e2e: secret content and a secret path in the read header (the
+    # source hint) never appear in any stdout event row or exported record,
+    # across every fake mode; every econ_* value is an int or the outcome
+    # enum. (No auth token exists anywhere in the econ path — stdio pipes
+    # need none — and the observability suite pins token redaction.)
+    from mvibe_proxy import diagnostics
+    from mvibe_proxy.observability import allowlisted
+    sink = ExportSink()
+    diagnostics.configure_stdout()
+    diagnostics.configure_exporter(sink)
+    try:
+        secret_path = 'src/SECRET_PATH/vault.py'
+        secret_content = (synthetic_read_content(path=secret_path)
+                          + 'SECRET-CONTENT sentinel\n')
+        sha = hashlib.sha256(secret_content.encode('utf-8')).hexdigest()
+        raw = body_with_hist_content(secret_content)
+        kwargs = {'bypass_reason': 'security_critical'} if mode == 'bypassed' else {}
+        async with wired_app(mode, config=econ_config(
+                timeout_ms=E2E_TIMEOUT_MS), **kwargs) as (app, _req, _c, _fake):
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                             base_url='http://local') as client:
+                    for _ in range(3):
+                        await post_chat(client, raw)
+                    await asyncio.sleep(0.25)  # let warm failures time out
+    finally:
+        diagnostics.disable_stdout()
+        diagnostics.clear_exporter()
+    out = capsys.readouterr().out
+    rows = [json.loads(line) for line in out.splitlines()]
+    assert any('econ_outcome' in row for row in rows)  # non-vacuous sweep
+    assert any(record.get('event') == 'econ_warm' for record in sink.records)
+    for row in rows:
+        assert {key for key in row if key.startswith('econ_')} <= ALLOWED_ECON_KEYS
+        for key, value in row.items():
+            if key == 'econ_outcome':
+                assert value in WARM_OUTCOMES
+            elif key.startswith('econ_'):
+                assert isinstance(value, int)
+    for record in sink.records:
+        exported = allowlisted(record)
+        assert set(exported) - {'service'} <= set(record)
+        for key, value in exported.items():
+            if key == 'econ_outcome':
+                assert value in WARM_OUTCOMES
+            elif key.startswith('econ_'):
+                assert isinstance(value, int)
+    rendered = out + json.dumps(sink.records)
+    assert 'SECRET-CONTENT' not in rendered
+    assert secret_path not in rendered
+    assert 'vault' not in rendered
+    assert sha not in rendered  # hashes stay in memory only
