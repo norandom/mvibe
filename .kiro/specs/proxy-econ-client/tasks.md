@@ -94,7 +94,7 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
   - Observable completion: the guide exists, is linked from the proxy guide, and the documented environment example starts the proxy with economics enabled against the embedded child in the live check procedure
   - _Requirements: 6.3_
 
-- [ ]* 4.3 Performance check of the request-path rewrite
+- [x]* 4.3 Performance check of the request-path rewrite
   - Measure added latency of the rewrite on a 250 KB synthetic body with 40 eligible results on the reference workstation and record it in the spec's implementation log
   - Observable completion: measured figure recorded; below 5 ms or a follow-up noted
   - _Requirements: 4.1_
