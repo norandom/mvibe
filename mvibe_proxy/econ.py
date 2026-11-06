@@ -10,6 +10,7 @@ from the allowlist with one startup warning naming them.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import hashlib
@@ -17,6 +18,7 @@ import json
 import os
 import re
 import sys
+from typing import Literal
 
 # --- config (Requirements 1.1, 1.2, 1.3, 2.5) -------------------------------
 
@@ -266,3 +268,73 @@ def select(messages: list[dict], config: EconConfig) -> list[Candidate]:
             source_hint=_source_hint(content, arguments),
         ))
     return candidates
+
+
+# --- memo (Requirements 3.3, 4.3, 4.4) -----------------------------------------
+#
+# Deterministic in-process outcomes keyed by sha256 content hash. For a
+# summary the memo stores the final rendered replacement text — exactly what
+# the rewrite emits — fixed once stored, so repeated reads of the same hash
+# are byte-identical by construction for the life of the process (Req 3.3).
+# Bypass and failure outcomes carry their reason and a timestamp; a failed
+# hash is not retried before the configured back-off elapses (Req 4.3). The
+# store is bounded: at capacity the least-recently-used entry is evicted,
+# where both get() and put() count as a use (Req 4.4). Eviction only means
+# one further raw relay before a re-warm; it is never an error.
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """What became of one content hash; frozen so stored entries never drift."""
+
+    kind: Literal['summary', 'bypassed', 'failed']
+    summary: str | None = None  # rendered replacement (marker + summary), fixed once stored
+    reason: str | None = None   # bypass reason or error class name
+    at: float = 0.0             # monotonic time, for back-off
+
+
+class Memo:
+    """Bounded LRU of Outcome entries keyed by sha256 hex.
+
+    Pure in-memory state on a single event loop (no locks; the sync apply
+    path and the async warm path share this object on that loop). Each method
+    is a one-step OrderedDict operation, so re-entrancy cannot corrupt the
+    LRU order. `max_entries` arrives validated (>= 1) as EconConfig.memo_max.
+    """
+
+    def __init__(self, max_entries: int):
+        self._max_entries = max_entries
+        self._entries: OrderedDict[str, Outcome] = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def get(self, sha256: str) -> Outcome | None:
+        """Return the stored outcome, touching its LRU position; None when absent."""
+        outcome = self._entries.get(sha256)
+        if outcome is not None:
+            self._entries.move_to_end(sha256)
+        return outcome
+
+    def put(self, sha256: str, outcome: Outcome) -> None:
+        """Store `outcome` for `sha256` as the most-recently-used entry.
+
+        An existing key is refreshed in place — new value, new position —
+        without growing the store; a new key first evicts the
+        least-recently-used entry when the store is at capacity.
+        """
+        if sha256 in self._entries:
+            del self._entries[sha256]
+        elif len(self._entries) >= self._max_entries:
+            self._entries.popitem(last=False)
+        self._entries[sha256] = outcome
+
+    def retry_due(self, outcome: Outcome, retry_s: int, now: float) -> bool:
+        """True when a failed outcome may be refetched at `now` (Req 4.3).
+
+        Non-failed outcomes have nothing to retry, so they report due; a
+        failed one becomes due once `retry_s` has elapsed since `outcome.at`.
+        """
+        if outcome.kind != 'failed':
+            return True
+        return now >= outcome.at + retry_s

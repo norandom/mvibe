@@ -925,3 +925,128 @@ def test_hard_excluded_tools_are_defended_in_select_not_only_in_config():
         {'role': 'assistant', 'content': 'done'},
     ]
     assert [c.tool_call_id for c in econ.select(messages, config)] == ['call-read']
+
+
+# --- 2.2: bounded memo of outcomes ---------------------------------------------
+#
+# The memo is the determinism and bounds component: outcomes keyed by sha256
+# content hash, least-recently-used eviction at capacity where a read counts
+# as a use (Requirement 4.4), byte-identical summaries across repeated reads
+# because the rendered replacement text is stored once and never re-rendered
+# (Requirement 3.3), and the failure back-off check (Requirement 4.3).
+
+MEMO_AT = 1_000.0
+
+
+def memo_key(n: int) -> str:
+    """A distinct, well-formed sha256 hex digest per n."""
+    return f'{n:064x}'
+
+
+def summary_outcome(n: int, at: float = MEMO_AT) -> econ.Outcome:
+    """A representative stored outcome: the final rendered marker + summary."""
+    text = (f'[mvibe econ] Summary of an earlier file read (src/mod{n}.py, '
+            f'{n + 1} lines, sha256:{n:012x}).\n'
+            'structure: module docstring, imports, one class, one function')
+    return econ.Outcome(kind='summary', summary=text, at=at)
+
+
+def fill_memo(memo: econ.Memo, count: int, at: float = MEMO_AT) -> None:
+    for n in range(count):
+        memo.put(memo_key(n), summary_outcome(n, at))
+
+
+def test_memo_evicts_the_least_recently_used_entry_at_capacity():
+    memo = econ.Memo(3)
+    fill_memo(memo, 3)
+    assert len(memo) == 3
+    memo.put(memo_key(3), summary_outcome(3))       # full: key 0 is the LRU entry
+    assert len(memo) == 3                           # bounded in entries (Req 4.4)
+    assert memo.get(memo_key(0)) is None            # the oldest entry was evicted
+    assert [memo.get(memo_key(n)) for n in (1, 2, 3)] == [
+        summary_outcome(1), summary_outcome(2), summary_outcome(3)]
+
+
+def test_memo_get_touches_the_lru_order():
+    memo = econ.Memo(3)
+    fill_memo(memo, 3)                              # LRU -> MRU: keys 0, 1, 2
+    assert memo.get(memo_key(0)) is not None        # reading key 0 makes key 1 LRU
+    memo.put(memo_key(3), summary_outcome(3))
+    assert memo.get(memo_key(1)) is None            # the untouched key was evicted
+    assert memo.get(memo_key(0)) is not None        # the touched key survived
+    assert memo.get(memo_key(3)) is not None
+
+
+def test_memo_summaries_stay_byte_identical_across_repeated_reads():
+    memo = econ.Memo(4)
+    fill_memo(memo, 3)                              # LRU -> MRU: keys 0, 1, 2
+    memo.put(memo_key(7), summary_outcome(7))
+    first = memo.get(memo_key(7))
+    memo.put(memo_key(3), summary_outcome(3))       # full: evicts key 0, not key 7
+    second = memo.get(memo_key(7))
+    memo.put(memo_key(4), summary_outcome(4))       # more traffic, key 7 still warm
+    third = memo.get(memo_key(7))
+    assert first is second is third                 # fixed once stored, never re-rendered
+    assert first.summary == second.summary == third.summary
+    assert first.summary == summary_outcome(7).summary
+    assert isinstance(first.summary, str)
+
+
+def test_memo_back_off_blocks_retry_until_retry_due_elapses():
+    memo = econ.Memo(2)
+    failed = econ.Outcome(kind='failed', reason='McpError', at=MEMO_AT)
+    memo.put(memo_key(5), failed)
+    assert memo.get(memo_key(5)) is failed
+    assert memo.retry_due(failed, retry_s=300, now=MEMO_AT + 299) is False
+    assert memo.retry_due(failed, retry_s=300, now=MEMO_AT + 300) is True
+    assert memo.retry_due(failed, retry_s=300, now=MEMO_AT + 301) is True
+
+
+def test_memo_retry_due_is_always_true_for_non_failed_outcomes():
+    memo = econ.Memo(2)
+    not_failed = [summary_outcome(0),
+                  econ.Outcome(kind='bypassed', reason='security_critical', at=MEMO_AT)]
+    for outcome in not_failed:
+        assert memo.retry_due(outcome, retry_s=300, now=0.0) is True
+
+
+def test_memo_unknown_key_returns_none_so_a_fetch_may_start():
+    memo = econ.Memo(2)
+    assert memo.get(memo_key(99)) is None
+    assert len(memo) == 0
+
+
+def test_memo_put_existing_key_refreshes_value_and_lru_position():
+    memo = econ.Memo(2)
+    fill_memo(memo, 2)                              # LRU -> MRU: keys 0, 1
+    refreshed = summary_outcome(0, at=MEMO_AT + 50)
+    memo.put(memo_key(0), refreshed)                # key 0 becomes MRU, size unchanged
+    assert len(memo) == 2
+    assert memo.get(memo_key(0)) is refreshed
+    memo.put(memo_key(2), summary_outcome(2))       # now key 1 is the LRU entry
+    assert memo.get(memo_key(1)) is None
+    assert memo.get(memo_key(0)) is refreshed
+    assert len(memo) == 2
+
+
+def test_memo_put_existing_key_at_capacity_never_grows_the_store():
+    memo = econ.Memo(3)
+    fill_memo(memo, 3)
+    memo.put(memo_key(1), summary_outcome(1, at=MEMO_AT + 5))
+    assert len(memo) == 3
+    for n in range(3):
+        assert memo.get(memo_key(n)) is not None
+
+
+def test_outcome_field_set_and_defaults_match_the_design_contract():
+    assert [field.name for field in dataclasses.fields(econ.Outcome)] == [
+        'kind', 'summary', 'reason', 'at']
+    outcome = econ.Outcome(kind='bypassed', reason='below_threshold')
+    assert outcome.summary is None
+    assert outcome.at == 0.0
+
+
+def test_outcome_is_frozen_so_stored_entries_never_drift():
+    outcome = summary_outcome(0)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        outcome.kind = 'failed'
