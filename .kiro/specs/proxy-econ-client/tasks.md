@@ -10,7 +10,7 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
   - Observable completion: unit tests show `None` when unset, a validated config when complete, an actionable error for each malformed key and for a bad binary path, and the warning text
   - _Requirements: 1.1, 1.2, 1.3, 2.5_
 
-- [ ] 1.2 Fake mmhmem stdio double and econ test fixtures
+- [x] 1.2 Fake mmhmem stdio double and econ test fixtures
   - In-process fake speaking the companion contract over injected asyncio streams (no subprocess): initialize handshake, initialized notification, `tools/call` newline-delimited JSON-RPC responses with a text block holding one JSON object; modes for summarized, cached, bypassed, tool error, malformed line, hang beyond timeout, and stream close (child death)
   - Synthetic request-body fixtures for OpenAI, Anthropic-messages and Ollama dialects with multi-call assistant messages, historical and trailing read results, shell results, and an mmhmem tool result; no real capture content
   - Observable completion: fixtures load in the existing `harness()` pattern and the fake records every call it received
