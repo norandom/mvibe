@@ -11,6 +11,8 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
 - 2.4/2.5 riders: emit-sink try/except Exception added (never-raise discipline); optional logger.debug breadcrumb beside it is a sanctioned 3.1 rider.
 - 3.2 routed finding (2026-11-06): Ollama dialect can never receive replaced content — Ollama's wire format carries no tool-call ids on tool results (compat._ollama_messages drops them by protocol), so correlation fails closed and every Ollama resend relays raw. Documented as a spec limitation under Requirement 2.4 (fail-closed by protocol, safe under the fail-open philosophy). A future compat.py change could only help if the client provides ids. Pinned by tests: Ollama bodies relay byte-identical, zero mmhmem calls.
 - 3.2 deferred gates: `docker build` + `docker compose config` NOT RUN (no docker CLI in the implementing environment) — Dockerfile/compose verified by inspection only; run both when docker is available (tracked for final validation). MMHMEM_REF defaults to `main`, which does not yet contain shunt_content (companion spec unimplemented); comments document that operators must pin a ref containing it. glibc base-drift note: rust:1-slim and python:3.12-slim must stay glibc-compatible; verify on first real image build, document pinning in the operator guide (task 4.2).
+- 4.1 deferred gate: `scripts/verify.ps1` NOT-RUN (mandatory -Bun/-HostBinary toolchain absent offline; running would write a spurious failed acceptance record). Its Python step (`uv run --locked --offline -- pytest -n 2 --dist=loadscope`) was run directly and is green. Run verify.ps1 with prepared toolchain at final validation.
+- 4.1 reviewer suggestion (non-blocking): two recovery tests have a narrow wait-ordering race (`eventually(tools_calls==N)` then immediate memo assert — the fake records the call before the warm task writes the memo). Optional hardening rider for task 4.3: poll the memo entry directly instead.
 
 ## 1. Foundation: configuration, test double and single body parse
 
@@ -81,7 +83,7 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
 
 ## 4. Validation and guidance
 
-- [ ] 4.1 Fail-open and determinism end to end
+- [x] 4.1 Fail-open and determinism end to end
   - Drive the full app against the fake in error, hang, malformed and bypass modes and assert raw relay, memoized outcomes, back-off and recovery; assert byte-identical replacement across many requests in one process; assert the token and content never appear in any emitted record
   - Observable completion: the econ test module passes offline, and the whole suite passes with the locked offline runner and the verification gate script
   - _Requirements: 4.3, 4.4, 3.3, 1.4, 6.1, 6.2, 6.4_
