@@ -1,8 +1,8 @@
 """Offline unit contracts for the token-economics configuration (proxy-econ-client 1.1),
 the fake mmhmem stdio double with synthetic dialect fixtures (proxy-econ-client 1.2),
 the eligibility of historical file-read results (proxy-econ-client 2.1), the bounded
-memo of outcomes (proxy-econ-client 2.2), and the minimal supervised stdio JSON-RPC
-client (proxy-econ-client 2.3)."""
+memo of outcomes (proxy-econ-client 2.2), the minimal supervised stdio JSON-RPC
+client (proxy-econ-client 2.3), and the background warm-up queue (proxy-econ-client 2.4)."""
 import asyncio
 import copy
 import dataclasses
@@ -1348,3 +1348,293 @@ def test_restart_backoff_doubles_from_one_second_up_to_the_thirty_second_cap():
         delays.append(backoff)
         backoff = econ._capped_backoff(backoff)
     assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0]
+
+
+# The 2.3 review riders, applied with task 2.4: (a) the JSON-RPC error code is
+# type-checked before it reaches an McpError message, (b) a server-originated
+# request carrying a colliding id is never misrouted to a pending waiter, and
+# (c) an EOF mid-request fails every in-flight waiter, not just the first.
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('code', ['DROP TABLE tools', None, 1.5, True, [7], {'c': 1}])
+async def test_client_rpc_error_codes_render_only_integers(no_spawn, code):
+    reader, writer = raw_streams()
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 1, 'result': {'capabilities': {}}})
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=reader, writer=writer)
+    await client.start()
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 2,
+                       'error': {'code': code, 'message': 'server text'}})
+    with pytest.raises(econ.McpError, match='^rpc error invalid$') as excinfo:
+        await shunt(client, 'code-fodder')
+    assert 'server text' not in str(excinfo.value)  # only the bounded tag is echoed
+    await client.shutdown()
+
+
+@pytest.mark.anyio
+async def test_client_rpc_error_renders_an_integer_code_as_is(no_spawn):
+    reader, writer = raw_streams()
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 1, 'result': {'capabilities': {}}})
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=reader, writer=writer)
+    await client.start()
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 2,
+                       'error': {'code': -32000, 'message': 'server text'}})
+    with pytest.raises(econ.McpError, match='^rpc error -32000$') as excinfo:
+        await shunt(client, 'code-fodder')
+    assert 'server text' not in str(excinfo.value)
+    await client.shutdown()
+
+
+VALID_SHUNT_RESULT = {'content': [{'type': 'text', 'text': json.dumps({
+    'outcome': 'summarized', 'summary': 'synthetic summary',
+    'content_sha256': '0' * 64, 'line_count': 1,
+    'avoided_input_tokens_est': 1})}]}
+
+
+@pytest.mark.anyio
+async def test_client_ignores_server_requests_carrying_a_colliding_id(no_spawn):
+    reader, writer = raw_streams()
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 1, 'result': {'capabilities': {}}})
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=reader, writer=writer)
+    await client.start()
+    call = asyncio.create_task(shunt(client, 'colliding-id-fodder'))
+    await asyncio.sleep(0)  # the call registered its waiter and wrote its request
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 2, 'method': 'sampling/createMessage',
+                       'params': {'prompt': 'server-originated request'}})
+    await asyncio.sleep(0)  # dispatched while the waiter is pending
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 2, 'result': VALID_SHUNT_RESULT})
+    result = await call
+    assert result.outcome == 'summarized'  # the colliding id never answered the call
+    await client.shutdown()
+
+
+@pytest.mark.anyio
+async def test_client_eof_fails_every_inflight_waiter_at_once(no_spawn):
+    async with mcp_client('close') as (client, fake):
+        first = asyncio.create_task(shunt(client, 'dies-with-two-in-flight-one'))
+        second = asyncio.create_task(shunt(client, 'dies-with-two-in-flight-two'))
+        await asyncio.sleep(0)  # both requests written, both waiters pending
+        for task in (first, second):
+            with pytest.raises(econ.McpError,
+                               match='^terminated: the mmhmem stdio child exited$'):
+                await task
+        assert fake.closed is True
+
+
+# --- 2.4: background warm-up queue ----------------------------------------------
+#
+# WarmQueue between the sync request path and the client: schedule() is
+# fire-and-forget, one fetch per unknown hash deduplicated while in flight and
+# bounded by config.concurrency (Requirement 4.2), outcomes memoized (rendered
+# summaries, permanent bypasses, failed hashes retried only after the back-off
+# — Requirement 4.3), exactly one allowlisted econ_warm event per completion
+# or failure (Requirement 5.4), and a bounded shutdown while a fetch hangs.
+
+
+def econ_config(**overrides) -> EconConfig:
+    """A directly constructed config (no env parsing) with the design defaults."""
+    values = dict(mmhmem_bin=SENTINEL_BIN, project='mvibe',
+                  tools=frozenset({'read'}), min_bytes=4096, timeout_ms=2_000,
+                  memo_max=100, retry_s=300, concurrency=2)
+    values.update(overrides)
+    return EconConfig(**values)
+
+
+def make_candidate(content: str, *, index: int = 0,
+                   source_hint: str | None = HIST_READ_PATH) -> econ.Candidate:
+    """A Candidate for arbitrary synthetic content, as Eligibility.select builds."""
+    return econ.Candidate(
+        index=index, tool_call_id=f'call-warm-{index}', tool='read',
+        content=content, sha256=hashlib.sha256(content.encode('utf-8')).hexdigest(),
+        line_count=len(content.splitlines()), source_hint=source_hint)
+
+
+def tools_calls(fake: FakeMmhmem) -> int:
+    return sum(1 for method, _ in fake.calls if method == 'tools/call')
+
+
+async def eventually(predicate, timeout_s: float = 2.0) -> bool:
+    """Poll a sync predicate until truthy or the timeout elapses."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.01)
+    return bool(predicate())
+
+
+@asynccontextmanager
+async def warm_queue(mode: str = 'summarized', *, config: EconConfig,
+                     events: list, **kwargs):
+    """A WarmQueue over a started client and fake; everything stopped after."""
+    fake = FakeMmhmem(mode, **kwargs)
+    await fake.start()
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=fake.reader, writer=fake.writer)
+    await client.start()
+    memo = econ.Memo(config.memo_max)
+    queue = econ.WarmQueue(client, memo, config, events.append)
+    try:
+        yield queue, client, fake, memo
+    finally:
+        await queue.shutdown(timeout_s=0.5)
+        await client.shutdown()
+        await fake.stop()
+
+
+@pytest.mark.anyio
+async def test_warm_queue_deduplicates_a_hash_while_its_fetch_is_in_flight(no_spawn):
+    events: list = []
+    candidate = make_candidate('hangs-in-flight-content')
+    config = econ_config(timeout_ms=10_000)
+    async with warm_queue('hang', config=config,
+                          events=events) as (queue, _client, fake, memo):
+        assert queue.schedule(candidate) is True
+        assert queue.schedule(candidate) is False  # in flight: no second fetch
+        assert queue.schedule(candidate) is False
+        assert await eventually(lambda: tools_calls(fake) == 1)
+        await asyncio.sleep(0.05)  # a duplicate fetch would have landed by now
+        assert tools_calls(fake) == 1  # exactly one call per distinct hash (Req 4.2)
+        assert events == []  # nothing completed while hanging
+        assert len(memo) == 0
+
+
+@pytest.mark.anyio
+async def test_warm_queue_respects_the_concurrency_bound(no_spawn):
+    events: list = []
+    candidates = [make_candidate(f'bound-content-{n}', index=n) for n in range(4)]
+    config = econ_config(timeout_ms=10_000, concurrency=2)
+    async with warm_queue('hang', config=config,
+                          events=events) as (queue, client, fake, _memo):
+        inflight = 0
+        peak = 0
+        real = client.shunt_content
+
+        async def observing(**kwargs):
+            nonlocal inflight, peak
+            inflight += 1
+            peak = max(peak, inflight)
+            try:
+                return await real(**kwargs)
+            finally:
+                inflight -= 1
+
+        client.shunt_content = observing  # the real client stays the boundary
+        for candidate in candidates:
+            assert queue.schedule(candidate) is True
+        assert await eventually(lambda: tools_calls(fake) == 2)
+        await asyncio.sleep(0.05)  # a third call would have reached the child by now
+        assert peak == 2  # never above config.concurrency (Req 4.2)
+        assert tools_calls(fake) == 2  # the other two wait on the semaphore
+        assert events == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['summarized', 'cached'])
+async def test_warm_queue_memorizes_rendered_summary_and_emits_one_event(
+        no_spawn, mode):
+    events: list = []
+    content = synthetic_read_content()
+    candidate = make_candidate(content)
+    async with warm_queue(mode, config=econ_config(),
+                          events=events) as (queue, _client, fake, memo):
+        assert queue.schedule(candidate) is True
+        assert await eventually(lambda: len(events) == 1)
+        [event] = events
+        assert set(event) == {'event', 'econ_outcome', 'econ_latency_ms',
+                              'econ_in_bytes'}  # the allowlist, nothing else (5.4)
+        assert event['event'] == 'econ_warm'
+        assert event['econ_outcome'] == mode
+        assert event['econ_in_bytes'] == len(content)
+        assert isinstance(event['econ_latency_ms'], int)
+        assert event['econ_latency_ms'] >= 0
+        exported = json.dumps(event)
+        assert content[:80] not in exported  # never content (Req 1.4, 5.4)
+        assert candidate.sha256 not in exported  # hashes stay in memory only
+        assert HIST_READ_PATH not in exported  # never hints or paths
+        memoized = memo.get(candidate.sha256)
+        assert memoized is not None and memoized.kind == 'summary'
+        marker = econ.MARKER.format(hint=HIST_READ_PATH, lines=candidate.line_count,
+                                    sha12=candidate.sha256[:12])
+        assert memoized.summary is not None
+        assert memoized.summary.startswith(marker)  # rendered text is stored (3.3)
+        assert f'SUM<{candidate.sha256[:8]}>' in memoized.summary  # then the summary
+        method, params = fake.calls[2]  # handshake consumed the first two lines
+        assert (method, params['name']) == ('tools/call', 'shunt_content')
+        assert params['arguments'] == {
+            'project': 'mvibe', 'agent_harness': 'mvibe-proxy',
+            'content': content, 'kind': 'file_read',
+            'source_hint': HIST_READ_PATH,
+        }
+        assert queue.schedule(candidate) is False  # memoized: never fetched again
+        assert tools_calls(fake) == 1
+
+
+@pytest.mark.anyio
+async def test_warm_queue_memorizes_a_bypass_permanently(no_spawn):
+    events: list = []
+    candidate = make_candidate(synthetic_read_content())
+    async with warm_queue('bypassed', bypass_reason='security_critical',
+                          config=econ_config(),
+                          events=events) as (queue, _client, fake, memo):
+        assert queue.schedule(candidate) is True
+        assert await eventually(lambda: len(events) == 1)
+        bypassed = memo.get(candidate.sha256)
+        assert bypassed is not None and bypassed.kind == 'bypassed'
+        assert bypassed.summary is None
+        assert bypassed.reason == 'security_critical'
+        assert events[0]['econ_outcome'] == 'bypassed'
+        assert queue.schedule(candidate) is False  # permanent for the process
+        assert tools_calls(fake) == 1
+
+
+@pytest.mark.anyio
+async def test_warm_queue_failures_are_memoized_and_retried_only_after_backoff(
+        no_spawn):
+    events: list = []
+    candidate = make_candidate(synthetic_read_content())
+    config = econ_config(retry_s=0.15)  # a sub-second back-off, test-only
+    async with warm_queue('tool_error', config=config,
+                          events=events) as (queue, _client, fake, memo):
+        assert queue.schedule(candidate) is True
+        assert await eventually(lambda: len(events) == 1)
+        [event] = events
+        assert event['econ_outcome'] == 'failed'
+        assert 'worker not configured' not in json.dumps(event)  # sanitized
+        failed = memo.get(candidate.sha256)
+        assert failed is not None and failed.kind == 'failed'
+        assert failed.reason == 'McpError'  # the error class, never its message
+        assert failed.at > 0.0
+        # not retried while the back-off runs (Req 4.3)
+        assert queue.schedule(candidate) is False
+        await asyncio.sleep(0.05)
+        assert queue.schedule(candidate) is False
+        assert tools_calls(fake) == 1
+        # retried once the back-off expired
+        assert await eventually(lambda: queue.schedule(candidate) is True)
+        assert await eventually(lambda: tools_calls(fake) == 2)
+        assert await eventually(lambda: len(events) == 2)
+        assert events[1]['econ_outcome'] == 'failed'
+
+
+@pytest.mark.anyio
+async def test_warm_queue_shutdown_is_bounded_while_a_fetch_hangs(no_spawn):
+    events: list = []
+    candidate = make_candidate('hangs-at-shutdown-content')
+    config = econ_config(timeout_ms=10_000)
+    fake = FakeMmhmem('hang')
+    await fake.start()
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=fake.reader, writer=fake.writer)
+    await client.start()
+    queue = econ.WarmQueue(client, econ.Memo(config.memo_max), config, events.append)
+    try:
+        assert queue.schedule(candidate) is True
+        assert await eventually(lambda: tools_calls(fake) == 1)
+        started = time.monotonic()
+        await queue.shutdown(timeout_s=0.5)
+        assert time.monotonic() - started < 1.0  # bounded even mid-hang
+        assert not queue._tasks  # the cancelled fetch released its in-flight slot
+        await queue.shutdown(timeout_s=0.5)  # idempotent
+        assert events == []  # a cancelled fetch is neither completion nor failure
+    finally:
+        await client.shutdown()
+        await fake.stop()

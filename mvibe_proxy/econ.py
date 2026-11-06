@@ -725,6 +725,10 @@ class StdioMcpClient:
         if not isinstance(message, dict):
             self._fail_inflight('protocol: stdout line is not a JSON-RPC object')
             return
+        if 'method' in message:
+            # A server-originated request or notification is never a response,
+            # even when it carries an id colliding with a pending call.
+            return
         message_id = message.get('id')
         if message_id is None or isinstance(message_id, (bool, list, dict)):
             return  # a server notification is never answered or awaited
@@ -733,7 +737,11 @@ class StdioMcpClient:
             return  # a late answer to an already-timed-out or failed call
         error = message.get('error')
         if isinstance(error, dict):
-            waiter.set_exception(McpError(f"rpc error {error.get('code')}"))
+            code = error.get('code')
+            if not _is_int(code):
+                # An unbounded server value is never rendered into the message.
+                code = 'invalid'
+            waiter.set_exception(McpError(f'rpc error {code}'))
         else:
             waiter.set_result(message.get('result'))
 
@@ -800,3 +808,121 @@ class StdioMcpClient:
         except Exception:
             pass
         self._handle_termination()
+
+
+# --- background warm-up queue (Requirements 3.4, 4.2, 4.3, 5.4) -----------------
+#
+# WarmQueue fetches outcomes for unknown hashes without touching the request
+# path. schedule() is the fire-and-forget sync entry point the request-path
+# rewrite calls: it spawns one asyncio task per unknown content hash, deduped
+# by sha256 while in flight and bounded by a semaphore of config.concurrency
+# (Req 4.2). A completed fetch memoizes its outcome — a summary as the final
+# rendered replacement text (the design review repair: rendered text, not the
+# bare summary, is what the memo stores, so repeats are byte-identical by
+# construction), a bypass permanently — while a failed hash is retried only
+# once the configured back-off has elapsed (Req 4.3). Every completion or
+# failure emits exactly one allowlisted econ_warm event carrying the outcome
+# and latency and nothing else (Req 5.4); the fetch itself never raises into
+# the caller, and shutdown() stays bounded even while fetches hang.
+
+MARKER = ('[mvibe econ] Summary of an earlier file read ({hint}, {lines} lines, '
+          'sha256:{sha12}). The exact text was shown earlier in this conversation; '
+          'read the file again for exact lines.\n')
+
+
+def render(summary: str, candidate: Candidate) -> str:
+    """The final replacement text: one fixed marker line naming the source
+    hint, the original line count and a short content hash, then mmhmem's
+    summary. This is what the memo stores and the rewrite emits (Req 3.2).
+    """
+    return MARKER.format(hint=candidate.source_hint or 'unknown source',
+                         lines=candidate.line_count,
+                         sha12=candidate.sha256[:12]) + summary
+
+
+class WarmQueue:
+    """Background fetches for unknown hashes; owned by the app lifespan."""
+
+    def __init__(self, client: StdioMcpClient, memo: Memo, config: EconConfig,
+                 emit: Callable[[dict], None]):
+        self._client = client
+        self._memo = memo
+        self._config = config
+        self._emit = emit
+        self._limiter = asyncio.Semaphore(config.concurrency)
+        self._tasks: dict[str, asyncio.Task] = {}
+
+    def schedule(self, candidate: Candidate) -> bool:
+        """Start one background fetch for `candidate` and return True; return
+        False when there is nothing to start — the hash is already in flight,
+        the memo already holds a terminal summary or bypass, or a recent
+        failure is still inside its back-off window. Never raises: the sync
+        request path calls this without awaiting (Req 3.4, 4.1).
+        """
+        if candidate.sha256 in self._tasks:
+            return False
+        memoized = self._memo.get(candidate.sha256)
+        if memoized is not None and not (
+                memoized.kind == 'failed'
+                and self._memo.retry_due(memoized, self._config.retry_s,
+                                         time.monotonic())):
+            return False
+        try:
+            task = asyncio.create_task(self._fetch(candidate))
+        except Exception:
+            return False  # no running loop or a loop at capacity: fail open
+        self._tasks[candidate.sha256] = task
+        return True
+
+    async def shutdown(self, timeout_s: float = 2.0) -> None:
+        """Wait <= timeout_s for in-flight fetches, then cancel the rest.
+
+        Idempotent: with nothing in flight it returns immediately.
+        """
+        tasks = list(self._tasks.values())
+        if not tasks:
+            return
+        _done, pending = await asyncio.wait(tasks, timeout=timeout_s)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _fetch(self, candidate: Candidate) -> None:
+        """One bounded fetch: memoize the outcome, emit one warm event."""
+        started = time.monotonic()
+        event_outcome = 'failed'
+        try:
+            async with self._limiter:
+                started = time.monotonic()  # latency around the client call only
+                shunt = await self._client.shunt_content(
+                    project=self._config.project,
+                    content=candidate.content,
+                    kind='file_read',
+                    source_hint=candidate.source_hint,
+                    timeout_ms=self._config.timeout_ms)
+            self._record(candidate, shunt)
+            event_outcome = shunt.outcome
+        except asyncio.CancelledError:
+            raise  # shutdown: no memo entry, no event
+        except Exception as exc:
+            self._memo.put(candidate.sha256, Outcome(
+                kind='failed', reason=type(exc).__name__, at=time.monotonic()))
+        finally:
+            self._tasks.pop(candidate.sha256, None)
+        self._emit({'event': 'econ_warm',
+                    'econ_outcome': event_outcome,
+                    'econ_latency_ms': max(
+                        0, int((time.monotonic() - started) * 1000)),
+                    'econ_in_bytes': len(candidate.content)})
+
+    def _record(self, candidate: Candidate, shunt: ShuntResult) -> None:
+        """Memoize one successful fetch: rendered summary or permanent bypass."""
+        if shunt.outcome == 'bypassed':
+            self._memo.put(candidate.sha256, Outcome(
+                kind='bypassed', reason=shunt.bypass_reason or 'unspecified'))
+            return
+        if not shunt.summary:
+            raise McpError('protocol: shunt result carries no summary text')
+        self._memo.put(candidate.sha256, Outcome(
+            kind='summary', summary=render(shunt.summary, candidate)))
