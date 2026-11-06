@@ -6,15 +6,15 @@ Agent users routing OpenCode, Claude Code or Ollama-dialect clients through the 
 
 ## Introduction
 
-The proxy is the only component that sees every resend of a tool result across turns, which makes it the natural shunt point for token economics. It does not execute tools and does not own a worker model; it consumes mmhmem's new content-based `shunt_content` tool (companion spec `shunt-content-tool` in the mmhmem repository) as an external service. The feature is off by default and fail-open: any failure in the economics path yields the unmodified request.
+The proxy is the only component that sees every resend of a tool result across turns, which makes it the natural shunt point for token economics. It does not execute tools and does not own a worker model; it consumes mmhmem's new content-based `shunt_content` tool (companion spec `shunt-content-tool` in the mmhmem repository) from an embedded, supervised `mmhmem stdio` child running in the same container (Amendment 1, 2026-11-06: Docker deployment, stdio transport; gRPC, mTLS and remote-daemon modes were evaluated and rejected). The feature is off by default and fail-open: any failure in the economics path yields the unmodified request.
 
-Decision record 2026-11-03 (`.kiro/handover.md`): consume mmhmem over MCP, no implementation copy in mvibe; v1 scope is file-read results only, since shell, grep and glob results are small or rarely repeated and summarizing command output loses exit codes and error lines the model acts on.
+Decision record 2026-11-03 (`.kiro/handover.md`): consume mmhmem over MCP, no implementation copy in mvibe; v1 scope is file-read results only, since shell, grep and glob results are small or rarely repeated and summarizing command output loses exit codes and error lines the model acts on. Amendment 1 (2026-11-06): the deployment shape is the Docker proxy image embedding the mmhmem binary built from a pinned git ref, supervised as a stdio child; see `docker-stdio-amendment.md`.
 
 ## Boundary Context
 
-- **In scope**: opt-in configuration; identification of file-read tool results inside chat-completion request bodies for all three dialects (OpenAI, Anthropic messages, Ollama); the "history only" rule (never the trailing, freshest results); deterministic replacement text with an explicit summary marker; a minimal MCP client to one mmhmem daemon; asynchronous warm-up so the request path never waits on mmhmem; bounded in-process memo for byte-identical repeats; allowlisted `econ` diagnostics; offline tests; operator documentation.
+- **In scope**: opt-in configuration; identification of file-read tool results inside chat-completion request bodies for all three dialects (OpenAI, Anthropic messages, Ollama); the "history only" rule (never the trailing, freshest results); deterministic replacement text with an explicit summary marker; a supervised embedded `mmhmem stdio` child and a minimal MCP JSON-RPC client over stdio pipes (Amendment 1); asynchronous warm-up so the request path never waits on the child; bounded in-process memo for byte-identical repeats; allowlisted `econ` diagnostics; offline tests; Docker build/compose wiring and operator documentation.
 - **Out of scope**: summarizing shell, grep, glob, web or MCP tool results (a configurable allowlist exists, but only `read` is supported and tested in v1); any change to responses or streaming; executing tools; running or configuring the worker model; usage metering and budget caps (separate, unspecced); changes to mmhmem's path-based `smart_read`; the security-critical classification itself (owned by mmhmem, see adjacent expectations).
-- **Adjacent expectations**: mmhmem exposes `shunt_content` with the contract in the companion spec (deterministic summaries for identical content, security-critical and below-threshold bypass decided server-side, hash-only audit, worker-unconfigured and timeout reported as tool errors). The proxy-observability event allowlist gains one event type; the shared auth library is untouched. Clients keep their own full history and may compact it themselves; the proxy never tells them what the model saw.
+- **Adjacent expectations**: the embedded mmhmem binary is built from a pinned git ref containing `shunt_content` (companion spec; deterministic summaries for identical content, security-critical and below-threshold bypass decided child-side, hash-only audit, worker-unconfigured and timeout reported as tool errors). The proxy-observability event allowlist gains one event type; the shared auth library is untouched. Clients keep their own full history and may compact it themselves; the proxy never tells them what the model saw.
 
 ## Requirements
 
@@ -22,10 +22,10 @@ Decision record 2026-11-03 (`.kiro/handover.md`): consume mmhmem over MCP, no im
 **Objective:** As a proxy operator, I want token economics to be off unless I configure it, so that existing deployments behave exactly as in v1.0.0.
 
 #### Acceptance Criteria
-1. While no economics endpoint is configured, the proxy shall relay chat-completion request bodies exactly as it does today and shall make no outbound call other than the upstream inference call.
-2. When an economics endpoint, token, minimum size, timeout and tool allowlist are configured through the environment, the proxy shall validate them at startup and shall refuse to enable economics with an actionable message if the endpoint or token is missing or malformed.
-3. If the configured endpoint is not a loopback address, the proxy shall print a startup warning stating that tool-result contents will leave the proxy process to that address.
-4. The proxy shall never place the economics token, the endpoint credentials, or any tool-result content in diagnostics, exported telemetry, or error responses.
+1. While no economics binary is configured, the proxy shall relay chat-completion request bodies exactly as it does today and shall make no outbound call other than the upstream inference call, and shall spawn no child process.
+2. When an economics binary, minimum size, timeout and tool allowlist are configured through the environment, the proxy shall validate them at startup and shall refuse to enable economics with an actionable message if the binary path is missing, not executable, or if a numeric setting is malformed.
+3. While economics is enabled, tool-result contents shall never traverse a network: they are written only to the stdin of the supervised child in the same container, and the child opens no listener. The operator documentation shall state this trust boundary, including the child's own worker-model egress if configured.
+4. The proxy shall never place tool-result content in diagnostics, exported telemetry, or error responses.
 5. Where an explicit command-line switch requests economics and the configuration is incomplete, the proxy shall exit with a non-zero status and a message naming the missing setting.
 
 ### Requirement 2: Identification of eligible file-read results
@@ -55,11 +55,11 @@ Decision record 2026-11-03 (`.kiro/handover.md`): consume mmhmem over MCP, no im
 
 #### Acceptance Criteria
 1. The proxy shall never await an mmhmem call on the request path; summaries are only ever taken from the in-process memo.
-2. When a background warm-up runs, the proxy shall call mmhmem's content tool once per distinct content hash, with bounded concurrency, and shall record the returned summary or bypass decision in the memo.
-3. If mmhmem is unreachable, times out, returns an error, or reports a bypass, the proxy shall keep relaying the original content, shall record the outcome in the memo so it is not retried on every request, and shall retry a failed hash no sooner than a configured back-off.
+2. When a background warm-up runs, the proxy shall call mmhmem's content tool once per distinct content hash over the stdio child, with bounded concurrency, and shall record the returned summary or bypass decision in the memo.
+3. If the child is unavailable, times out, returns an error, dies mid-request, or reports a bypass, the proxy shall keep relaying the original content, shall record the outcome in the memo so it is not retried on every request, shall restart a crashed child with capped back-off, and shall retry a failed hash no sooner than a configured back-off.
 4. The memo shall be bounded in entries and shall evict least-recently-used entries; eviction shall only cause one further raw relay before re-warm, never an error.
 5. If the economics component raises any exception, the proxy shall log an allowlisted diagnostic and relay the original request unchanged.
-6. The proxy shall never call its own routes to reach mmhmem, and shall not apply economics to requests that contain no tool-result messages.
+6. The proxy shall never call its own routes to reach the child, and shall not apply economics to requests that contain no tool-result messages.
 
 ### Requirement 5: Honest diagnostics
 **Objective:** As an operator, I want to see what economics did per request, so that I can judge savings from recorded events rather than from the fact that a daemon is configured.
@@ -74,7 +74,7 @@ Decision record 2026-11-03 (`.kiro/handover.md`): consume mmhmem over MCP, no im
 **Objective:** As a maintainer, I want the feature verified without a live mmhmem, worker or Mistral, so that the gate stays offline and free.
 
 #### Acceptance Criteria
-1. When the test suite runs, economics behavior shall be verified against an in-process fake mmhmem endpoint and the existing proxy harness, without network access, credentials or a worker model.
+1. When the test suite runs, economics behavior shall be verified against an in-process fake speaking the stdio JSON-RPC contract and the existing proxy harness, without network access, credentials, a spawned binary or a worker model.
 2. The tests shall cover: off by default, configuration validation, eligibility including the trailing-group rule and all three dialects, byte-identical replacement, raw relay on first sight with warm-up scheduled, fail-open on error and timeout, memo bounds and back-off, diagnostic allowlisting, and response byte-exactness.
-3. The documentation shall describe the configuration, the history-only rule, the summary marker, the trust and privacy implications of pointing the endpoint off-loopback, the interaction with provider prompt caching, and how to read the economics events.
+3. The documentation shall describe the configuration, the Docker deployment (pinned mmhmem build, child environment, volumes), the history-only rule, the summary marker, the in-container trust boundary, the interaction with provider prompt caching, and how to read the economics events.
 4. The pre-existing test suite shall pass unchanged.

@@ -2,11 +2,11 @@
 
 ## Overview
 
-**Purpose**: Let the local proxy replace historical file-read tool results in chat-completion requests with deterministic structural summaries obtained from an mmhmem daemon, so repeated resends of the same read stop costing frontier prompt tokens.
+**Purpose**: Let the local proxy replace historical file-read tool results in chat-completion requests with deterministic structural summaries obtained from an embedded mmhmem stdio child, so repeated resends of the same read stop costing frontier prompt tokens.
 
 **Users**: Operators of the mvibe proxy who also run mmhmem; agent users on OpenCode, Claude Code (Anthropic dialect) or Ollama-dialect clients routed through the proxy. Clients are unaware.
 
-**Impact**: One new module `mvibe_proxy/econ.py`, one hook line in `proxy.py`, one new event type in the diagnostics allowlist, env configuration, offline tests, and an operator guide. Default behaviour (no `MVIBE_ECON_URL`) is unchanged. Responses are never touched.
+**Impact**: One new module `mvibe_proxy/econ.py`, one hook line in `proxy.py`, one new event type in the diagnostics allowlist, env configuration, a supervised child process, Docker build/compose wiring, offline tests, and an operator guide. Default behaviour (no `MVIBE_ECON_MMHMEM_BIN`) is unchanged. Responses are never touched.
 
 ### Goals
 - Replace only *historical* `read` results, from an in-process memo, with byte-identical marked summaries (Req 2, 3).
@@ -20,10 +20,10 @@
 ## Boundary Commitments
 
 ### This Spec Owns
-- `EconConfig` (env parsing, validation, loopback warning, `--econ` switch).
+- `EconConfig` (env parsing, validation, binary-path validation, `--econ` switch).
 - Eligibility of tool results inside an upstream-shaped chat-completion body: tool-name correlation by `tool_call_id`, allowlist, size, string type, trailing-group rule, hard exclusions, source-hint extraction.
 - The replacement contract: marker line + summary; memo semantics (bounded LRU, outcomes, back-off); background warm-up scheduling with bounded concurrency.
-- The minimal MCP JSON-RPC client to one mmhmem endpoint (`shunt_content` only).
+- The minimal MCP JSON-RPC stdio client and the supervised `mmhmem stdio` child (`shunt_content` only; Amendment 1).
 - The `econ` and `econ_warm` diagnostic events and their allowlisted fields.
 - `tests/test_econ.py`, `docs/token-economics.md`, a pointer in `docs/proxy-guide.md`.
 
@@ -33,14 +33,14 @@
 - Usage metering, `GET /stats`, budget 429s (future spec).
 
 ### Allowed Dependencies
-- Existing: `httpx` (async client), `anyio`, stdlib `json`, `hashlib`, `collections.OrderedDict`, `re`, `os`, `time`, `logging`; FastAPI app state for lifecycle.
+- Existing: `anyio`, stdlib `json`, `hashlib`, `collections.OrderedDict`, `re`, `os`, `time`, `logging`, `asyncio.subprocess` (child + pipes); FastAPI app state for lifecycle. `httpx` remains in use by the upstream path only — the econ path no longer uses it.
 - `mvibe_proxy.diagnostics` / `mvibe_proxy.observability` for emitting events (econ imports them; they never import econ).
 - No new runtime dependency; `uv.lock` unchanged.
 - Dependency direction: `econ.py` → (`diagnostics.py`, `observability.py`); `proxy.py` → `econ.py`. `mvibe_auth` never imports `mvibe_proxy`.
 
 ### Revalidation Triggers
 - `shunt_content` request/response contract changes in mmhmem (fields, bypass reasons, error codes).
-- rmcp Streamable HTTP framing or session-header behaviour changes.
+- rmcp stdio framing (newline-delimited JSON-RPC) or the `mmhmem stdio` subcommand contract changes.
 - Tool naming or `read` output header format changes in OpenCode or Claude Code.
 - Diagnostics allowlist changes (`proxy-observability` must re-check its schema tests).
 - Any change to where `attach_request_metadata` runs or to the adapter translation of `tool_result` blocks.
@@ -63,8 +63,8 @@ graph TB
     Metadata --> Econ[EconShunt apply]
     Econ --> Memo[Memo bounded LRU]
     Econ --> Warm[Warm queue background]
-    Warm --> McpClient[MCP JSON RPC client]
-    McpClient --> Mmhmem[mmhmem daemon shunt_content]
+    Warm --> StdioMcpClient[MCP JSON RPC stdio client]
+    StdioMcpClient --> Mmhmem[mmhmem stdio child shunt_content]
     Econ --> Diag[RequestDiagnostic econ event]
     Acquire --> Upstream[Mistral upstream]
     Upstream --> Client
@@ -72,35 +72,39 @@ graph TB
 
 - Selected pattern: **in-process memoized rewrite with background warm-up**. The request path is a pure function of (body, memo); all I/O to mmhmem happens in background tasks owned by the app lifespan.
 - Existing patterns preserved: opt-in via env, fail-open, allowlisted events, response byte-exactness, single body parse.
-- New components rationale: `EconShunt` isolates policy; `McpClient` isolates transport; `Memo` isolates determinism and bounds.
+- New components rationale: `EconShunt` isolates policy; `StdioMcpClient` isolates transport and child supervision; `Memo` isolates determinism and bounds.
 
 ### Technology Stack
 
 | Layer | Choice / Version | Role in Feature | Notes |
 |---|---|---|---|
 | Proxy runtime | Python 3.12+, FastAPI/uvicorn (existing) | hook + lifespan-owned warm tasks | unchanged |
-| Transport to mmhmem | `httpx` AsyncClient (existing) | JSON-RPC over Streamable HTTP, SSE-or-JSON parsing | no SDK |
+| Transport to mmhmem | stdio pipes (`asyncio.subprocess`) | newline-delimited JSON-RPC to the supervised child | no HTTP, no TLS, no SDK |
 | Diagnostics | `diagnostics.py`, `observability.py` (existing) | `econ`, `econ_warm` events | allowlist extended |
-| External | mmhmem ≥ 0.4 with `shunt_content` | summaries, bypass decisions | companion spec |
+| External | mmhmem built from a pinned git ref with `shunt_content` | summaries, bypass decisions | companion spec; Docker build arg `MMHMEM_REF` |
 
 ## File Structure Plan
 
 ### Directory Structure
 ```
 mvibe_proxy/
-├── econ.py               # NEW: EconConfig, Eligibility, Memo, McpClient, EconShunt (≤ 500 lines)
+├── econ.py               # NEW: EconConfig, Eligibility, Memo, StdioMcpClient, EconShunt (≤ 500 lines)
 ├── diagnostics.py        # modified: econ fields on RequestDiagnostic; econ_warm emit helper
 ├── observability.py      # modified: _ALLOWED_FIELDS gains econ fields
-proxy.py                  # modified: --econ switch, EconConfig.from_env, lifespan start/stop, hook in make_acquire
+proxy.py                  # modified: --econ switch, EconConfig.from_env, lifespan start/stop + child supervision, hook in make_acquire
+Dockerfile                # modified: pinned mmhmem build stage (Amendment 1)
+docker-compose.yml        # modified: MVIBE_ECON_* / AGENT_MEM_* env, mmhmem data volumes
 tests/
-├── test_econ.py          # NEW: offline tests with FakeMmhmem (httpx MockTransport) and the test_proxy harness
+├── test_econ.py          # NEW: offline tests with FakeMmhmem (in-process stdio double) and the test_proxy harness
 docs/
 ├── token-economics.md    # NEW: operator guide
 ├── proxy-guide.md        # modified: pointer section
 ```
 
 ### Modified Files
-- `proxy.py` — parse `--econ`; build `EconConfig` from env (warn on incomplete config, exit 2 when `--econ` set and incomplete); in `lifespan` create `EconShunt` on `app.state.econ` and stop it on shutdown; in `make_acquire`, after `attach_request_metadata`, call `app.state.econ.apply(payload, diagnostic)` when econ is configured. The hook must not change the metadata output (Req 3.6): apply works on the already-attributed body.
+- `proxy.py` — parse `--econ`; build `EconConfig` from env (warn on incomplete config, exit 2 when `--econ` set and incomplete); in `lifespan` create `EconShunt` on `app.state.econ` (the client spawns the `mmhmem stdio` child at startup and supervises it) and stop it on shutdown; in `make_acquire`, after `attach_request_metadata`, call `app.state.econ.apply(payload, diagnostic)` when econ is configured. The hook must not change the metadata output (Req 3.6): apply works on the already-attributed body.
+- `Dockerfile` — multi-stage: pinned `ARG MMHMEM_REF` Rust build stage produces the static mmhmem binary; copied to `/usr/local/bin/mmhmem` in the proxy image. The ref must contain `shunt_content` (companion spec implementation).
+- `docker-compose.yml` — pass through `MVIBE_ECON_MMHMEM_BIN` and the `AGENT_MEM_*` child settings (worker, data dir, audit file); optional volumes for mmhmem state when economics is enabled. No new published ports: the child opens no listener.
 - `mvibe_proxy/diagnostics.py` — `RequestDiagnostic` gains optional `econ: dict | None`; `emit()` includes it under allowlisted keys; module-level `emit_econ_warm(record)` reuses the stdout/export path.
 - `mvibe_proxy/observability.py` — extend `_ALLOWED_FIELDS` with `econ_eligible, econ_replaced, econ_bypassed, econ_pending, econ_in_bytes, econ_out_bytes, econ_est_saved_tokens, econ_outcome, econ_latency_ms`.
 
@@ -143,9 +147,9 @@ Flow decisions: `apply` is synchronous CPU work only; warm tasks run under a sem
 
 | Requirement | Summary | Components | Interfaces | Flows |
 |---|---|---|---|---|
-| 1.1 | off by default, no extra calls | EconConfig, proxy.py gating | `MVIBE_ECON_URL` unset ⇒ `app.state.econ is None` | — |
+| 1.1 | off by default, no extra calls | EconConfig, proxy.py gating | `MVIBE_ECON_MMHMEM_BIN` unset ⇒ `app.state.econ is None` | — |
 | 1.2 | env validation | EconConfig.from_env | EconConfigError | startup |
-| 1.3 | loopback warning | EconConfig | stderr warning | startup |
+| 1.3 | in-container child; binary validated | EconConfig, StdioMcpClient | actionable error when the binary is missing/not executable | startup |
 | 1.4 | no secrets/content in diagnostics | allowlist, event schema | `_ALLOWED_FIELDS` | — |
 | 1.5 | `--econ` fail fast | proxy.main | exit 2 | startup |
 | 2.1 | correlate by tool_call_id | Eligibility.correlate | `ToolCallIndex` | sequence |
@@ -165,12 +169,12 @@ Flow decisions: `apply` is synchronous CPU work only; warm tasks run under a sem
 | 4.3 | fail-open + memoized failure + back-off | WarmQueue, Memo | `Outcome.failed(ts)` | sequence |
 | 4.4 | bounded LRU | Memo | `MVIBE_ECON_MEMO_MAX` | — |
 | 4.5 | exception ⇒ raw body | proxy.py try/except around apply | diagnostic `econ_outcome=error` | — |
-| 4.6 | no self-calls, skip without tool msgs | McpClient target = config URL; apply early return | — | — |
+| 4.6 | no self-calls, skip without tool msgs | StdioMcpClient talks only to the spawned child; apply early return | — | — |
 | 5.1 | per-request econ event | RequestDiagnostic.econ | field list | — |
 | 5.2 | via existing channels, no content | diagnostics.emit, observability.allowlisted | — | — |
 | 5.3 | no event when nothing eligible | apply returns None counters | — | — |
 | 5.4 | warm outcome event | emit_econ_warm | `econ_warm` | sequence |
-| 6.1 | fake mmhmem, harness | tests/test_econ.py | httpx MockTransport | — |
+| 6.1 | fake mmhmem, harness | tests/test_econ.py | in-process stdio double | — |
 | 6.2 | coverage list | tests/test_econ.py | — | — |
 | 6.3 | docs | docs/token-economics.md | — | — |
 | 6.4 | pre-existing suite unchanged | CI gate | `uv run --locked --offline -- pytest -q` | — |
@@ -182,8 +186,8 @@ Flow decisions: `apply` is synchronous CPU work only; warm tasks run under a sem
 | EconConfig | config | env parsing, validation, warnings | 1.1–1.3, 1.5, 2.5 | os.environ (P0) | State |
 | Eligibility | policy | select historical read results, hints | 2.1–2.4, 2.6 | EconConfig (P0) | Service |
 | Memo | state | bounded LRU of outcomes by sha256 | 3.3, 4.3, 4.4 | — | State |
-| WarmQueue | background | dedup, bounded concurrency, back-off | 3.4, 4.2, 4.3, 5.4 | McpClient (P0), Memo (P0) | Service |
-| McpClient | transport | JSON-RPC to mmhmem `shunt_content` | 4.1–4.3, 4.6 | httpx (P0), mmhmem (P1 external) | API |
+| WarmQueue | background | dedup, bounded concurrency, back-off | 3.4, 4.2, 4.3, 5.4 | StdioMcpClient (P0), Memo (P0) | Service |
+| StdioMcpClient | transport | supervised `mmhmem stdio` child; JSON-RPC over pipes | 4.1–4.3, 4.6 | asyncio.subprocess (P0), mmhmem binary (P1 external) | API |
 | EconShunt | orchestration | apply() on a body; render marker; counters | 3.1, 3.2, 3.4–3.6, 4.5, 4.6, 5.1–5.3 | all above (P0) | Service |
 
 ### config
@@ -196,15 +200,15 @@ Flow decisions: `apply` is synchronous CPU work only; warm tasks run under a sem
 | Requirements | 1.1, 1.2, 1.3, 1.5, 2.5 |
 
 **Responsibilities & Constraints**
-- Env keys: `MVIBE_ECON_URL` (absent/blank ⇒ disabled), `MVIBE_ECON_TOKEN` (required when URL set), `MVIBE_ECON_PROJECT` (default `mvibe`), `MVIBE_ECON_TOOLS` (comma list, default `read`), `MVIBE_ECON_MIN_BYTES` (default 4096, int ≥ 256), `MVIBE_ECON_TIMEOUT_MS` (warm call timeout, default 45000), `MVIBE_ECON_MEMO_MAX` (default 2000), `MVIBE_ECON_RETRY_S` (default 300), `MVIBE_ECON_CONCURRENCY` (default 2).
+- Env keys: `MVIBE_ECON_MMHMEM_BIN` (absent/blank ⇒ disabled; when set, the path must exist and be executable, else `EconConfigError` — this replaces the former loopback warning per Amendment 1), `MVIBE_ECON_PROJECT` (default `mvibe`), `MVIBE_ECON_TOOLS` (comma list, default `read`), `MVIBE_ECON_MIN_BYTES` (default 4096, int ≥ 256), `MVIBE_ECON_TIMEOUT_MS` (warm call timeout, default 45000), `MVIBE_ECON_MEMO_MAX` (default 2000), `MVIBE_ECON_RETRY_S` (default 300), `MVIBE_ECON_CONCURRENCY` (default 2).
 - `HARD_EXCLUDED = {'edit','write','bash','shell','execute','patch','multiedit'} ∪ {names starting with 'mmhmem'}`; entries from `MVIBE_ECON_TOOLS` that hit the hard exclusion are dropped with one stderr warning (2.5). v1 documents that only `read` is tested.
-- Loopback check reuses `proxy._is_loopback` on the URL host (1.3).
+- Loopback check removed (Amendment 1): there is no endpoint address; tool-result contents never traverse a network.
 
 **Contracts**: State [x]
 ```python
 @dataclass(frozen=True)
 class EconConfig:
-    url: str; token: str; project: str; tools: frozenset[str]
+    mmhmem_bin: str; project: str; tools: frozenset[str]
     min_bytes: int; timeout_ms: int; memo_max: int; retry_s: int; concurrency: int
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> 'EconConfig | None': ...  # None = disabled
@@ -278,7 +282,7 @@ class Memo:
 **Contracts**: Service [x]
 ```python
 class WarmQueue:
-    def __init__(self, client: McpClient, memo: Memo, config: EconConfig, emit: Callable[[dict], None]): ...
+    def __init__(self, client: StdioMcpClient, memo: Memo, config: EconConfig, emit: Callable[[dict], None]): ...
     def schedule(self, candidate: Candidate) -> bool: ...   # False if already in flight or memo says wait
     async def shutdown(self, timeout_s: float = 2.0) -> None: ...
 ```
@@ -288,14 +292,14 @@ class WarmQueue:
 
 ### transport
 
-#### McpClient
+#### StdioMcpClient
 
 | Field | Detail |
 |---|---|
-| Intent | Minimal JSON-RPC client for one tool on one endpoint |
-| Requirements | 4.1, 4.2, 4.3, 4.6 |
+| Intent | Supervised `mmhmem stdio` child; minimal JSON-RPC client for one tool over pipes |
+| Requirements | 1.3, 4.1, 4.2, 4.3, 4.6 |
 
-**Dependencies**: External — mmhmem Streamable HTTP endpoint (P1, optional at runtime, required when econ enabled).
+**Dependencies**: External — the mmhmem binary at `config.mmhmem_bin` (P1, optional at runtime, required when econ enabled). No network, no ports, no tokens.
 
 **Contracts**: API [x]
 ```python
@@ -307,19 +311,24 @@ class ShuntResult:
     content_sha256: str
     line_count: int
     avoided_input_tokens_est: int
-class McpClient:
-    def __init__(self, url: str, token: str, client: httpx.AsyncClient): ...
+class StdioMcpClient:
+    def __init__(self, bin_path: str, reader: asyncio.StreamReader | None = None,
+                 writer: asyncio.StreamWriter | None = None): ...
+    async def start(self) -> None: ...      # spawn [bin, "stdio"], initialize handshake (no-op when streams injected)
     async def shunt_content(self, *, project: str, content: str, kind: str, source_hint: str | None, timeout_ms: int) -> ShuntResult: ...
+    async def shutdown(self, timeout_s: float = 2.0) -> None: ...
 class McpError(RuntimeError): ...   # transport, protocol, or tool error (message is sanitized: no content)
 ```
-| Method | Endpoint | Request | Response | Errors |
+| Method | Channel | Request | Response | Errors |
 |---|---|---|---|---|
-| POST | `{url}` | JSON-RPC `initialize` (once per session) | capabilities; header `mcp-session-id` | 401 ⇒ McpError(auth) |
-| POST | `{url}` | JSON-RPC `notifications/initialized` | 202/200 | — |
-| POST | `{url}` | JSON-RPC `tools/call` `{name:'shunt_content', arguments:{project, agent_harness:'mvibe-proxy', content, kind:'file_read', source_hint}}` | text content block holding one JSON object (companion contract) | tool `isError` ⇒ McpError; 404 invalid session ⇒ re-initialize once |
+| start | stdin | JSON-RPC `initialize` | capabilities on stdout | spawn failure / non-zero exit ⇒ McpError(spawn) |
+| start | stdin | `notifications/initialized` | none (notification) | — |
+| shunt_content | stdin | JSON-RPC `tools/call` `{name:'shunt_content', arguments:{project, agent_harness:'mvibe-proxy', content, kind:'file_read', source_hint}}` | stdout: one JSON-RPC response per line, matched by `id`; result is a text content block holding one JSON object (companion contract) | tool `isError` ⇒ McpError; timeout ⇒ McpError(timeout); EOF (child died) ⇒ McpError(terminated) + restart |
 
-- Headers: `Authorization: Bearer <token>`, `Accept: application/json, text/event-stream`, `Content-Type: application/json`, `mcp-session-id` when known. Body parsing accepts a JSON document or SSE `data:` frames; the last JSON-RPC response with the matching `id` wins.
-- The client never logs request bodies; errors carry status and JSON-RPC error code only.
+- Framing: one JSON-RPC message per `\n`-terminated line, UTF-8 (rmcp stdio transport; pinned by mmhmem's own stdio test harness). Only client-originated `id`s are awaited; server notifications are ignored.
+- Supervision: abnormal child exit fails all in-flight calls fast (→ `Outcome.failed` with back-off, fail-open) and schedules a restart with capped exponential back-off (1 s → 30 s); an idle healthy child is left running. `shutdown()` closes stdin, waits ≤ `timeout_s`, then terminates the child.
+- Injected `reader`/`writer` (tests) replace the child entirely: no subprocess is spawned, the protocol logic is exercised in-process.
+- The client never logs request bodies or child stderr content; errors carry the JSON-RPC error code or errno only. Child stderr is drained and discarded (mmhmem logs are file-based).
 
 ### orchestration
 
@@ -346,8 +355,8 @@ class EconShunt:
 - `proxy.py` wraps the call: `try: counters = econ.apply(parsed) except Exception: diagnostic.econ = {'econ_outcome': 'error'}; keep original payload`. The parse/dump is shared with `attach_request_metadata` (refactor that helper to expose `attach_request_metadata_dict(payload: dict, ...)` or parse once in `make_acquire`; either keeps its output bytes identical when econ is disabled — verified by the existing metadata tests).
 
 **Implementation Notes**
-- Integration: `app.state.econ` created in lifespan with the app's own `httpx.AsyncClient` (a separate client from the upstream one, loopback by default); `shutdown()` awaited in the lifespan `finally` with a 2 s bound.
-- Validation: `tests/test_econ.py` drives `apply` with captured-shape fixtures (synthetic content, not real captures) and the full app through the `harness()` pattern with a `FakeMmhmem` MockTransport serving SSE frames.
+- Integration: `app.state.econ` created in lifespan; `StdioMcpClient.start()` spawns the child during startup (missing/not-executable binary ⇒ `EconConfigError` path); `shutdown()` awaited in the lifespan `finally` with a 2 s bound (closes stdin, waits, terminates).
+- Validation: `tests/test_econ.py` drives `apply` with captured-shape fixtures (synthetic content, not real captures) and the full app through the `harness()` pattern with a `FakeMmhmem` stdio double (injected streams) speaking the companion contract.
 - Risks: large bodies parsed twice (avoid by single parse); memo memory (bounded); a client that resends with different whitespace produces a different hash and a separate entry (acceptable).
 
 ## Data Models
@@ -369,27 +378,27 @@ No content, hints, paths or hashes are exported (hashes stay in memory only).
 
 - **Config**: `EconConfigError` at startup → warning and disabled, or exit 2 under `--econ`.
 - **Request path**: any exception inside `apply` → original body relayed, `econ_outcome=error`.
-- **Warm path**: `McpError`, `httpx` errors, timeouts, JSON errors → `Outcome.failed` with back-off, `econ_warm` event `failed`; never raised to a request.
+- **Warm path**: `McpError`, subprocess spawn/EOF errors, child termination, timeouts, JSON errors → `Outcome.failed` with back-off, `econ_warm` event `failed`; never raised to a request; the supervisor restarts a crashed child with capped back-off.
 - **Bypass** from mmhmem (`security_critical`, `below_threshold`, `unsupported_kind`) → `Outcome.bypassed`, permanent for the process.
 - **Monitoring**: counters in the econ events; stdout `--log` and OpenObserve export both receive them.
 
 ## Testing Strategy
 
 - **Unit (`tests/test_econ.py`, offline)**:
-  - `EconConfig.from_env`: unset ⇒ None; URL without token ⇒ error naming `MVIBE_ECON_TOKEN`; hard-excluded tool in allowlist ⇒ dropped + warning; off-loopback ⇒ warning text.
+  - `EconConfig.from_env`: unset ⇒ None; `--econ`-worthy key set but binary missing/not executable ⇒ error naming `MVIBE_ECON_MMHMEM_BIN`; hard-excluded tool in allowlist ⇒ dropped + warning; malformed numeric keys ⇒ actionable errors.
   - `Eligibility`: correlation by id across multi-call assistant messages; trailing-group detection for `[…, assistant(tool_calls), tool, tool]` and `[…, tool, user]`; min bytes; non-string content; `Read` vs `read`; hint from header vs `filePath` arg vs none.
   - `Memo`: LRU eviction at max; `retry_due` semantics; byte-identical `get` after `put`.
-  - `McpClient`: SSE and JSON responses; session header echo; 404 ⇒ re-init once; tool `isError` ⇒ `McpError`; no content in error messages.
+  - `StdioMcpClient`: initialize handshake; response matching by id; tool `isError` ⇒ `McpError`; malformed line ⇒ `McpError(protocol)`; EOF mid-request (child death) ⇒ `McpError(terminated)` and a scheduled restart; injected-stream mode never spawns a subprocess; no content in error messages.
   - `EconShunt.apply`: unknown hash ⇒ raw + scheduled; memoized summary ⇒ replaced content equals `MARKER + summary`, role/id untouched, other messages byte-identical; nothing eligible ⇒ `None`.
 - **Integration (full app, `harness()` pattern)**: Anthropic and Ollama adapter requests with historical read results reach the upstream mock with replaced content after warm-up; OpenAI dialect same; upstream response bytes identical; `attach_request_metadata` output unchanged; `X-Request-ID` event carries econ fields; token absent from every emitted record; econ disabled ⇒ upstream request bytes equal to the pre-feature expectation.
-- **Fail-open**: FakeMmhmem returning 500 / hanging beyond timeout / malformed JSON ⇒ raw relay, `failed` memo, no retry before back-off, then retry after.
+- **Fail-open**: FakeMmhmem returning tool errors / hanging beyond timeout / malformed JSON / closing the stream (child death) ⇒ raw relay, `failed` memo, no retry before back-off, then retry after.
 - **Regression**: `uv run --locked --offline -- pytest -q` (1212 pre-existing tests) and `scripts/verify.ps1` gate unchanged.
-- **Live (not part of the gate)**: documented manual check with a local `mmhmem serve` and `smoketests` request replay; record in `docs/live-results.md` when done.
+- **Live (not part of the gate)**: documented manual check with a locally built mmhmem binary (`MVIBE_ECON_MMHMEM_BIN=<path>`, child spawned by the proxy) and `smoketests` request replay; record in `docs/live-results.md` when done.
 
 ## Security Considerations
-- Token only via env; never in files, logs, events or errors (tests assert absence).
-- Tool-result content leaves the process only to the configured endpoint; loopback default and warning otherwise. mmhmem audits hash-only (companion spec).
-- The proxy never executes tools and never calls itself; the econ client targets the configured URL only.
+- No tokens in the econ path: stdio needs no authentication (pipes are kernel-enforced process-local; mmhmem's local profile opens no listener and reads no token).
+- Tool-result content stays inside the container: it is written to the child's stdin only. The child is the sole consumer; the proxy never sends it anywhere else and never calls itself. mmhmem audits hash-only (companion spec).
+- The operator guide states the trust boundary: the child (and its worker-model egress, if configured) sees full tool-result contents by design.
 - Security-critical content is bypassed by mmhmem; the proxy memoizes the bypass so it is not resent.
 
 ## Performance & Scalability
