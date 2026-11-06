@@ -29,7 +29,7 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
   - _Boundary: Eligibility_
   - _Requirements: 2.1, 2.2, 2.3, 2.6_
 
-- [ ] 2.2 (P) Bounded memo of outcomes
+- [x] 2.2 (P) Bounded memo of outcomes
   - Least-recently-used store keyed by content hash holding summary, bypass or failure outcomes with timestamps and a back-off check
   - Observable completion: tests show eviction at the configured maximum, LRU touch on read, byte-identical summaries across repeated reads, and back-off expiry
   - _Boundary: Memo_
