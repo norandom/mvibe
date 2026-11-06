@@ -1,6 +1,8 @@
 """Offline unit contracts for the token-economics configuration (proxy-econ-client 1.1),
 the fake mmhmem stdio double with synthetic dialect fixtures (proxy-econ-client 1.2),
-and the eligibility of historical file-read results (proxy-econ-client 2.1)."""
+the eligibility of historical file-read results (proxy-econ-client 2.1), the bounded
+memo of outcomes (proxy-econ-client 2.2), and the minimal supervised stdio JSON-RPC
+client (proxy-econ-client 2.3)."""
 import asyncio
 import copy
 import dataclasses
@@ -8,6 +10,8 @@ import hashlib
 import json
 import re
 import sys
+import time
+from contextlib import asynccontextmanager
 
 import httpx
 import httpx2
@@ -15,10 +19,10 @@ import pytest
 
 import proxy
 from econ_helpers import (
-    HIST_BASH_ID, HIST_MMHMEM_ID, HIST_READ_ID, HIST_READ_PATH, MMHMEM_RESULT,
-    SHELL_RESULT, TRAILING_BASH_ID, TRAILING_READ_ID, TRAILING_READ_PATH,
-    anthropic_econ_body, ollama_econ_body, openai_econ_body, start_fake,
-    synthetic_read_content,
+    ChildStdinWriter, FakeMmhmem, HIST_BASH_ID, HIST_MMHMEM_ID, HIST_READ_ID,
+    HIST_READ_PATH, MMHMEM_RESULT, SHELL_RESULT, TRAILING_BASH_ID, TRAILING_READ_ID,
+    TRAILING_READ_PATH, anthropic_econ_body, ollama_econ_body, openai_econ_body,
+    start_fake, synthetic_read_content,
 )
 from mvibe_proxy import compat, econ
 from mvibe_proxy.econ import EconConfig, EconConfigError, HARD_EXCLUDED
@@ -1050,3 +1054,297 @@ def test_outcome_is_frozen_so_stored_entries_never_drift():
     outcome = summary_outcome(0)
     with pytest.raises(dataclasses.FrozenInstanceError):
         outcome.kind = 'failed'
+
+
+# --- 2.3: minimal stdio JSON-RPC client with child supervision -------------------
+#
+# The real StdioMcpClient driven against FakeMmhmem injected streams: handshake
+# ordering and wire arguments, response matching by id under interleaved
+# traffic, every failure surfaced as one sanitized McpError (tool, protocol,
+# timeout, terminated — never content, never paths), and supervision (fail
+# in-flight fast + a restart recorded with capped 1 s -> 30 s back-off). The
+# spawn path never executes here: create_subprocess_exec is patched to fail
+# loudly and the teardown asserts it was never called (Requirement 6.1; the
+# Windows ProactorEventLoop subprocess semantics stay out of the gate).
+
+SENTINEL_BIN = '/sentinel/mmhmem-bin-never-spawned'
+
+
+@pytest.fixture
+def no_spawn(monkeypatch):
+    """Prove the injected-stream client never spawns: the spawn entry point
+    fails loudly if reached, and the teardown asserts it stayed uncalled."""
+    calls = []
+
+    def deny(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError('StdioMcpClient must never spawn a subprocess in tests')
+
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', deny)
+    yield calls
+    assert calls == []
+
+
+@asynccontextmanager
+async def mcp_client(mode: str = 'summarized', **kwargs):
+    """A started StdioMcpClient against a fresh FakeMmhmem; both stopped after."""
+    fake = FakeMmhmem(mode, **kwargs)
+    await fake.start()
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=fake.reader, writer=fake.writer)
+    await client.start()
+    try:
+        yield client, fake
+    finally:
+        await client.shutdown()
+        await fake.stop()
+
+
+async def shunt(client: econ.StdioMcpClient, content: str, *,
+                timeout_ms: int = 2_000, project: str = 'mvibe',
+                source_hint: str | None = None):
+    """shunt_content with the design defaults filled in."""
+    return await client.shunt_content(project=project, content=content, kind='file_read',
+                                      source_hint=source_hint, timeout_ms=timeout_ms)
+
+
+def test_shunt_result_field_set_matches_the_design_contract_and_is_frozen():
+    assert [field.name for field in dataclasses.fields(econ.ShuntResult)] == [
+        'outcome', 'summary', 'bypass_reason', 'content_sha256', 'line_count',
+        'avoided_input_tokens_est']
+    result = econ.ShuntResult(outcome='bypassed', summary=None,
+                              bypass_reason='below_threshold', content_sha256='0' * 64,
+                              line_count=3, avoided_input_tokens_est=0)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        result.outcome = 'summarized'
+
+
+@pytest.mark.anyio
+async def test_client_round_trip_summarized_matches_the_companion_contract(no_spawn):
+    content = synthetic_read_content()
+    sha = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    async with mcp_client('summarized') as (client, _fake):
+        result = await shunt(client, content, source_hint=HIST_READ_PATH)
+        assert result.outcome == 'summarized'
+        assert result.summary is not None and result.summary.startswith(f'SUM<{sha[:8]}>')
+        assert result.bypass_reason is None
+        assert result.content_sha256 == sha  # the real sha256, not a placeholder
+        assert result.line_count == len(content.splitlines())
+        assert result.avoided_input_tokens_est == len(content) // 4
+        # a healthy round trip resets the restart back-off ladder
+        client._backoff_s = 8.0
+        await shunt(client, content)
+        assert client._backoff_s == econ.RESTART_BACKOFF_S
+
+
+@pytest.mark.anyio
+async def test_client_handshake_order_and_wire_arguments_match_the_design(no_spawn):
+    content = synthetic_read_content()
+    async with mcp_client('summarized') as (client, fake):
+        await shunt(client, content, project='proj-x', source_hint=HIST_READ_PATH)
+        assert [method for method, _ in fake.calls] == [
+            'initialize', 'notifications/initialized', 'tools/call']
+        initialize = json.loads(fake.lines[0])
+        assert initialize['id'] == 1
+        assert initialize['params']['protocolVersion'] == '2025-06-18'
+        assert initialize['params']['capabilities'] == {}
+        assert initialize['params']['clientInfo']['name']
+        notification = json.loads(fake.lines[1])
+        assert notification['method'] == 'notifications/initialized'
+        assert 'id' not in notification  # a notification is never answered
+        method, params = fake.calls[2]
+        assert (method, params['name']) == ('tools/call', 'shunt_content')
+        assert params['arguments'] == {
+            'project': 'proj-x', 'agent_harness': 'mvibe-proxy',
+            'content': content, 'kind': 'file_read',
+            'source_hint': HIST_READ_PATH,
+        }
+        assert json.loads(fake.lines[2])['id'] == 2  # the response is matched by id
+        # source_hint is omitted entirely when there is none
+        await shunt(client, 'tiny')
+        assert 'source_hint' not in fake.calls[3][1]['arguments']
+        # an idle healthy child is left running: start() re-initializes nothing
+        await client.start()
+        assert [method for method, _ in fake.calls] == [
+            'initialize', 'notifications/initialized', 'tools/call', 'tools/call']
+
+
+@pytest.mark.anyio
+async def test_client_cached_and_bypassed_outcomes_and_absent_optional_fields(no_spawn):
+    cached_content = synthetic_read_content()
+    bypassed_content = synthetic_read_content(TRAILING_READ_PATH)
+    override = {hashlib.sha256(cached_content.encode('utf-8')).hexdigest(): 'cached'}
+    async with mcp_client('bypassed', modes_by_sha=override,
+                          bypass_reason='security_critical') as (client, _fake):
+        cached = await shunt(client, cached_content)
+        assert cached.outcome == 'cached'
+        assert cached.summary is not None and cached.summary.startswith('SUM<')
+        assert cached.bypass_reason is None
+        assert cached.content_sha256 == hashlib.sha256(
+            cached_content.encode('utf-8')).hexdigest()
+        # the fake's bypassed object omits latency_ms and worker_model entirely:
+        # absent optional fields are tolerated, not required to be null
+        bypassed = await shunt(client, bypassed_content)
+        assert bypassed.outcome == 'bypassed'
+        assert bypassed.summary is None
+        assert bypassed.bypass_reason == 'security_critical'
+        assert bypassed.content_sha256 == hashlib.sha256(
+            bypassed_content.encode('utf-8')).hexdigest()
+        assert bypassed.line_count == len(bypassed_content.splitlines())
+        assert bypassed.avoided_input_tokens_est == 0
+
+
+@pytest.mark.anyio
+async def test_client_tool_error_is_one_sanitized_error_type(no_spawn):
+    content = synthetic_read_content()
+    async with mcp_client('tool_error') as (client, _fake):
+        with pytest.raises(econ.McpError, match='^tool: worker not configured$') as excinfo:
+            await shunt(client, content, source_hint=HIST_READ_PATH)
+        assert isinstance(excinfo.value, RuntimeError)  # one error type: McpError
+        message = str(excinfo.value)
+        assert content[:80] not in message  # never the request content
+        assert HIST_READ_PATH not in message  # never the source hint
+        assert SENTINEL_BIN not in message  # never the binary path
+        assert 'synthetic' not in message
+
+
+@pytest.mark.anyio
+async def test_client_malformed_line_is_a_protocol_error_without_echo(no_spawn):
+    async with mcp_client('malformed') as (client, _fake):
+        with pytest.raises(econ.McpError, match='^protocol:') as excinfo:
+            await shunt(client, synthetic_read_content(), source_hint=HIST_READ_PATH)
+        assert SENTINEL_BIN not in str(excinfo.value)
+        assert 'boom' not in str(excinfo.value)  # the bad line is never echoed
+
+
+@pytest.mark.anyio
+async def test_client_timeout_on_a_hanging_call_leaves_the_child_usable(no_spawn):
+    hanging = 'hangs-forever-content'
+    healthy = synthetic_read_content()
+    override = {hashlib.sha256(hanging.encode('utf-8')).hexdigest(): 'hang'}
+    async with mcp_client('summarized', modes_by_sha=override) as (client, fake):
+        with pytest.raises(econ.McpError, match='^timeout:') as excinfo:
+            await shunt(client, hanging, timeout_ms=60)
+        assert 'hangs-forever-content' not in str(excinfo.value)
+        # a slow answer is not a dead child: the next call round-trips
+        result = await shunt(client, healthy)
+        assert result.outcome == 'summarized'
+        assert sum(1 for method, _ in fake.calls if method == 'tools/call') == 2
+
+
+@pytest.mark.anyio
+async def test_client_matches_responses_by_id_under_interleaved_traffic(no_spawn):
+    slow = 'slow-hash-content'
+    fast = synthetic_read_content()
+    override = {hashlib.sha256(slow.encode('utf-8')).hexdigest(): 'hang'}
+    async with mcp_client('summarized', modes_by_sha=override) as (client, _fake):
+        slow_task = asyncio.create_task(shunt(client, slow, timeout_ms=150))
+        await asyncio.sleep(0)  # the slow request is written first
+        fast_result = await shunt(client, fast)
+        assert fast_result.content_sha256 == hashlib.sha256(
+            fast.encode('utf-8')).hexdigest()
+        # the pending slow call still times out: the ids never got confused
+        with pytest.raises(econ.McpError, match='^timeout:'):
+            await slow_task
+
+
+@pytest.mark.anyio
+async def test_client_eof_mid_request_fails_fast_and_schedules_capped_restart(no_spawn):
+    async with mcp_client('close') as (client, fake):
+        with pytest.raises(econ.McpError, match='^terminated:') as excinfo:
+            await shunt(client, 'content-at-death', source_hint=HIST_READ_PATH)
+        assert 'content-at-death' not in str(excinfo.value)
+        assert SENTINEL_BIN not in str(excinfo.value)
+        assert fake.closed is True
+        # the restart is scheduled with the first capped back-off step (1 s)
+        assert client.restart_backoffs == [econ.RESTART_BACKOFF_S]
+        assert client.restart_at is not None
+        assert client.restart_at > time.monotonic()
+        # the next call fails fast too: no hang, no spawn, no retry storm
+        with pytest.raises(econ.McpError, match='^terminated:'):
+            await shunt(client, 'after-death', timeout_ms=100)
+
+
+def raw_streams() -> tuple[asyncio.StreamReader, ChildStdinWriter]:
+    """A brainless injected stream pair: every response is pre-fed by the test."""
+    sink = asyncio.StreamReader(limit=2 ** 20)
+    reader = asyncio.StreamReader(limit=2 ** 20)
+    return reader, ChildStdinWriter(sink)
+
+
+def feed_line(reader: asyncio.StreamReader, payload: dict) -> None:
+    reader.feed_data((json.dumps(payload) + '\n').encode('utf-8'))
+
+
+BAD_SHUNT_RESULTS = [
+    {},
+    {'content': []},
+    {'content': [{'type': 'text'}]},
+    {'content': [{'type': 'text', 'text': 'not-json{'}]},
+    {'content': [{'type': 'text', 'text': '[1, 2]'}]},
+    {'content': [{'type': 'text', 'text': json.dumps({
+        'outcome': 'exploded', 'content_sha256': '0' * 64, 'line_count': 1,
+        'avoided_input_tokens_est': 1})}]},
+    {'content': [{'type': 'text', 'text': json.dumps({
+        'outcome': 'summarized', 'line_count': 1,
+        'avoided_input_tokens_est': 1})}]},
+    'result-is-not-an-object',
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('result', BAD_SHUNT_RESULTS)
+async def test_client_protocol_violations_surface_as_sanitized_protocol_errors(
+        no_spawn, result):
+    reader, writer = raw_streams()
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 1, 'result': {'capabilities': {}}})
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=reader, writer=writer)
+    await client.start()
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 2, 'result': result})
+    with pytest.raises(econ.McpError, match='^protocol:') as excinfo:
+        await shunt(client, 'protocol-fodder')
+    assert 'protocol-fodder' not in str(excinfo.value)
+    assert SENTINEL_BIN not in str(excinfo.value)
+    await client.shutdown()
+
+
+@pytest.mark.anyio
+async def test_client_shutdown_fails_inflight_fast_closes_stdin_and_is_idempotent(
+        no_spawn):
+    hanging = 'inflight-at-shutdown'
+    override = {hashlib.sha256(hanging.encode('utf-8')).hexdigest(): 'hang'}
+    async with mcp_client('summarized', modes_by_sha=override) as (client, fake):
+        inflight = asyncio.create_task(shunt(client, hanging, timeout_ms=10_000))
+        await asyncio.sleep(0)
+        await client.shutdown(timeout_s=0.2)
+        with pytest.raises(econ.McpError, match='^terminated:'):
+            await inflight
+        with pytest.raises(ConnectionResetError):
+            fake.writer.write(b'{"jsonrpc": "2.0"}\n')  # stdin is closed
+        await client.shutdown(timeout_s=0.2)  # idempotent
+        with pytest.raises(econ.McpError, match='^terminated:'):
+            await shunt(client, 'post-shutdown', timeout_ms=50)
+
+
+@pytest.mark.anyio
+async def test_client_calls_before_start_fail_fast_without_spawning(no_spawn):
+    fake = FakeMmhmem('summarized')
+    await fake.start()
+    try:
+        client = econ.StdioMcpClient(SENTINEL_BIN, reader=fake.reader, writer=fake.writer)
+        with pytest.raises(econ.McpError, match='^terminated:'):
+            await shunt(client, 'never-started', timeout_ms=100)
+        assert fake.calls == []  # nothing was ever written
+        await client.shutdown()
+    finally:
+        await fake.stop()
+
+
+def test_restart_backoff_doubles_from_one_second_up_to_the_thirty_second_cap():
+    assert econ.RESTART_BACKOFF_S == 1.0
+    assert econ.RESTART_BACKOFF_MAX_S == 30.0
+    delays = []
+    backoff = econ.RESTART_BACKOFF_S
+    for _ in range(8):
+        delays.append(backoff)
+        backoff = econ._capped_backoff(backoff)
+    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0]

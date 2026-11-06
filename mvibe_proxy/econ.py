@@ -10,14 +10,17 @@ from the allowlist with one startup warning naming them.
 """
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
+import contextlib
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 import re
 import sys
+import time
 from typing import Literal
 
 # --- config (Requirements 1.1, 1.2, 1.3, 2.5) -------------------------------
@@ -338,3 +341,462 @@ class Memo:
         if outcome.kind != 'failed':
             return True
         return now >= outcome.at + retry_s
+
+
+# --- transport: supervised stdio JSON-RPC client (Requirements 1.3, 4.1–4.3, 4.6) --
+#
+# The minimal MCP client for exactly one tool over the mmhmem child's pipes.
+# Framing is one JSON-RPC message per '\n'-terminated UTF-8 line — the framing
+# rmcp's stdio transport uses, pinned by mmhmem's own stdio test harness
+# (Amendment 1, D3). Production start() spawns `[bin, 'stdio']` with piped
+# stdio and supervises it; injected reader/writer streams replace the child
+# entirely, so tests exercise the protocol in-process and never spawn.
+# Every failure is one sanitized error type: a message never carries request
+# content, source hints, or paths — only a short tag plus a JSON-RPC error
+# code, an errno, or the child's own bounded tool-error text.
+
+MCP_PROTOCOL_VERSION = '2025-06-18'
+AGENT_HARNESS = 'mvibe-proxy'
+SHUNT_TOOL = 'shunt_content'
+
+#: Bounds fixed by the design: the initialize handshake and the capped
+#: exponential restart ladder (first death waits 1 s, each further death
+#: doubles the wait, never past 30 s; a healthy round trip resets it).
+HANDSHAKE_TIMEOUT_S = 5.0
+RESTART_BACKOFF_S = 1.0
+RESTART_BACKOFF_MAX_S = 30.0
+
+_TOOL_MESSAGE_LIMIT = 120
+_SHUNT_OUTCOMES = frozenset({'summarized', 'cached', 'bypassed'})
+
+
+class McpError(RuntimeError):
+    """A transport, protocol, or tool error from the stdio child.
+
+    Sanitized by construction: the message never contains request content,
+    source hints, file paths, or child stderr — only a class tag plus a
+    JSON-RPC error code, an errno, or the child's bounded tool-error text.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ShuntResult:
+    """One companion-contract shunt_content outcome (absent fields omitted)."""
+
+    outcome: Literal['summarized', 'cached', 'bypassed']
+    summary: str | None
+    bypass_reason: str | None
+    content_sha256: str
+    line_count: int
+    avoided_input_tokens_est: int
+
+
+def _sanitize_message(text: str) -> str:
+    """One bounded line: whitespace collapsed, length capped, nothing else."""
+    collapsed = ' '.join(text.split())
+    if len(collapsed) > _TOOL_MESSAGE_LIMIT:
+        collapsed = collapsed[:_TOOL_MESSAGE_LIMIT - 3] + '...'
+    return collapsed or '<no message>'
+
+
+def _capped_backoff(previous: float) -> float:
+    """Next restart delay: double the previous, capped at 30 s (1 s -> 30 s)."""
+    return min(previous * 2, RESTART_BACKOFF_MAX_S)
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _tool_error(result: dict) -> McpError:
+    """The child reported isError: surface its bounded text, sanitized."""
+    content = result.get('content')
+    text = ''
+    if (isinstance(content, list) and content
+            and isinstance(content[0], dict)
+            and isinstance(content[0].get('text'), str)):
+        text = content[0]['text']
+    return McpError(f'tool: {_sanitize_message(text)}')
+
+
+def _parse_shunt_result(result: object) -> ShuntResult:
+    """Validate one tools/call result against the companion contract.
+
+    Shape violations raise a sanitized McpError(protocol); an `isError`
+    result raises a sanitized McpError(tool). Absent optional inner fields
+    (summary, bypass_reason, latency_ms, worker_model) are tolerated.
+    """
+    if not isinstance(result, dict):
+        raise McpError('protocol: tools/call result is not an object')
+    if result.get('isError'):
+        raise _tool_error(result)
+    content = result.get('content')
+    block = content[0] if isinstance(content, list) and content else None
+    if not isinstance(block, dict) or not isinstance(block.get('text'), str):
+        raise McpError('protocol: tools/call result has no text content block')
+    try:
+        inner = json.loads(block['text'])
+    except ValueError:
+        raise McpError('protocol: text content block is not one JSON object') from None
+    if not isinstance(inner, dict):
+        raise McpError('protocol: text content block is not one JSON object') from None
+    outcome = inner.get('outcome')
+    sha256 = inner.get('content_sha256')
+    line_count = inner.get('line_count')
+    est = inner.get('avoided_input_tokens_est')
+    if (not isinstance(outcome, str) or outcome not in _SHUNT_OUTCOMES
+            or not isinstance(sha256, str)
+            or not _is_int(line_count) or not _is_int(est)):
+        raise McpError('protocol: malformed shunt_content result fields')
+    summary = inner.get('summary')
+    bypass_reason = inner.get('bypass_reason')
+    return ShuntResult(
+        outcome=outcome,
+        summary=summary if isinstance(summary, str) else None,
+        bypass_reason=bypass_reason if isinstance(bypass_reason, str) else None,
+        content_sha256=sha256,
+        line_count=line_count,
+        avoided_input_tokens_est=est,
+    )
+
+
+class StdioMcpClient:
+    """Minimal MCP JSON-RPC client for a supervised `mmhmem stdio` child.
+
+    Production: `await start()` spawns `[bin_path, 'stdio']` with piped stdio,
+    runs the initialize handshake, and supervises the child — an abnormal exit
+    fails in-flight calls fast and schedules a restart with capped exponential
+    back-off (1 s -> 30 s); an idle healthy child is left running. Tests inject
+    the reader/writer streams instead, which replaces the child entirely: no
+    subprocess is ever spawned, and a "restart" stays recorded state.
+
+    The client never logs request bodies or child stderr (stderr is drained
+    and discarded); error messages carry a JSON-RPC code or an errno only.
+    """
+
+    def __init__(self, bin_path: str,
+                 reader: asyncio.StreamReader | None = None,
+                 writer: asyncio.StreamWriter | None = None):
+        if (reader is None) != (writer is None):
+            raise ValueError('reader and writer must be injected together')
+        self._bin_path = bin_path
+        self._injected_reader = reader
+        self._injected_writer = writer
+        self._injected = reader is not None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._proc: asyncio.subprocess.Process | None = None
+        self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._watch_task: asyncio.Task | None = None
+        self._restart_task: asyncio.Task | None = None
+        self._waiters: dict[int, asyncio.Future] = {}
+        self._next_id = 0
+        self._connected = False
+        self._handshaked = False
+        self._closed = False
+        self._backoff_s = RESTART_BACKOFF_S
+        #: Back-off chosen per recorded restart (observable supervision state).
+        self.restart_backoffs: list[float] = []
+        #: Monotonic deadline before which no re-spawn may happen (None: none due).
+        self.restart_at: float | None = None
+
+    # -- lifecycle --------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Spawn the child and initialize; a healthy child is left running.
+
+        Idempotent while connected. After a termination, a spawn-mode start
+        waits out the remaining back-off, then re-spawns; with injected
+        streams the restart stays recorded — the test owns any replacement.
+        """
+        if self._closed or self._connected:
+            return
+        if self._injected:
+            if self._handshaked:
+                return  # injected streams are fixed: nothing to re-spawn
+            await self._connect(self._injected_reader, self._injected_writer)
+            return
+        if self.restart_at is not None:
+            remaining = self.restart_at - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        restart_task, self._restart_task = self._restart_task, None
+        if restart_task is not None and not restart_task.done():
+            restart_task.cancel()
+            await asyncio.gather(restart_task, return_exceptions=True)
+        await self._spawn_and_connect()
+
+    async def shunt_content(self, *, project: str, content: str, kind: str,
+                            source_hint: str | None, timeout_ms: int) -> ShuntResult:
+        """One tools/call shunt_content round trip; the answer is matched by id."""
+        if self._closed:
+            raise McpError('terminated: the client is shut down')
+        if not self._connected:
+            raise McpError('terminated: the mmhmem stdio child is not running')
+        request_id = self._next_id + 1
+        self._next_id = request_id
+        waiter = self._register_waiter(request_id)
+        arguments: dict[str, object] = {
+            'project': project,
+            'agent_harness': AGENT_HARNESS,
+            'content': content,
+            'kind': kind,
+        }
+        if source_hint is not None:
+            arguments['source_hint'] = source_hint
+        request = {'jsonrpc': '2.0', 'id': request_id, 'method': 'tools/call',
+                   'params': {'name': SHUNT_TOOL, 'arguments': arguments}}
+        try:
+            await self._send(request, waiter)
+            result = await asyncio.wait_for(waiter, timeout_ms / 1000)
+        except asyncio.TimeoutError:
+            raise McpError(
+                f'timeout: no shunt_content response within {timeout_ms} ms') from None
+        finally:
+            self._waiters.pop(request_id, None)
+        shunt = _parse_shunt_result(result)
+        self._backoff_s = RESTART_BACKOFF_S  # a healthy round trip resets the ladder
+        return shunt
+
+    async def shutdown(self, timeout_s: float = 2.0) -> None:
+        """Close stdin, wait <= timeout_s for exit, then terminate; idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        restart_task, self._restart_task = self._restart_task, None
+        if restart_task is not None and not restart_task.done():
+            restart_task.cancel()
+            await asyncio.gather(restart_task, return_exceptions=True)
+        writer, self._writer = self._writer, None
+        proc, self._proc = self._proc, None
+        tasks = [task for task in (self._reader_task, self._stderr_task, self._watch_task)
+                 if task is not None]
+        self._reader_task = self._stderr_task = self._watch_task = None
+        if writer is not None:
+            try:
+                writer.write_eof()  # a well-behaved child exits on stdin EOF
+            except (OSError, RuntimeError):
+                pass
+        if proc is not None:
+            await self._await_exit(proc, timeout_s)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._connected = False
+        self._fail_inflight('terminated: the client shut down')
+        if writer is not None:
+            try:
+                writer.close()
+            except (OSError, RuntimeError):
+                pass
+            try:
+                await writer.wait_closed()
+            except (OSError, RuntimeError):
+                pass
+
+    # -- transport setup ----------------------------------------------------------
+
+    async def _spawn_and_connect(self) -> None:
+        proc = await self._spawn()
+        stderr_task = asyncio.create_task(self._drain_stderr(proc))
+        self._proc = proc
+        self._stderr_task = stderr_task
+        try:
+            await self._connect(proc.stdout, proc.stdin)
+        except BaseException:
+            self._proc = None
+            self._stderr_task = None
+            stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
+            await self._await_exit(proc, 1.0)
+            raise
+        self._watch_task = asyncio.create_task(self._watch_exit(proc))
+
+    async def _spawn(self) -> asyncio.subprocess.Process:
+        try:
+            return await asyncio.create_subprocess_exec(
+                self._bin_path, 'stdio',
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+        except OSError as exc:
+            # Sanitized per the design: the exception class and errno only,
+            # never the path (str(exc) of FileNotFoundError names the path).
+            raise McpError(
+                f'spawn: {type(exc).__name__} errno {getattr(exc, "errno", None)}'
+            ) from None
+
+    async def _connect(self, reader: asyncio.StreamReader,
+                       writer: asyncio.StreamWriter) -> None:
+        self._reader = reader
+        self._writer = writer
+        self._connected = True
+        self._reader_task = asyncio.create_task(self._read_loop())
+        try:
+            await self._handshake()
+        except BaseException:
+            reader_task, self._reader_task = self._reader_task, None
+            if reader_task is not None:
+                reader_task.cancel()
+                await asyncio.gather(reader_task, return_exceptions=True)
+            self._connected = False
+            self._fail_inflight('terminated: the mmhmem stdio child exited')
+            raise
+
+    async def _handshake(self) -> None:
+        """initialize -> capabilities -> notifications/initialized, in order."""
+        request_id = self._next_id + 1
+        self._next_id = request_id
+        waiter = self._register_waiter(request_id)
+        request = {'jsonrpc': '2.0', 'id': request_id, 'method': 'initialize',
+                   'params': {'protocolVersion': MCP_PROTOCOL_VERSION,
+                              'capabilities': {},
+                              'clientInfo': {'name': 'mvibe-econ', 'version': '1'}}}
+        try:
+            await self._send(request, waiter)
+            result = await asyncio.wait_for(waiter, HANDSHAKE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            raise McpError('timeout: no initialize response within '
+                           f'{HANDSHAKE_TIMEOUT_S:g} s') from None
+        finally:
+            self._waiters.pop(request_id, None)
+        if not isinstance(result, dict) or not isinstance(result.get('capabilities'), dict):
+            raise McpError('protocol: initialize response has no capabilities object')
+        await self._send({'jsonrpc': '2.0', 'method': 'notifications/initialized'}, None)
+        self._handshaked = True
+
+    async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
+        """Drain and discard child stderr (never logged; mmhmem logs to files)."""
+        try:
+            while await proc.stderr.readline():
+                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+    async def _await_exit(self, proc: asyncio.subprocess.Process,
+                          timeout_s: float) -> None:
+        """Wait <= timeout_s for exit, then terminate, then kill."""
+        try:
+            await asyncio.wait_for(proc.wait(), timeout_s)
+            return
+        except asyncio.TimeoutError:
+            pass
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout_s)
+            return
+        except asyncio.TimeoutError:
+            pass
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
+            await proc.wait()
+
+    # -- protocol pump and supervision ---------------------------------------------
+
+    async def _read_loop(self) -> None:
+        """Pump stdout lines to waiters; EOF or a broken pipe ends the loop."""
+        try:
+            while True:
+                line = await self._reader.readline()
+                if not line:
+                    break  # EOF: the child closed its stdout
+                text = line.decode('utf-8', 'replace').strip()
+                if text:
+                    self._dispatch(text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass  # any read failure is a termination, handled below
+        finally:
+            self._handle_termination()
+
+    def _dispatch(self, text: str) -> None:
+        """Route one message: only client-originated ids are ever awaited."""
+        try:
+            message = json.loads(text)
+        except ValueError:
+            self._fail_inflight('protocol: non-JSON line on stdout')
+            return
+        if not isinstance(message, dict):
+            self._fail_inflight('protocol: stdout line is not a JSON-RPC object')
+            return
+        message_id = message.get('id')
+        if message_id is None or isinstance(message_id, (bool, list, dict)):
+            return  # a server notification is never answered or awaited
+        waiter = self._waiters.get(message_id)
+        if waiter is None or waiter.done():
+            return  # a late answer to an already-timed-out or failed call
+        error = message.get('error')
+        if isinstance(error, dict):
+            waiter.set_exception(McpError(f"rpc error {error.get('code')}"))
+        else:
+            waiter.set_result(message.get('result'))
+
+    def _register_waiter(self, request_id: int) -> asyncio.Future:
+        waiter = asyncio.get_running_loop().create_future()
+        self._waiters[request_id] = waiter
+        return waiter
+
+    async def _send(self, payload: dict, waiter: asyncio.Future | None) -> None:
+        writer = self._writer
+        if writer is None:
+            raise McpError('terminated: the stdio pipe is closed')
+        line = (json.dumps(payload) + '\n').encode('utf-8')
+        try:
+            writer.write(line)
+            await writer.drain()
+        except OSError:
+            if waiter is not None and not waiter.done():
+                waiter.cancel()  # never leave an unretrieved exception behind
+            self._handle_termination()
+            raise McpError('terminated: the stdio pipe is closed') from None
+
+    def _fail_inflight(self, message: str) -> None:
+        """Fail every pending call with a fresh sanitized McpError."""
+        for request_id in list(self._waiters):
+            waiter = self._waiters.pop(request_id)
+            if not waiter.done():
+                waiter.set_exception(McpError(message))
+
+    def _handle_termination(self) -> None:
+        """The transport ended: fail in-flight calls fast, schedule a restart."""
+        was_connected = self._connected
+        self._connected = False
+        self._fail_inflight('terminated: the mmhmem stdio child exited')
+        if self._closed or not was_connected or not self._handshaked:
+            return  # expected at shutdown / one death reported twice / never healthy
+        self._schedule_restart()
+
+    def _schedule_restart(self) -> None:
+        """Record the capped back-off; spawn mode re-spawns once it elapses."""
+        delay = self._backoff_s
+        self._backoff_s = _capped_backoff(delay)
+        self.restart_at = time.monotonic() + delay
+        self.restart_backoffs.append(delay)
+        if self._injected or self._closed:
+            return  # injected streams are test-owned: the record is the restart
+        self._restart_task = asyncio.create_task(self._restart_after(delay))
+
+    async def _restart_after(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if self._closed or self._connected:
+            return
+        try:
+            await self._spawn_and_connect()
+        except Exception:
+            self._schedule_restart()  # keep backing off; callers fail open meanwhile
+
+    async def _watch_exit(self, proc: asyncio.subprocess.Process) -> None:
+        """Fail in-flight calls the moment the child dies, not just at EOF."""
+        try:
+            await proc.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        self._handle_termination()

@@ -88,7 +88,7 @@ graph TB
 ### Directory Structure
 ```
 mvibe_proxy/
-├── econ.py               # NEW: EconConfig, Eligibility, Memo, StdioMcpClient, EconShunt (≤ 500 lines)
+├── econ.py               # NEW: EconConfig, Eligibility, Memo, StdioMcpClient, EconShunt (single module; ~900 lines after Amendment 1 added child supervision to the transport boundary — the original ≤500-line estimate predates the amendment)
 ├── diagnostics.py        # modified: econ fields on RequestDiagnostic; econ_warm emit helper
 ├── observability.py      # modified: _ALLOWED_FIELDS gains econ fields
 proxy.py                  # modified: --econ switch, EconConfig.from_env, lifespan start/stop + child supervision, hook in make_acquire

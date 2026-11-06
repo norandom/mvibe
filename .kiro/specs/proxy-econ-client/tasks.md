@@ -2,6 +2,12 @@
 
 All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hours. File ownership follows the design's File Structure Plan. The companion mmhmem spec `shunt-content-tool` supplies the real endpoint; every task here is verifiable against the in-process fake, so the two specs can be implemented in separate sessions. Amendment 1 (2026-11-06): transport is the embedded `mmhmem stdio` child over pipes; see `docker-stdio-amendment.md`. Task-graph sanity review: `inline` (no fresh subagent in the authoring session), verdict PASS.
 
+## Implementation Notes
+- 2.3 review (2026-11-06) approved three non-blocking transport hardening riders, to be applied within task 2.4's dispatch: (a) bound/type-check the JSON-RPC `error.code` used in `McpError(f"rpc error {code}")` (unbounded server value); (b) in `_dispatch`, treat a message as a response only when `'method' not in message` (defends against server-originated requests with colliding ids); (c) add an interleaved+close test proving EOF fails ALL in-flight waiters (≥2 concurrent calls).
+- Ollama dialect drops tool ids in compat translation — eligibility intentionally yields no candidates for Ollama-shaped histories (id-free path, task 2.1 note).
+- Proxy's Anthropic dialect parses `tool_call_id` on tool_result blocks (not the SDK's `tool_use_id`); fixtures match compat.py.
+- econ.py single-module size annotation in design.md updated 2026-11-06 after task 2.3 (supervision scope grew the transport section past the pre-amendment ≤500-line estimate).
+
 ## 1. Foundation: configuration, test double and single body parse
 
 - [x] 1.1 Economics configuration with validation and warnings
@@ -35,7 +41,7 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
   - _Boundary: Memo_
   - _Requirements: 3.3, 4.3, 4.4_
 
-- [ ] 2.3 (P) Minimal stdio JSON-RPC client with child supervision
+- [x] 2.3 (P) Minimal stdio JSON-RPC client with child supervision
   - Spawn `[bin, "stdio"]` with injectable reader/writer streams; newline-delimited JSON-RPC initialize, initialized and tools/call; responses matched by id; sanitized errors without content; on child exit fail in-flight calls fast and restart with capped exponential back-off (1 s → 30 s); graceful shutdown closes stdin and waits before terminate
   - Observable completion: tests against the injected-stream fake show a successful round trip, correct handshake ordering, tool errors and protocol errors surfacing as one error type whose message contains neither content nor paths, EOF mid-request surfacing as termination with a scheduled restart, and the spawn path never executing in tests
   - _Boundary: StdioMcpClient_
