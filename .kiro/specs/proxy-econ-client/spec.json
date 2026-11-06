@@ -1,9 +1,9 @@
 {
   "feature_name": "proxy-econ-client",
   "created_at": "2026-11-03T11:10:00Z",
-  "updated_at": "2026-11-06T00:00:00Z",
+  "updated_at": "2026-11-06T21:30:00Z",
   "language": "en",
-  "phase": "tasks-generated",
+  "phase": "implemented",
   "approvals": {
     "requirements": {
       "generated": true,
@@ -19,5 +19,5 @@
     }
   },
   "ready_for_implementation": true,
-  "notes": "Fast-tracked (-y) on 2026-11-03 for handover to a separate implementation session. Companion spec: ../mmhmem/.kiro/specs/shunt-content-tool (implement first, or stub its contract in tests). Amendment 1 (2026-11-06, user-directed): Docker deployment with an embedded mmhmem stdio child; transport is newline-delimited JSON-RPC over pipes; URL/token/HTTP/SSE/bearer/loopback-warning machinery removed; gRPC, mTLS, FFI and remote-daemon modes evaluated and rejected (see docker-stdio-amendment.md)."
+  "notes": "Fast-tracked (-y) on 2026-11-03 for handover to a separate implementation session. Companion spec: ../mmhmem/.kiro/specs/shunt-content-tool (implement first, or stub its contract in tests). Amendment 1 (2026-11-06, user-directed): Docker deployment with an embedded mmhmem stdio child; transport is newline-delimited JSON-RPC over pipes; URL/token/HTTP/SSE/bearer/loopback-warning machinery removed; gRPC, mTLS, FFI and remote-daemon modes evaluated and rejected (see docker-stdio-amendment.md). Implemented 2026-11-06: all 13 tasks complete, each with adversarial review; full offline suite 1395 passed / 5 skipped; perf measured (0.62ms apply, +0.7ms full-app, +1.5-2.3ms under 4-client concurrency vs 5ms budget — implementation-log.md). Integration validation: all runnable gates green, MANUAL_VERIFY_REQUIRED for environment-bound gates: docker compose config + image build (glibc pin check), scripts/verify.ps1 (needs -Bun/-HostBinary toolchain), and MMHMEM_REF must be pinned to a ref containing shunt_content (companion spec unimplemented). See tasks.md Implementation Notes + implementation-log.md."
 }
