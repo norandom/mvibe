@@ -4,7 +4,7 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
 
 ## 1. Foundation: configuration, test double and single body parse
 
-- [ ] 1.1 Economics configuration with validation and warnings
+- [x] 1.1 Economics configuration with validation and warnings
   - Parse all `MVIBE_ECON_*` settings from the environment with the documented defaults; absent `MVIBE_ECON_MMHMEM_BIN` means disabled; a set binary path that is missing or not executable is a validation error naming the key
   - Drop hard-excluded tool names from the allowlist with one warning
   - Observable completion: unit tests show `None` when unset, a validated config when complete, an actionable error for each malformed key and for a bad binary path, and the warning text
