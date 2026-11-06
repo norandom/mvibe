@@ -2593,7 +2593,13 @@ async def test_e2e_tool_error_relays_raw_backs_off_then_recovers(no_spawn):
                                          base_url='http://local') as client:
                 await post_chat(client, raw)
                 assert hist_result(json.loads(requests[0].content)) == content
-                assert await eventually(lambda: tools_calls(fake) == 1)
+                # 4.3 rider (4.1 review): poll the memo entry itself — the
+                # fake records the call before the warm task writes the memo,
+                # so waiting on the call count then reading the memo races
+                # that write.
+                assert await eventually(lambda: shunt.memo.get(sha) is not None
+                                        and shunt.memo.get(sha).kind == 'failed')
+                assert tools_calls(fake) == 1
                 failed = shunt.memo.get(sha)
                 assert failed is not None
                 assert (failed.kind, failed.reason) == ('failed', 'McpError')
@@ -2610,7 +2616,9 @@ async def test_e2e_tool_error_relays_raw_backs_off_then_recovers(no_spawn):
                 assert await eventually(lambda: shunt.memo.retry_due(
                     failed, config.retry_s, time.monotonic()))
                 await post_chat(client, raw)
-                assert await eventually(lambda: tools_calls(fake) == 2)
+                assert await eventually(lambda: shunt.memo.get(sha) is not None
+                                        and shunt.memo.get(sha).kind == 'summary')
+                assert tools_calls(fake) == 2
                 summary = shunt.memo.get(sha)
                 assert summary is not None and summary.kind == 'summary'
                 marker = econ.MARKER.format(hint=HIST_READ_PATH,
@@ -2675,7 +2683,11 @@ async def test_e2e_malformed_line_relays_raw_backs_off_then_recovers(no_spawn):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
                                          base_url='http://local') as client:
                 await post_chat(client, raw)
-                assert await eventually(lambda: tools_calls(fake) == 1)
+                # 4.3 rider (4.1 review): the memo entry is the settled
+                # signal; the call count is a secondary exactness check.
+                assert await eventually(lambda: shunt.memo.get(sha) is not None
+                                        and shunt.memo.get(sha).kind == 'failed')
+                assert tools_calls(fake) == 1
                 failed = shunt.memo.get(sha)
                 assert failed is not None
                 assert (failed.kind, failed.reason) == ('failed', 'McpError')
@@ -2689,7 +2701,11 @@ async def test_e2e_malformed_line_relays_raw_backs_off_then_recovers(no_spawn):
                 assert await eventually(lambda: shunt.memo.retry_due(
                     failed, config.retry_s, time.monotonic()))
                 await post_chat(client, raw)
-                assert await eventually(lambda: tools_calls(fake) == 2)
+                # 4.3 rider (4.1 review): poll the memo entry, not the call
+                # count, before asserting the replacement timeline.
+                assert await eventually(lambda: shunt.memo.get(sha) is not None
+                                        and shunt.memo.get(sha).kind == 'summary')
+                assert tools_calls(fake) == 2
                 await post_chat(client, raw)
                 marker = econ.MARKER.format(hint=HIST_READ_PATH,
                                             lines=len(content.splitlines()),
