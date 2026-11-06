@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import hashlib
+import json
 import os
+import re
 import sys
 
 # --- config (Requirements 1.1, 1.2, 1.3, 2.5) -------------------------------
@@ -125,3 +128,141 @@ class EconConfig:
             concurrency=_int_setting(env, 'MVIBE_ECON_CONCURRENCY',
                                      DEFAULT_CONCURRENCY, minimum=1),
         )
+
+
+# --- eligibility (Requirements 2.1–2.6) ---------------------------------------
+#
+# Pure functions over the upstream-shaped `messages` list (the OpenAI shape
+# every dialect has been translated into before economics runs: assistant
+# messages carry `tool_calls` [{id, function: {name, arguments}}], and each
+# result is a role:'tool' message with `tool_call_id` + string content).
+
+READ_HEADER = re.compile(r'^Read file (?P<path>.+?), lines (?P<a>\d+)-(?P<b>\d+)\s*$', re.M)
+
+#: Argument keys consulted, in order, when a result carries no read header.
+PATH_ARGUMENT_KEYS = ('filePath', 'file_path', 'path')
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """One eligible historical file-read result."""
+
+    index: int            # position in messages
+    tool_call_id: str
+    tool: str             # lower-cased name
+    content: str
+    sha256: str
+    line_count: int
+    source_hint: str | None
+
+
+def _is_tool_message(message: object) -> bool:
+    return isinstance(message, dict) and message.get('role') == 'tool'
+
+
+def _parsed_arguments(raw: object) -> dict:
+    """OpenAI `function.arguments` JSON text -> dict; {} when unparseable."""
+    if not isinstance(raw, str):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def correlate(messages: list[dict]) -> dict[str, tuple[str, dict]]:
+    """Map every tool_call_id -> (lower-cased tool name, parsed arguments).
+
+    Scans the assistant messages' `tool_calls` in order; a duplicate id keeps
+    the last occurrence. Arguments that are not a JSON object become {}.
+    """
+    calls: dict[str, tuple[str, dict]] = {}
+    for message in messages:
+        if not isinstance(message, dict) or message.get('role') != 'assistant':
+            continue
+        tool_calls = message.get('tool_calls')
+        if not isinstance(tool_calls, list):
+            continue
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            call_id = call.get('id')
+            function = call.get('function')
+            if not isinstance(call_id, str) or not isinstance(function, dict):
+                continue
+            name = function.get('name')
+            if not isinstance(name, str):
+                continue
+            calls[call_id] = (name.lower(), _parsed_arguments(function.get('arguments')))
+    return calls
+
+
+def trailing_start(messages: list[dict]) -> int:
+    """Index where the trailing contiguous run of tool-result messages begins.
+
+    len(messages) when the list does not end with tool results (an empty
+    trailing group), e.g. it ends with a user message or with the assistant's
+    tool_calls still awaiting their results.
+    """
+    index = len(messages)
+    while index > 0 and _is_tool_message(messages[index - 1]):
+        index -= 1
+    return index
+
+
+def _source_hint(content: str, arguments: Mapping[str, object]) -> str | None:
+    """First 'Read file <path>, lines A-B' header, else the call's path argument."""
+    header = READ_HEADER.search(content)
+    if header is not None:
+        return header.group('path')
+    for key in PATH_ARGUMENT_KEYS:
+        value = arguments.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def select(messages: list[dict], config: EconConfig) -> list[Candidate]:
+    """Return the eligible historical file-read results, in message order.
+
+    Never mutates `messages`. A result is eligible only when it sits before
+    the trailing group, correlates to a tool call, is allowlisted and not
+    hard-excluded, has string content of at least `config.min_bytes` UTF-8
+    bytes; its source hint comes from the read header or the call's path
+    argument (Requirements 2.1–2.3, 2.5, 2.6).
+    """
+    calls = correlate(messages)
+    cutoff = trailing_start(messages)
+    candidates: list[Candidate] = []
+    for index, message in enumerate(messages[:cutoff]):
+        if not _is_tool_message(message):
+            continue
+        call_id = message.get('tool_call_id')
+        correlated = calls.get(call_id) if isinstance(call_id, str) else None
+        if correlated is None:
+            # A tool result without a resolvable call id is never eligible:
+            # the Ollama translation drops tool ids entirely, so its results
+            # cannot be correlated to a tool name (Requirement 2.4).
+            continue
+        tool, arguments = correlated
+        # config.tools is lower-cased at config time and hard-excluded names
+        # are dropped there; select defends both rules on its own (Req 2.5).
+        if tool not in config.tools or _is_hard_excluded(tool):
+            continue
+        content = message.get('content')
+        if not isinstance(content, str):
+            continue
+        encoded = content.encode('utf-8')
+        if len(encoded) < config.min_bytes:
+            continue
+        candidates.append(Candidate(
+            index=index,
+            tool_call_id=call_id,
+            tool=tool,
+            content=content,
+            sha256=hashlib.sha256(encoded).hexdigest(),
+            line_count=len(content.splitlines()),
+            source_hint=_source_hint(content, arguments),
+        ))
+    return candidates

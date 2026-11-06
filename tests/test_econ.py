@@ -1,6 +1,8 @@
-"""Offline unit contracts for the token-economics configuration (proxy-econ-client 1.1)
-and the fake mmhmem stdio double with synthetic dialect fixtures (proxy-econ-client 1.2)."""
+"""Offline unit contracts for the token-economics configuration (proxy-econ-client 1.1),
+the fake mmhmem stdio double with synthetic dialect fixtures (proxy-econ-client 1.2),
+and the eligibility of historical file-read results (proxy-econ-client 2.1)."""
 import asyncio
+import copy
 import dataclasses
 import hashlib
 import json
@@ -628,3 +630,298 @@ async def test_chat_completion_body_parsed_once_on_the_acquire_path(monkeypatch)
     assert len(requests) == 1
     assert requests[0].content == expected
     assert len(body_parses) == 1
+
+
+# --- 2.1: eligibility of historical file-read results -------------------------
+#
+# Pure-function contracts over the upstream-shaped messages list (the OpenAI
+# shape every dialect has been translated into before economics runs):
+# correlation of tool_call_id -> tool name across multi-call assistant
+# messages, the trailing-group rule in both of its shapes, the allowlist /
+# string-type / minimum-size gates, and the three source-hint origins
+# (Requirements 2.1, 2.2, 2.3, 2.6; the 2.5 hard-exclusion defense and the
+# 2.4 id-free dialect reality are covered as well).
+
+OPENAI_HIST_READ_INDEX = 2       # tool result for HIST_READ_ID in openai_econ_body
+OPENAI_TRAILING_START = 9        # first message of the trailing tool group
+
+
+def small_bytes_config(min_bytes: int = 256, tools: str = 'read') -> EconConfig:
+    """A config with a low size floor so byte-exact thresholds are easy."""
+    return EconConfig.from_env(valid_env(MVIBE_ECON_MIN_BYTES=str(min_bytes),
+                                         MVIBE_ECON_TOOLS=tools))
+
+
+def direct_config(tools: frozenset[str], min_bytes: int = 256) -> EconConfig:
+    """A config built directly, bypassing the config-time allowlist scrub, so
+    select's own hard-exclusion defense can be proven (Requirement 2.5)."""
+    return EconConfig(mmhmem_bin=sys.executable, project='mvibe', tools=tools,
+                      min_bytes=min_bytes, timeout_ms=45_000, memo_max=2_000,
+                      retry_s=300, concurrency=2)
+
+
+def assistant_call_message(*calls: tuple[str, str, object]) -> dict:
+    """One assistant message with tool_calls built from (id, name, arguments).
+
+    Dict arguments are JSON-dumped like the upstream shape; anything else is
+    passed through verbatim so malformed argument strings can be fed.
+    """
+    return {'role': 'assistant', 'content': '', 'tool_calls': [
+        {'id': call_id, 'type': 'function',
+         'function': {'name': name,
+                      'arguments': json.dumps(args) if isinstance(args, dict) else args}}
+        for call_id, name, args in calls]}
+
+
+def tool_result(call_id: str, content: object) -> dict:
+    return {'role': 'tool', 'tool_call_id': call_id, 'content': content}
+
+
+def read_result_messages(content: object, *, call_id: str = 'call-read',
+                         arguments: dict | None = None) -> list[dict]:
+    """A minimal history: user, one read call, its result, a closing turn."""
+    return [
+        {'role': 'user', 'content': 'read it'},
+        assistant_call_message(
+            (call_id, 'read', arguments if arguments is not None
+             else {'filePath': 'src/small.py'})),
+        tool_result(call_id, content),
+        {'role': 'assistant', 'content': 'done'},
+    ]
+
+
+def test_correlate_maps_every_call_id_to_lowercased_name_and_parsed_args():
+    calls = econ.correlate(openai_econ_body()['messages'])
+    assert calls == {
+        HIST_READ_ID: ('read', {'filePath': HIST_READ_PATH, 'limit': 200}),
+        HIST_BASH_ID: ('bash', {'command': 'pytest -q tests/'}),
+        HIST_MMHMEM_ID: ('mmhmem_mem_search', {'query': 'widget'}),
+        TRAILING_READ_ID: ('read', {'filePath': TRAILING_READ_PATH}),
+        TRAILING_BASH_ID: ('bash', {'command': 'pytest -q tests/test_econ.py'}),
+    }
+
+
+def test_correlate_parses_non_json_arguments_to_empty_dict():
+    messages = [
+        {'role': 'user', 'content': 'hi'},
+        assistant_call_message(('c1', 'Read', 'not-json{'),
+                               ('c2', 'read', '[1, 2]'),
+                               ('c3', 'read', None)),
+    ]
+    assert econ.correlate(messages) == {'c1': ('read', {}), 'c2': ('read', {}),
+                                        'c3': ('read', {})}
+
+
+def test_correlate_ignores_conversations_without_tool_calls():
+    messages = [{'role': 'user', 'content': 'hi'},
+                {'role': 'assistant', 'content': 'hello'}]
+    assert econ.correlate(messages) == {}
+
+
+def test_trailing_start_marks_the_contiguous_tool_run_at_the_end():
+    messages = openai_econ_body()['messages']
+    assert econ.trailing_start(messages) == OPENAI_TRAILING_START
+    assert messages[OPENAI_TRAILING_START]['tool_call_id'] == TRAILING_READ_ID
+
+
+def test_trailing_start_is_len_when_no_trailing_tool_results():
+    # Shape: the list ends with the assistant's tool_calls awaiting results.
+    awaiting = openai_econ_body()['messages'][:OPENAI_TRAILING_START]
+    assert awaiting[-1]['role'] == 'assistant' and awaiting[-1]['tool_calls']
+    assert econ.trailing_start(awaiting) == len(awaiting)
+    # Design shape [..., tool, user]: a later user turn empties the group.
+    followed = openai_econ_body()['messages'] + [{'role': 'user', 'content': 'go'}]
+    assert econ.trailing_start(followed) == len(followed)
+    assert econ.trailing_start([]) == 0
+
+
+def test_select_returns_exactly_the_historical_read_from_the_fixture():
+    body = openai_econ_body()
+    config = EconConfig.from_env(valid_env())
+    [candidate] = econ.select(body['messages'], config)
+    content = synthetic_read_content()
+    assert (candidate.index, candidate.tool_call_id, candidate.tool) == (
+        OPENAI_HIST_READ_INDEX, HIST_READ_ID, 'read')
+    assert candidate.content == content
+    assert re.fullmatch(r'[0-9a-f]{64}', candidate.sha256)
+    assert candidate.sha256 == hashlib.sha256(content.encode('utf-8')).hexdigest()
+    assert candidate.line_count == len(content.splitlines())
+    assert candidate.source_hint == HIST_READ_PATH
+
+
+def test_select_never_takes_results_in_the_trailing_group():
+    config = EconConfig.from_env(valid_env())
+    messages = openai_econ_body()['messages']
+
+    # Shape 1: [..., assistant(tool_calls), tool, tool] — the trailing pair is
+    # the contiguous tool run at the end and is never eligible (Req 2.3).
+    assert {c.tool_call_id for c in econ.select(messages, config)} == {HIST_READ_ID}
+
+    # Shape 2: the list ends with the assistant's tool_calls still awaiting
+    # results — the trailing group is empty, history stays eligible.
+    awaiting = messages[:OPENAI_TRAILING_START]
+    assert {c.tool_call_id for c in econ.select(awaiting, config)} == {HIST_READ_ID}
+
+    # Design shape [..., tool, user]: the user's follow-up reopens the earlier
+    # results as history, so the trailing group is empty again.
+    followed = messages + [{'role': 'user', 'content': 'continue'}]
+    assert econ.trailing_start(followed) == len(followed)
+    assert {c.tool_call_id for c in econ.select(followed, config)} == {
+        HIST_READ_ID, TRAILING_READ_ID}
+
+
+def test_multi_call_turn_correlates_each_result_to_its_own_tool():
+    # Results arrive in a different order than the calls: correlation is by
+    # tool_call_id, never by position, and only allowlisted tools pass.
+    config = small_bytes_config(min_bytes=256, tools='read,grep')
+    messages = [
+        {'role': 'user', 'content': 'find it'},
+        assistant_call_message(
+            ('call-read', 'read', {'filePath': 'src/widget.py'}),
+            ('call-bash', 'bash', {'command': 'pytest -q'}),
+            ('call-grep', 'grep', {'pattern': 'widget'})),
+        tool_result('call-bash', 'x' * 500),
+        tool_result('call-read', 'y' * 500),
+        tool_result('call-grep', 'z' * 500),
+        {'role': 'assistant', 'content': 'done'},
+    ]
+    assert [(c.index, c.tool_call_id, c.tool) for c in econ.select(messages, config)] == [
+        (3, 'call-read', 'read'), (4, 'call-grep', 'grep')]
+
+
+@pytest.mark.parametrize('name', ['read', 'Read', 'READ', 'rEaD'])
+def test_select_matches_tool_names_case_insensitively(name):
+    config = EconConfig.from_env(valid_env())  # allowlist is lowercase 'read'
+    messages = [
+        {'role': 'user', 'content': 'read it'},
+        assistant_call_message(('call-read', name, {'filePath': 'src/small.py'})),
+        tool_result('call-read', 'x' * 5000),
+        {'role': 'assistant', 'content': 'done'},
+    ]
+    [matched] = econ.select(messages, config)
+    assert matched.tool == 'read'
+
+
+@pytest.mark.parametrize('length,eligible', [(255, False), (256, True), (257, True)])
+def test_select_applies_the_minimum_size_in_utf8_bytes(length, eligible):
+    content = 'x' * length
+    assert len(content.encode('utf-8')) == length  # exact byte lengths
+    selected = econ.select(read_result_messages(content),
+                           small_bytes_config(min_bytes=256))
+    assert [c.tool_call_id for c in selected] == (['call-read'] if eligible else [])
+
+
+def test_select_measures_size_in_bytes_not_characters():
+    config = small_bytes_config(min_bytes=256)
+    assert econ.select(read_result_messages('é' * 128), config)      # 256 bytes
+    assert econ.select(read_result_messages('é' * 127), config) == []  # 254 bytes
+
+
+def test_select_skips_non_string_content_without_crashing():
+    # OpenAI tool messages may carry content parts or a null content; only a
+    # plain string result is ever a candidate (Req 2.2).
+    messages = [
+        {'role': 'user', 'content': 'read it'},
+        assistant_call_message(
+            ('call-parts', 'read', {'filePath': 'src/parts.py'}),
+            ('call-none', 'read', {'filePath': 'src/none.py'}),
+            ('call-text', 'read', {'filePath': 'src/text.py'})),
+        tool_result('call-parts', [{'type': 'text', 'text': 'x' * 5000}]),
+        tool_result('call-none', None),
+        tool_result('call-text', 'y' * 5000),
+        {'role': 'assistant', 'content': 'done'},
+    ]
+    assert [c.tool_call_id for c in econ.select(messages, EconConfig.from_env(valid_env()))] \
+        == ['call-text']
+
+
+def test_source_hint_prefers_the_read_header_in_the_content():
+    content = synthetic_read_content('from/header.py')
+    messages = [
+        {'role': 'user', 'content': 'read it'},
+        assistant_call_message(('call-read', 'read', {'filePath': 'from/args.py'})),
+        tool_result('call-read', content),
+        {'role': 'assistant', 'content': 'done'},
+    ]
+    [candidate] = econ.select(messages, EconConfig.from_env(valid_env()))
+    assert candidate.source_hint == 'from/header.py'
+
+
+@pytest.mark.parametrize('key', ['filePath', 'file_path', 'path'])
+def test_source_hint_falls_back_to_the_call_path_argument(key):
+    messages = [
+        {'role': 'user', 'content': 'read it'},
+        assistant_call_message(('call-read', 'read', {key: 'from/args.py'})),
+        tool_result('call-read', 'no header here\n' + 'filler line\n' * 100),
+        {'role': 'assistant', 'content': 'done'},
+    ]
+    [candidate] = econ.select(messages, small_bytes_config())
+    assert candidate.source_hint == 'from/args.py'
+
+
+def test_source_hint_is_none_without_header_or_path_argument():
+    messages = [
+        {'role': 'user', 'content': 'read it'},
+        assistant_call_message(('call-read', 'read', {'limit': 10}),
+                               ('call-num', 'read', {'path': 42})),
+        tool_result('call-read', 'no header\n' + 'filler line\n' * 100),
+        tool_result('call-num', 'no header\n' + 'filler line\n' * 100),
+        {'role': 'assistant', 'content': 'done'},
+    ]
+    selected = econ.select(messages, small_bytes_config())
+    assert {c.tool_call_id: c.source_hint for c in selected} == {
+        'call-read': None, 'call-num': None}  # a non-string path value is no hint
+
+
+def test_select_correlate_and_trailing_start_never_mutate_the_input():
+    body = openai_econ_body()
+    # Pessimize the body: non-string content and malformed argument text.
+    body['messages'][OPENAI_HIST_READ_INDEX]['content'] = [
+        {'type': 'text', 'text': synthetic_read_content()}]
+    body['messages'][1]['tool_calls'][0]['function']['arguments'] = 'not-json{'
+    snapshot = copy.deepcopy(body)
+    config = EconConfig.from_env(valid_env())
+    econ.correlate(body['messages'])
+    econ.trailing_start(body['messages'])
+    econ.select(body['messages'], config)
+    assert body == snapshot
+
+
+def test_ollama_translated_tool_results_without_ids_are_not_eligible():
+    # Dialect reality: the Ollama translation keeps role/content but drops the
+    # tool ids entirely, so its results cannot be correlated to a tool name
+    # and are never eligible (id-free path, Req 2.4).
+    upstream = compat.ollama_chat_request(ollama_econ_body())
+    tool_messages = [message for message in upstream['messages']
+                     if message.get('role') == 'tool']
+    assert tool_messages and all('tool_call_id' not in message
+                                 for message in tool_messages)
+    assert econ.select(upstream['messages'], EconConfig.from_env(valid_env())) == []
+
+
+def test_orphan_tool_call_ids_are_never_eligible():
+    messages = [{'role': 'user', 'content': 'read it'},
+                tool_result('call-unknown', 'x' * 5000),
+                {'role': 'assistant', 'content': 'done'}]
+    assert econ.select(messages, EconConfig.from_env(valid_env())) == []
+
+
+def test_hard_excluded_tools_are_defended_in_select_not_only_in_config():
+    # Requirement 2.5 defended here: a config that still lists mmhmem/shell/
+    # edit names (possible through direct construction) must not make their
+    # results eligible; config-time dropping alone is not the only guard.
+    config = direct_config(frozenset({'read', 'bash', 'mmhmem_mem_search', 'edit'}))
+    messages = [
+        {'role': 'user', 'content': 'go'},
+        assistant_call_message(
+            ('call-read', 'read', {'filePath': 'src/a.py'}),
+            ('call-mem', 'mmhmem_mem_search', {'query': 'a'}),
+            ('call-bash', 'bash', {'command': 'ls'}),
+            ('call-edit', 'edit', {'path': 'src/a.py'})),
+        tool_result('call-read', 'x' * 300),
+        tool_result('call-mem', 'y' * 300),
+        tool_result('call-bash', 'z' * 300),
+        tool_result('call-edit', 'w' * 300),
+        {'role': 'assistant', 'content': 'done'},
+    ]
+    assert [c.tool_call_id for c in econ.select(messages, config)] == ['call-read']

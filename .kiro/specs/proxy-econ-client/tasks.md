@@ -23,7 +23,7 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
 
 ## 2. Core: policy, state and transport
 
-- [ ] 2.1 (P) Eligibility of historical file-read results
+- [x] 2.1 (P) Eligibility of historical file-read results
   - Correlate each tool result to its tool name and arguments by call identifier; compute the trailing tool group; apply allowlist, string-type and minimum-size rules; extract the source hint from the read header or the path argument
   - Observable completion: tests cover multi-call correlation, both trailing-group shapes, case-insensitive tool names, size threshold, non-string content and the three hint sources, and the function never mutates its input
   - _Boundary: Eligibility_
