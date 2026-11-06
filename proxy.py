@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 import ipaddress
+import logging
 import os
 import re
 import sys
@@ -30,7 +31,8 @@ import json
 from urllib.parse import urlencode
 from mvibe_proxy import compat
 from mvibe_proxy.streaming import ProxyStreamOwner
-from mvibe_proxy.diagnostics import ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout, configure_exporter, clear_exporter
+from mvibe_proxy.diagnostics import ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout, configure_exporter, clear_exporter, emit_econ_warm
+from mvibe_proxy.econ import EconConfig, EconConfigError, EconShunt, McpError, StdioMcpClient
 from mvibe_proxy.observability import ObserveConfig, ObserveConfigError, OpenObserveExporter, start_telemetry, inject_traceparent
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
 from mvibe_auth.existing_vibe import ExistingVibeSession
@@ -138,14 +140,34 @@ def _request_model(body: bytes) -> str | None:
     return None
 
 
+def _has_tool_result(payload: dict) -> bool:
+    """Cheap Req 4.6 pre-check: economics only ever applies to bodies carrying
+    tool-result messages; no parse, no hashing, no warm-up."""
+    messages = payload.get('messages')
+    if not isinstance(messages, list):
+        return False
+    return any(isinstance(message, dict) and message.get('role') == 'tool'
+               for message in messages)
+
+
+_ECON_HOOK_LOG = logging.getLogger('mvibe-proxy.econ')
+
+
 def create_app(
     auth_factory: Callable[[], AuthSession | ExistingVibeSession] = _default_auth_factory,
     client_factory: Callable[..., VibeAsyncHTTPClient] = VibeAsyncHTTPClient,
     *, force_login: bool = False,
     account_plan_factory: Callable[[AuthConfig], AccountPlanResolver] = AccountPlanResolver,
     observe_config: ObserveConfig | None = None,
+    econ_config: EconConfig | None = None,
+    econ_client: StdioMcpClient | None = None,
 ) -> FastAPI:
-    """Construct an inert app; lifespan owns the public session and HTTP client."""
+    """Construct an inert app; lifespan owns the public session and HTTP client.
+
+    With ``econ_config`` the lifespan also owns the economics shunt and its
+    supervised ``mmhmem stdio`` child (started at startup, stopped on
+    shutdown); ``econ_client`` replaces the spawned child for injected-stream
+    tests. Without it nothing economics-related is ever created."""
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session = auth_factory()
@@ -165,11 +187,40 @@ def create_app(
                 app.state.stream_owner = ProxyStreamOwner(client)
                 app.state.account_plan = account_plan
                 app.state.telemetry = telemetry
+                if econ_config is not None:
+                    # Economics on: spawn and supervise the mmhmem stdio child
+                    # at startup (Amendment 1); econ_client (injected streams)
+                    # replaces the spawn in tests. A spawn or handshake failure
+                    # fails fast with a sanitized, actionable message.
+                    mcp_client = (econ_client if econ_client is not None
+                                  else StdioMcpClient(econ_config.mmhmem_bin))
+                    try:
+                        await mcp_client.start()
+                    except Exception as error:
+                        try:
+                            await mcp_client.shutdown()
+                        except Exception:
+                            pass
+                        detail = (str(error) if isinstance(error, McpError)
+                                  else type(error).__name__)
+                        raise RuntimeError(
+                            'economics startup failed: the mmhmem stdio child from '
+                            f'MVIBE_ECON_MMHMEM_BIN={econ_config.mmhmem_bin} could not '
+                            f'be started ({detail}); check the binary and its stdio '
+                            'subcommand, or unset MVIBE_ECON_MMHMEM_BIN to disable '
+                            'economics') from error
+                    app.state.econ = EconShunt(econ_config, mcp_client,
+                                               emit_warm=emit_econ_warm)
                 if exporter is not None:
                     await exporter.start()
                     configure_exporter(exporter)
                 yield
             finally:
+                if app.state.econ is not None:
+                    # Bounded: the warm queue drains (<= 2 s), then the child
+                    # closes stdin, waits <= 2 s and is terminated.
+                    shunt, app.state.econ = app.state.econ, None
+                    await shunt.shutdown()
                 await app.state.stream_owner.shutdown()
                 if exporter is not None:
                     clear_exporter()
@@ -186,6 +237,7 @@ def create_app(
     app.add_middleware(ProxyDiagnostics)
     app.state.force_login = force_login
     app.state.telemetry = None
+    app.state.econ = None
 
     @app.get('/health')
     async def health() -> dict[str, str]:
@@ -224,7 +276,27 @@ def create_app(
                 attributed = (None if parsed is None
                               else attach_request_metadata_dict(parsed, user_plan=plan))
                 if attributed is not None:
-                    payload = serialize_request_body(attributed)
+                    shunt = getattr(request.app.state, 'econ', None)
+                    if shunt is not None and _has_tool_result(attributed):
+                        # Fail-open snapshot (Req 4.5): the attributed bytes
+                        # exactly as the metadata attachment produced them —
+                        # immune to apply's in-place mutation, so any exception
+                        # relays this body. The hook never awaits (Req 4.1) and
+                        # runs on the already-attributed object (Req 3.6).
+                        attributed_bytes = serialize_request_body(attributed)
+                        try:
+                            shunt.apply(attributed, diagnostic)
+                        except Exception as error:
+                            _ECON_HOOK_LOG.warning(
+                                'econ apply failed (%s); relaying the original body',
+                                type(error).__name__)
+                            if diagnostic is not None:
+                                diagnostic.econ = {'econ_outcome': 'error'}
+                            payload = attributed_bytes
+                        else:
+                            payload = serialize_request_body(attributed)
+                    else:
+                        payload = serialize_request_body(attributed)
             return await client.send(client.build_request(
                 request.method, target, headers=headers,
                 content=payload), stream=True, follow_redirects=False)
@@ -422,6 +494,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument('--login', action='store_true', help='Validate existing native Vibe credentials before serving; with --auth-source oidc, sign in again')
     parser.add_argument('--log', action='store_true', help='Emit safe structured request diagnostics to stdout (default: off)')
     parser.add_argument('--observe', action='store_true', help='Export allowlisted diagnostics to an OpenObserve-style backend configured by MVIBE_OBSERVE_* env vars (default: off)')
+    parser.add_argument('--econ', action='store_true', help='Replace historical file-read tool results with deterministic mmhmem summaries; configured by MVIBE_ECON_* env vars (requires MVIBE_ECON_MMHMEM_BIN; validated at startup)')
     args = parser.parse_args(argv)
     if args.log:
         configure_stdout()
@@ -441,11 +514,22 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f'WARNING: {error}', file=sys.stderr)
     if args.observe and observe_config is None:
         parser.exit(2, 'error: --observe requires MVIBE_OBSERVE_URL, MVIBE_OBSERVE_USER and MVIBE_OBSERVE_TOKEN\n')
+    econ_config = None
+    try:
+        econ_config = EconConfig.from_env()
+    except EconConfigError as error:
+        if args.econ:
+            # Explicit request with invalid configuration fails fast (Req 1.5).
+            parser.exit(2, f'error: {error}\n')
+        print(f'WARNING: {error}', file=sys.stderr)
+    if args.econ and econ_config is None:
+        parser.exit(2, 'error: --econ requires MVIBE_ECON_MMHMEM_BIN (path to the mmhmem binary) to enable token economics\n')
     if args.auth_source == 'oidc':
         selected_app = create_app(auth_factory=_oidc_auth_factory, force_login=args.login,
-                                  observe_config=observe_config)
+                                  observe_config=observe_config, econ_config=econ_config)
     else:
-        selected_app = create_app(force_login=args.login, observe_config=observe_config)
+        selected_app = create_app(force_login=args.login, observe_config=observe_config,
+                                  econ_config=econ_config)
     uvicorn.run(selected_app, host=args.host, port=args.port, access_log=False)
 
 

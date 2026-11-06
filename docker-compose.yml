@@ -30,7 +30,14 @@ name: mvibe-proxy
 
 services:
   proxy:
-    build: .
+    build:
+      context: .
+      args:
+        # Source ref for the embedded mmhmem economics child (built into the
+        # image at /usr/local/bin/mmhmem). The ref must contain shunt_content
+        # (companion spec shunt-content-tool); the binary is inert while
+        # economics stays off below.
+        MMHMEM_REF: ${MMHMEM_REF:-main}
     image: mvibe-proxy:local
     init: true
     restart: unless-stopped
@@ -42,12 +49,39 @@ services:
       # This workstation (Docker in WSL Debian), for example:
       #   MVIBE_AUTH_DATA=/mnt/c/Users/mariu/AppData/Local/mvibe-auth
       #   MVIBE_KEYRING_DATA=/mnt/c/Users/mariu/AppData/Local/Python Keyring
+      # mmhmem state when economics is enabled (uncomment together with the
+      # named volume at the bottom and AGENT_MEM_DATA_DIR below):
+      # - mmhmem-data:/data/mmhmem
     environment:
       XDG_DATA_HOME: /data
       # keyring core has no file backend in a container; the docker extra
       # (keyrings.alt) reads the mounted keyring_pass.cfg instead.
       PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+      # Token economics (off by default; Req 1.1): uncomment
+      # MVIBE_ECON_MMHMEM_BIN to enable, and add "--econ" to command below for
+      # fail-fast startup on incomplete configuration. Tool-result contents
+      # never leave the container: the supervised stdio child opens no
+      # listener, so no extra port is published. See docs/token-economics.md
+      # for every key and the in-container trust boundary.
+      # MVIBE_ECON_MMHMEM_BIN: /usr/local/bin/mmhmem
+      # MVIBE_ECON_PROJECT: mvibe
+      # MVIBE_ECON_TOOLS: read
+      # MVIBE_ECON_MIN_BYTES: "4096"
+      # MVIBE_ECON_TIMEOUT_MS: "45000"
+      # MVIBE_ECON_MEMO_MAX: "2000"
+      # MVIBE_ECON_RETRY_S: "300"
+      # MVIBE_ECON_CONCURRENCY: "2"
+      # The stdio child inherits this environment: mmhmem worker/data settings
+      # (a worker-unconfigured child reports tool errors; the proxy stays
+      # fail-open and relays raw).
+      # AGENT_MEM_WORKER_API_URL: https://your-worker-endpoint
+      # AGENT_MEM_WORKER_MODEL: your-provider/your-model
+      # AGENT_MEM_WORKER_API_KEY: change-me
+      # AGENT_MEM_DATA_DIR: /data/mmhmem
+      # AGENT_MEM_LOG_FILE: /data/mmhmem/audit/mmhmem.log
     # Same default auth flow as the tested OpenCode provider: existing-vibe.
+    # When economics is enabled above, append "--econ" for fail-fast startup:
+    # command: ["--host", "0.0.0.0", "--port", "8765", "--econ"]
     command: ["--host", "0.0.0.0", "--port", "8765"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=4)"]
@@ -55,3 +89,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+# Uncomment together with the mmhmem-data mount above (economics enabled):
+# volumes:
+#   mmhmem-data:

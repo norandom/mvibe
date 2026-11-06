@@ -9,6 +9,8 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
 - econ.py single-module size annotation in design.md updated 2026-11-06 after task 2.3 (supervision scope grew the transport section past the pre-amendment ≤500-line estimate).
 - 2.5 → 3.1 handoff (2026-11-06): EconShunt.apply sets `diagnostic.econ = EconCounters` (dataclass object), but design's RequestDiagnostic.econ is typed `dict | None` — task 3.1 owns the reconciliation (either type the field as EconCounters|None and convert at emit time, or convert in apply; pick ONE and keep the event allowlist names `econ_*` consistent with WarmQueue's `{event, econ_outcome, econ_latency_ms, econ_in_bytes}`). est_saved_tokens may be negative in theory (summary longer than original); diagnostics must not assume non-negativity. Warm event names in observability `_ALLOWED_FIELDS` must match WarmQueue emission exactly.
 - 2.4/2.5 riders: emit-sink try/except Exception added (never-raise discipline); optional logger.debug breadcrumb beside it is a sanctioned 3.1 rider.
+- 3.2 routed finding (2026-11-06): Ollama dialect can never receive replaced content — Ollama's wire format carries no tool-call ids on tool results (compat._ollama_messages drops them by protocol), so correlation fails closed and every Ollama resend relays raw. Documented as a spec limitation under Requirement 2.4 (fail-closed by protocol, safe under the fail-open philosophy). A future compat.py change could only help if the client provides ids. Pinned by tests: Ollama bodies relay byte-identical, zero mmhmem calls.
+- 3.2 deferred gates: `docker build` + `docker compose config` NOT RUN (no docker CLI in the implementing environment) — Dockerfile/compose verified by inspection only; run both when docker is available (tracked for final validation). MMHMEM_REF defaults to `main`, which does not yet contain shunt_content (companion spec unimplemented); comments document that operators must pin a ref containing it. glibc base-drift note: rust:1-slim and python:3.12-slim must stay glibc-compatible; verify on first real image build, document pinning in the operator guide (task 4.2).
 
 ## 1. Foundation: configuration, test double and single body parse
 
@@ -65,13 +67,13 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
 
 ## 3. Integration: proxy wiring and diagnostics
 
-- [ ] 3.1 Diagnostics allowlist and econ event fields
+- [x] 3.1 Diagnostics allowlist and econ event fields
   - Add the econ counters and warm-event fields to the per-request diagnostic and to the export allowlist; emit the warm event through the same stdout and export channels
   - Observable completion: diagnostics tests show the fields present only when economics acted, absent otherwise, and the export allowlist rejecting any non-listed key; the existing observability tests pass unchanged
   - _Boundary: RequestDiagnostic, observability allowlist_
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 1.4_
 
-- [ ] 3.2 Proxy wiring: switch, lifespan, child and Docker
+- [x] 3.2 Proxy wiring: switch, lifespan, child and Docker
   - Add the command-line switch that fails fast on incomplete configuration; create the economics component in the application lifespan, spawn and supervise the stdio child at startup, and stop it on shutdown; call the rewrite after metadata attachment inside a guard that relays the original body on any exception; skip bodies without tool results; extend the Dockerfile with the pinned mmhmem build stage (`ARG MMHMEM_REF`) and wire `MVIBE_ECON_*`/`AGENT_MEM_*` env and mmhmem volumes into docker-compose.yml
   - Observable completion: full-app tests show the switch exiting non-zero with the missing key named, the upstream request carrying replaced content for all three dialects after warm-up, byte-identical upstream responses, unchanged metadata, raw relay when the component raises, and no child spawned when economics is disabled; the Docker image builds with the mmhmem stage and `docker compose config` validates the new env/volume wiring
   - _Depends: 2.5, 3.1_

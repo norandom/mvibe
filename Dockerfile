@@ -1,6 +1,25 @@
 # Local Vibe proxy image: OpenAI-compatible /v1 endpoint backed by Vibe credentials.
 # Build:  docker build -t mvibe-proxy:local .
 # Run:    docker compose up   (see docker-compose.yml; publishes 127.0.0.1 only)
+#
+# mmhmem builder stage (proxy-econ-client Amendment 1): the token-economics
+# child is built from a pinned git ref and embedded at /usr/local/bin/mmhmem.
+# MMHMEM_REF must point at a ref that CONTAINS shunt_content (companion spec
+# shunt-content-tool; verify the ref has the tool merged before relying on it).
+# The binary stays inert unless MVIBE_ECON_MMHMEM_BIN selects it (off by
+# default), and the stdio child opens no listener, so no port is published.
+FROM rust:1-slim AS mmhmem-build
+ARG MMHMEM_REF=main
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates gcc git libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /mmhmem
+# Full clone + checkout so MMHMEM_REF may be a branch, a tag, or a commit sha.
+RUN git clone https://github.com/norandom/mmhmem.git . \
+    && git checkout --detach "${MMHMEM_REF}"
+# Cargo.lock is committed upstream; --locked keeps one ref's build reproducible.
+RUN cargo build --release --locked
+
 FROM python:3.12-slim
 
 RUN pip install --no-cache-dir uv
@@ -18,6 +37,10 @@ ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     PYTHONUNBUFFERED=1 \
     XDG_DATA_HOME=/data
 RUN uv sync --locked --extra proxy --extra docker --no-dev --python /usr/local/bin/python
+
+# The pinned mmhmem binary from the builder stage; present even while economics
+# is off — enabling it is an env decision (MVIBE_ECON_MMHMEM_BIN=/usr/local/bin/mmhmem).
+COPY --from=mmhmem-build /mmhmem/target/release/mmhmem /usr/local/bin/mmhmem
 
 RUN useradd --create-home --uid 1000 app
 USER app

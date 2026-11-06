@@ -3,8 +3,10 @@ the fake mmhmem stdio double with synthetic dialect fixtures (proxy-econ-client 
 the eligibility of historical file-read results (proxy-econ-client 2.1), the bounded
 memo of outcomes (proxy-econ-client 2.2), the minimal supervised stdio JSON-RPC
 client (proxy-econ-client 2.3), the background warm-up queue (proxy-econ-client 2.4),
-the request-path rewrite with marker and counters (proxy-econ-client 2.5), and the
-diagnostics allowlist with the per-request and warm econ events (proxy-econ-client 3.1)."""
+the request-path rewrite with marker and counters (proxy-econ-client 2.5), the
+diagnostics allowlist with the per-request and warm econ events (proxy-econ-client 3.1),
+and the proxy wiring: --econ switch, lifespan-owned shunt and supervised stdio child,
+and the fail-open hook in make_acquire (proxy-econ-client 3.2)."""
 import asyncio
 import copy
 import dataclasses
@@ -531,8 +533,11 @@ UPSTREAM_CHAT_RESPONSE = {'id': 'chat-econ-1', 'model': 'mistral-large-4', 'choi
     'usage': {'prompt_tokens': 8, 'completion_tokens': 2}}
 
 
-def econ_harness():
-    """The test_proxy harness() pattern with a chat-shaped upstream response."""
+def econ_harness(econ_settings: EconConfig | None = None, econ_client=None):
+    """The test_proxy harness() pattern with a chat-shaped upstream response.
+
+    econ_settings/econ_client wire economics into the app the way proxy.main
+    does, with an injected-stream client replacing the spawned child (3.2)."""
     session = Session()
     requests = []
 
@@ -543,7 +548,8 @@ def econ_harness():
         return httpx2.AsyncClient(transport=httpx2.MockTransport(upstream),
                                   follow_redirects=False)
 
-    app = proxy.create_app(lambda: session, client_factory)
+    app = proxy.create_app(lambda: session, client_factory,
+                           econ_config=econ_settings, econ_client=econ_client)
     return app, session, requests
 
 
@@ -2217,3 +2223,309 @@ async def test_warm_events_ride_the_same_stdout_and_export_channels(no_spawn, ca
                         'econ_latency_ms': warm_rows[0]['econ_latency_ms'],
                         'econ_in_bytes': len(candidate.content)}
     assert 'synthetic_symbol' not in json.dumps(sink.records)
+
+
+# --- 3.2: proxy wiring — switch, lifespan, hook ------------------------------------
+#
+# The --econ switch fails fast naming the missing or invalid setting (Req 1.5)
+# while the unswitched proxy stays silently off (Req 1.1); the lifespan creates
+# EconShunt on app.state.econ, spawns and supervises the mmhmem stdio child at
+# startup, and stops it on shutdown; the hook runs after attach_request_metadata
+# inside a guard that relays the original attributed body on any exception
+# (Req 4.5) and skips bodies without tool results (Req 4.6). The upstream
+# request carries the replaced content after warm-up for every dialect through
+# the same translated-body rules (Req 2.4), responses stay byte-exact (Req 3.5)
+# and the metadata output stays unchanged (Req 3.6).
+
+
+def clear_econ_env(monkeypatch):
+    for key in ECON_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_econ_switch_without_configuration_exits_two_naming_the_key(monkeypatch, capsys):
+    # Req 1.5: --econ with nothing configured exits non-zero naming the key.
+    clear_econ_env(monkeypatch)
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *a, **k: pytest.fail('must not serve'))
+    with pytest.raises(SystemExit) as error:
+        proxy.main(['--econ'])
+    assert error.value.code == 2
+    rendered = capsys.readouterr().err
+    assert 'MVIBE_ECON_MMHMEM_BIN' in rendered
+    assert '--econ' in rendered
+
+
+def test_econ_switch_with_an_invalid_binary_exits_two_naming_the_key(monkeypatch, capsys, tmp_path):
+    clear_econ_env(monkeypatch)
+    monkeypatch.setenv('MVIBE_ECON_MMHMEM_BIN', str(tmp_path / 'missing-mmhmem'))
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *a, **k: pytest.fail('must not serve'))
+    with pytest.raises(SystemExit) as error:
+        proxy.main(['--econ'])
+    assert error.value.code == 2
+    assert 'MVIBE_ECON_MMHMEM_BIN' in capsys.readouterr().err
+
+
+def test_econ_switch_with_a_malformed_numeric_setting_exits_two_naming_the_key(monkeypatch, capsys):
+    clear_econ_env(monkeypatch)
+    monkeypatch.setenv('MVIBE_ECON_MMHMEM_BIN', sys.executable)
+    monkeypatch.setenv('MVIBE_ECON_MIN_BYTES', 'abc')
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *a, **k: pytest.fail('must not serve'))
+    with pytest.raises(SystemExit) as error:
+        proxy.main(['--econ'])
+    assert error.value.code == 2
+    assert 'MVIBE_ECON_MIN_BYTES' in capsys.readouterr().err
+
+
+def test_invalid_econ_env_without_the_switch_warns_and_serves_disabled(monkeypatch, capsys, tmp_path):
+    # Req 1.1/1.2: without the explicit switch an invalid config warns once and
+    # the proxy serves with economics disabled (no child, no rewrite).
+    clear_econ_env(monkeypatch)
+    monkeypatch.setenv('MVIBE_ECON_MMHMEM_BIN', str(tmp_path / 'missing-mmhmem'))
+    served = []
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda app, **k: served.append(app))
+    proxy.main([])
+    assert len(served) == 1
+    assert served[0].state.econ is None
+    rendered = capsys.readouterr().err
+    assert 'MVIBE_ECON_MMHMEM_BIN' in rendered
+    assert 'WARNING' in rendered
+
+
+def run_main_capturing_app(monkeypatch, argv):
+    """Drive proxy.main without serving; capture what create_app received."""
+    captured = {}
+    real_create_app = proxy.create_app
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real_create_app(*args, **kwargs)
+
+    monkeypatch.setattr(proxy, 'create_app', spy)
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda app, **k: None)
+    proxy.main(argv)
+    return captured
+
+
+def test_a_complete_econ_environment_reaches_the_app_factory(monkeypatch):
+    clear_econ_env(monkeypatch)
+    monkeypatch.setenv('MVIBE_ECON_MMHMEM_BIN', sys.executable)
+    captured = run_main_capturing_app(monkeypatch, ['--econ'])
+    assert captured['econ_config'] is not None
+    assert captured['econ_config'].mmhmem_bin == sys.executable
+
+
+def test_no_econ_environment_passes_a_disabled_app_factory(monkeypatch):
+    clear_econ_env(monkeypatch)
+    captured = run_main_capturing_app(monkeypatch, [])
+    assert captured['econ_config'] is None
+
+
+@asynccontextmanager
+async def wired_app(mode: str = 'summarized', **kwargs):
+    """A full app with economics wired: EconShunt on app.state.econ over an
+    injected-stream client (FakeMmhmem behind it), so nothing ever spawns."""
+    fake = FakeMmhmem(mode, **kwargs)
+    await fake.start()
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=fake.reader, writer=fake.writer)
+    app, _session, requests = econ_harness(econ_settings=econ_config(), econ_client=client)
+    try:
+        yield app, requests, client, fake
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.anyio
+async def test_disabled_by_default_spawns_no_child_and_relays_history_raw(no_spawn):
+    # Req 1.1: with no MVIBE_ECON_MMHMEM_BIN the app wires no economics object
+    # (import-time default included) and relays byte-exact; the no_spawn
+    # fixture fails loudly if any subprocess were attempted.
+    app, _, requests = econ_harness()
+    body = openai_econ_body()
+    raw = json.dumps(body).encode()
+    expected = attach_request_metadata(raw)
+    assert getattr(proxy.app.state, 'econ', None) is None
+    async with app.router.lifespan_context(app):
+        assert app.state.econ is None
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            response = await client.post('/v1/chat/completions', content=raw)
+            assert response.status_code == 200
+    assert len(requests) == 1
+    assert requests[0].content == expected
+
+
+@pytest.mark.anyio
+async def test_enabled_lifespan_creates_the_shunt_and_stops_the_child_on_shutdown(no_spawn):
+    async with wired_app() as (app, _requests, client, _fake):
+        async with app.router.lifespan_context(app):
+            assert isinstance(app.state.econ, econ.EconShunt)
+            assert app.state.econ.client is client
+            assert client._closed is False
+        assert client._closed is True  # the lifespan shutdown stopped the child
+        assert app.state.econ is None
+
+
+class ExplodingStartClient:
+    """Stand-in client whose spawn/handshake fails, as a dead binary would."""
+
+    def __init__(self):
+        self.shutdown_calls = 0
+
+    async def start(self):
+        raise econ.McpError('spawn: permission denied (os error 13)')
+
+    async def shutdown(self, timeout_s: float = 2.0) -> None:
+        self.shutdown_calls += 1
+
+
+@pytest.mark.anyio
+async def test_child_startup_failure_fails_fast_with_an_actionable_error(no_spawn):
+    stub = ExplodingStartClient()
+    app, _, _requests = econ_harness(econ_settings=econ_config(), econ_client=stub)
+    with pytest.raises(RuntimeError) as excinfo:
+        async with app.router.lifespan_context(app):
+            pass
+    rendered = str(excinfo.value)
+    assert 'MVIBE_ECON_MMHMEM_BIN' in rendered
+    assert 'mmhmem stdio child' in rendered
+    assert 'os error' in rendered  # the sanitized transport detail survives
+    assert stub.shutdown_calls == 1  # bounded cleanup before the raise
+    assert app.state.econ is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('endpoint,build,headers,expect_replaced', [
+    ('/v1/chat/completions', openai_econ_body, {}, True),
+    ('/v1/messages', anthropic_econ_body, {'anthropic-version': '2023-06-01'}, True),
+    ('/api/chat', ollama_econ_body, {}, False),
+])
+async def test_all_three_dialects_apply_economics_after_translation(
+        no_spawn, endpoint, build, headers, expect_replaced):
+    # Req 2.4: the hook sees the upstream-shaped body of every dialect. OpenAI
+    # and Anthropic histories carry correlatable tool ids and are replaced
+    # after warm-up; the Ollama translation drops tool ids entirely (the
+    # pinned dialect reality from task 1.2), so the same eligibility rules
+    # relay it raw on every resend.
+    body = build()
+    content = synthetic_read_content()
+    sha = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    raw = json.dumps(body).encode()
+
+    def response_bytes(response):
+        # The Ollama translator stamps a wall-clock created_at, so cross-run
+        # byte equality is impossible for that dialect with or without
+        # economics; compare everything except that field there.
+        if endpoint == '/api/chat':
+            row = json.loads(response.content)
+            row.pop('created_at')
+            return json.dumps(row, sort_keys=True)
+        return response.content
+
+    control_app, _, control_requests = econ_harness()
+    async with control_app.router.lifespan_context(control_app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(control_app),
+                                     base_url='http://local') as client:
+            control_response = await client.post(endpoint, content=raw, headers=headers)
+    assert control_response.status_code == 200
+    control_bytes = control_requests[0].content
+    control_body = response_bytes(control_response)
+
+    async with wired_app() as (app, requests, _client, _fake):
+        async with app.router.lifespan_context(app):
+            shunt = app.state.econ
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                         base_url='http://local') as client:
+                first = await client.post(endpoint, content=raw, headers=headers)
+                assert first.status_code == 200
+                # First sight relays raw (Req 3.4): byte-identical to disabled.
+                assert requests[0].content == control_bytes
+                assert response_bytes(first) == control_body  # Req 3.5
+                if expect_replaced:
+                    assert await eventually(lambda: shunt.memo.get(sha) is not None)
+                second = await client.post(endpoint, content=raw, headers=headers)
+                assert second.status_code == 200
+                assert response_bytes(second) == control_body  # Req 3.5
+    assert len(requests) == 2
+    if expect_replaced:
+        before = json.loads(control_bytes)
+        after = json.loads(requests[1].content)
+        memoized = shunt.memo.get(sha)
+        assert memoized is not None and memoized.summary is not None
+        [index] = [i for i, message in enumerate(before['messages'])
+                   if message.get('tool_call_id') == HIST_READ_ID]
+        assert before['messages'][index]['content'] == content
+        expected = copy.deepcopy(before)
+        expected['messages'][index]['content'] = memoized.summary
+        assert after == expected  # ONLY that content changed (Req 3.1 via wiring)
+        assert after['metadata'] == before['metadata']  # Req 3.6
+        assert after['messages'][index]['content'].startswith(  # the fixed marker
+            econ.MARKER.format(hint=HIST_READ_PATH,
+                               lines=len(content.splitlines()), sha12=sha[:12]))
+    else:
+        # Ollama: no correlatable ids, so every resend stays byte-identical raw.
+        assert requests[1].content == control_bytes
+
+
+@pytest.mark.anyio
+async def test_apply_exception_relays_the_original_body_and_errors_the_outcome(
+        no_spawn, capsys, monkeypatch):
+    # Req 4.5: any exception inside the component relays the original attributed
+    # body byte-identically (equal to the disabled run) and records the
+    # allowlisted econ_outcome=error event.
+    from mvibe_proxy import diagnostics
+    raw = json.dumps(openai_econ_body()).encode()
+    control_app, _, control_requests = econ_harness()
+    async with control_app.router.lifespan_context(control_app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(control_app),
+                                     base_url='http://local') as client:
+            control_response = await client.post('/v1/chat/completions', content=raw)
+    control_bytes = control_requests[0].content
+
+    diagnostics.configure_stdout()
+    try:
+        async with wired_app() as (app, requests, _client, _fake):
+            async with app.router.lifespan_context(app):
+                def explode(payload, diagnostic=None):
+                    raise RuntimeError('boom SECRET-CONTENT')
+
+                monkeypatch.setattr(app.state.econ, 'apply', explode)
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                             base_url='http://local') as client:
+                    response = await client.post('/v1/chat/completions', content=raw)
+                    assert response.status_code == 200
+                    assert response.content == control_response.content  # Req 3.5
+        assert len(requests) == 1
+        assert requests[0].content == control_bytes  # byte-identical raw relay
+    finally:
+        diagnostics.disable_stdout()
+    row = json.loads(capsys.readouterr().out)
+    assert row['econ_outcome'] == 'error'
+    assert {key for key in row if key.startswith('econ_')} == {'econ_outcome'}
+    assert 'SECRET' not in json.dumps(row)
+
+
+@pytest.mark.anyio
+async def test_bodies_without_tool_results_never_reach_apply(no_spawn):
+    # Req 4.6: bodies without tool-result messages never call apply and never
+    # fetch (no self-calls, no warm-up).
+    plain = {'model': 'mistral-large-4', 'messages': [
+        {'role': 'user', 'content': 'hello'}, {'role': 'assistant', 'content': 'hi'}]}
+    no_messages = {'model': 'mistral-large-4'}
+    async with wired_app() as (app, requests, _client, fake):
+        async with app.router.lifespan_context(app):
+            seen = []
+            real_apply = app.state.econ.apply
+
+            def spying_apply(payload, diagnostic=None):
+                seen.append(payload)
+                return real_apply(payload, diagnostic)
+
+            app.state.econ.apply = spying_apply
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app),
+                                         base_url='http://local') as client:
+                for body in (plain, no_messages):
+                    response = await client.post('/v1/chat/completions',
+                                                 content=json.dumps(body).encode())
+                    assert response.status_code == 200
+            assert seen == []
+            assert tools_calls(fake) == 0
+    assert len(requests) == 2
