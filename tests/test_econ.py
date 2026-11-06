@@ -3,7 +3,8 @@ the fake mmhmem stdio double with synthetic dialect fixtures (proxy-econ-client 
 the eligibility of historical file-read results (proxy-econ-client 2.1), the bounded
 memo of outcomes (proxy-econ-client 2.2), the minimal supervised stdio JSON-RPC
 client (proxy-econ-client 2.3), the background warm-up queue (proxy-econ-client 2.4),
-and the request-path rewrite with marker and counters (proxy-econ-client 2.5)."""
+the request-path rewrite with marker and counters (proxy-econ-client 2.5), and the
+diagnostics allowlist with the per-request and warm econ events (proxy-econ-client 3.1)."""
 import asyncio
 import copy
 import dataclasses
@@ -1969,3 +1970,250 @@ async def test_warm_queue_survives_a_raising_emit_and_still_memoizes(no_spawn):
         await queue.shutdown()
         await client.shutdown()
         await fake.stop()
+
+
+# --- 3.1: diagnostics allowlist and econ event fields -----------------------------
+#
+# The per-request diagnostic carries the econ counters EconShunt.apply records
+# and emits them as ONE allowlisted event through the existing stdout and export
+# channels — the counts, the bytes before and after, and the labelled //4 token
+# estimate (Req 5.1), present only when economics acted and absent otherwise
+# (Req 5.2/5.3), never carrying content, hints, paths or hashes (Req 1.4).
+# Warm events ride the same channels with exactly WarmQueue's four fields
+# (Req 5.4); the observability allowlist is the one export gate for both.
+
+REQUEST_ECON_KEYS = frozenset({
+    'econ_outcome', 'econ_eligible', 'econ_replaced', 'econ_bypassed',
+    'econ_pending', 'econ_in_bytes', 'econ_out_bytes', 'econ_est_saved_tokens',
+})
+ALLOWED_ECON_KEYS = REQUEST_ECON_KEYS | {'econ_latency_ms'}
+WARM_OUTCOMES = {'applied', 'none', 'error', 'summarized', 'cached',
+                 'bypassed', 'failed'}
+
+
+class ExportSink:
+    """The exporter surface diagnostics talks to: enqueue(record) only."""
+
+    def __init__(self):
+        self.records: list = []
+
+    def enqueue(self, record):
+        self.records.append(dict(record))
+
+
+def test_observability_allowlist_admits_exactly_the_design_econ_fields():
+    # Req 5.1/1.4: the design's Data Models econ event table is the whole econ
+    # surface of the allowlist; any other econ_* key is rejected outright.
+    from mvibe_proxy.observability import _ALLOWED_FIELDS, allowlisted
+    assert {key for key in _ALLOWED_FIELDS if key.startswith('econ_')} == ALLOWED_ECON_KEYS
+    exported = allowlisted({
+        'event': 'proxy_request', 'request_id': 'r1',
+        'econ_outcome': 'applied', 'econ_eligible': 2, 'econ_replaced': 1,
+        'econ_bypassed': 0, 'econ_pending': 1, 'econ_in_bytes': 8192,
+        'econ_out_bytes': 4224, 'econ_est_saved_tokens': 992,
+        'econ_latency_ms': None,
+        'econ_content': 'SECRET-CONTENT', 'econ_source_hint': 'src/SECRET_PATH.py',
+        'econ_summary': 'SECRET-CONTENT', 'econ_sha256': 'SECRET-HASH',
+        'econ_path': 'src/SECRET_PATH.py', 'econ_tokens': 992,
+    })
+    assert exported == {
+        'service': 'mvibe-proxy', 'event': 'proxy_request', 'request_id': 'r1',
+        'econ_outcome': 'applied', 'econ_eligible': 2, 'econ_replaced': 1,
+        'econ_bypassed': 0, 'econ_pending': 1, 'econ_in_bytes': 8192,
+        'econ_out_bytes': 4224, 'econ_est_saved_tokens': 992,
+    }
+
+
+def test_warm_event_passes_the_allowlist_with_exactly_warmqueue_fields():
+    # Req 5.4: WarmQueue emits {'event','econ_outcome','econ_latency_ms',
+    # 'econ_in_bytes'}; the allowlist passes exactly those and drops content.
+    from mvibe_proxy.observability import allowlisted
+    exported = allowlisted({
+        'event': 'econ_warm', 'econ_outcome': 'summarized',
+        'econ_latency_ms': 12, 'econ_in_bytes': 5000,
+        'content': 'SECRET-CONTENT', 'summary': 'SECRET-CONTENT',
+        'source_hint': 'src/SECRET_PATH.py', 'econ_latency_ns': 12_345_678,
+    })
+    assert exported == {'service': 'mvibe-proxy', 'event': 'econ_warm',
+                        'econ_outcome': 'summarized', 'econ_latency_ms': 12,
+                        'econ_in_bytes': 5000}
+
+
+def test_request_diagnostic_defaults_to_no_econ_fields(capsys):
+    # Req 5.2/5.3: a request economics never touched emits no econ field.
+    from mvibe_proxy import diagnostics
+    sink = ExportSink()
+    diagnostics.configure_stdout()
+    diagnostics.configure_exporter(sink)
+    try:
+        diagnostic = diagnostics.RequestDiagnostic()
+        assert diagnostic.econ is None
+        diagnostic.emit()
+    finally:
+        diagnostics.disable_stdout()
+        diagnostics.clear_exporter()
+    row = json.loads(capsys.readouterr().out)
+    assert not [key for key in row if key.startswith('econ_')]
+    assert not [key for key in sink.records[0] if key.startswith('econ_')]
+
+
+@pytest.mark.anyio
+async def test_request_econ_event_present_when_acted_absent_otherwise(no_spawn, capsys):
+    # Req 5.1/5.2/5.3: apply acting sets the counters on the diagnostic; emit
+    # carries exactly the allowlisted per-request econ fields through both the
+    # stdout and export channels; nothing eligible sets nothing at all.
+    from mvibe_proxy import diagnostics
+    from mvibe_proxy.observability import allowlisted
+    sink = ExportSink()
+    diagnostics.configure_stdout()
+    diagnostics.configure_exporter(sink)
+    try:
+        body = openai_econ_body()
+        diagnostic = diagnostics.RequestDiagnostic()
+        async with econ_shunt() as (shunt, _client, _fake, _events):
+            assert shunt.apply(small_read_body(), diagnostic) is None
+            assert diagnostic.econ is None  # nothing eligible: no event (5.3)
+            counters = shunt.apply(body, diagnostic)
+            assert counters is not None
+            assert diagnostic.econ is counters  # 2.5's seam, kept intact
+        diagnostic.emit()
+        row = json.loads(capsys.readouterr().out)
+        assert {key for key in row if key.startswith('econ_')} == REQUEST_ECON_KEYS
+        assert row['econ_outcome'] == 'applied'
+        assert (row['econ_eligible'], row['econ_replaced'], row['econ_bypassed'],
+                row['econ_pending']) == (counters.eligible, counters.replaced,
+                                         counters.bypassed, counters.pending)
+        assert (row['econ_in_bytes'], row['econ_out_bytes'],
+                row['econ_est_saved_tokens']) == (counters.in_bytes,
+                                                  counters.out_bytes,
+                                                  counters.est_saved_tokens)
+        assert len(sink.records) == 1
+        exported = allowlisted(sink.records[0])
+        assert {key for key in exported if key.startswith('econ_')} == REQUEST_ECON_KEYS
+        assert exported['econ_eligible'] == counters.eligible
+        assert exported['econ_est_saved_tokens'] == counters.est_saved_tokens
+    finally:
+        diagnostics.disable_stdout()
+        diagnostics.clear_exporter()
+
+
+def test_negative_est_saved_tokens_is_relayed_unchanged(capsys):
+    # 2.5→3.1 handoff: a summary longer than its original makes the estimate
+    # negative; the honest figure is emitted, never clamped or assumed >= 0.
+    from mvibe_proxy import diagnostics
+    diagnostics.configure_stdout()
+    try:
+        diagnostic = diagnostics.RequestDiagnostic()
+        diagnostic.econ = econ.EconCounters(
+            eligible=1, replaced=1, bypassed=0, pending=0,
+            in_bytes=500, out_bytes=900, est_saved_tokens=-100)
+        diagnostic.emit()
+    finally:
+        diagnostics.disable_stdout()
+    row = json.loads(capsys.readouterr().out)
+    assert row['econ_outcome'] == 'applied'
+    assert row['econ_est_saved_tokens'] == -100
+
+
+def test_error_path_econ_mapping_emits_only_allowlisted_keys(capsys):
+    # The proxy's apply wrapper records failures as a plain mapping (the
+    # design's {'econ_outcome': 'error'}); only allowlisted names may leave.
+    from mvibe_proxy import diagnostics
+    sink = ExportSink()
+    diagnostics.configure_stdout()
+    diagnostics.configure_exporter(sink)
+    try:
+        diagnostic = diagnostics.RequestDiagnostic()
+        diagnostic.econ = {'econ_outcome': 'error',
+                           'content': 'SECRET-CONTENT',
+                           'econ_source_hint': 'src/SECRET_PATH.py'}
+        diagnostic.emit()
+    finally:
+        diagnostics.disable_stdout()
+        diagnostics.clear_exporter()
+    rendered = capsys.readouterr().out
+    assert 'SECRET' not in rendered
+    row = json.loads(rendered)
+    assert {key for key in row if key.startswith('econ_')} == {'econ_outcome'}
+    assert row['econ_outcome'] == 'error'
+    assert {key for key in sink.records[0] if key.startswith('econ_')} == {'econ_outcome'}
+    assert 'SECRET' not in json.dumps(sink.records[0])
+
+
+@pytest.mark.anyio
+async def test_no_content_hint_or_path_substrings_in_any_econ_field(no_spawn, capsys):
+    # Req 1.4: a candidate whose summary would leak its content, path and hash
+    # if wrongly included; the emitted event carries ints and the outcome enum
+    # only — every value is checked, not just the known keys.
+    from mvibe_proxy import diagnostics
+    from mvibe_proxy.observability import allowlisted
+    sink = ExportSink()
+    diagnostics.configure_stdout()
+    diagnostics.configure_exporter(sink)
+    secret_path = 'src/SECRET_PATH/leaky.py'
+    content = synthetic_read_content(path=secret_path) + 'SECRET-CONTENT sentinel\n'
+    body = openai_econ_body()
+    body['messages'][HIST_READ_INDEX]['content'] = content
+    diagnostic = diagnostics.RequestDiagnostic()
+    try:
+        async with econ_shunt() as (shunt, _client, _fake, _events):
+            assert shunt.apply(body, diagnostic) is not None
+        diagnostic.emit()
+    finally:
+        diagnostics.disable_stdout()
+        diagnostics.clear_exporter()
+    rendered = capsys.readouterr().out + json.dumps(sink.records)
+    assert 'SECRET-CONTENT' not in rendered
+    assert secret_path not in rendered
+    assert 'leaky' not in rendered
+    exported = allowlisted(sink.records[0])
+    for key, value in exported.items():
+        if key == 'econ_outcome':
+            assert value in WARM_OUTCOMES
+        elif key.startswith('econ_'):
+            assert isinstance(value, int)
+
+
+@pytest.mark.anyio
+async def test_warm_events_ride_the_same_stdout_and_export_channels(no_spawn, capsys):
+    # Req 5.4: WarmQueue's event reaches the operator through diagnostics'
+    # channels — emit_econ_warm is the sink the proxy hands the queue — with
+    # exactly the four fields WarmQueue emits and nothing else.
+    from mvibe_proxy import diagnostics
+    from mvibe_proxy.observability import allowlisted
+    sink = ExportSink()
+    diagnostics.configure_stdout()
+    diagnostics.configure_exporter(sink)
+    candidate = make_candidate(synthetic_read_content())
+    fake = FakeMmhmem('summarized')
+    await fake.start()
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=fake.reader, writer=fake.writer)
+    await client.start()
+    queue = econ.WarmQueue(client, econ.Memo(100), econ_config(),
+                           diagnostics.emit_econ_warm)
+    try:
+        assert queue.schedule(candidate) is True
+        assert await eventually(lambda: sink.records != [])
+    finally:
+        await queue.shutdown()
+        await client.shutdown()
+        await fake.stop()
+        diagnostics.disable_stdout()
+        diagnostics.clear_exporter()
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    warm_rows = [row for row in rows if row.get('event') == 'econ_warm']
+    assert len(warm_rows) == 1
+    assert warm_rows[0]['econ_outcome'] == 'summarized'
+    assert isinstance(warm_rows[0]['econ_latency_ms'], int)
+    assert warm_rows[0]['econ_in_bytes'] == len(candidate.content)
+    assert set(warm_rows[0]) == {'event', 'econ_outcome', 'econ_latency_ms',
+                                 'econ_in_bytes'}
+    assert len(sink.records) == 1
+    exported = allowlisted(sink.records[0])
+    assert 'timestamp' in exported  # the one allowlisted extra, as for requests
+    exported.pop('timestamp')
+    assert exported == {'service': 'mvibe-proxy', 'event': 'econ_warm',
+                        'econ_outcome': 'summarized',
+                        'econ_latency_ms': warm_rows[0]['econ_latency_ms'],
+                        'econ_in_bytes': len(candidate.content)}
+    assert 'synthetic_symbol' not in json.dumps(sink.records)

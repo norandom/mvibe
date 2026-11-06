@@ -17,11 +17,14 @@ import contextlib
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
 import time
 from typing import Literal
+
+logger = logging.getLogger('mvibe.proxy.econ')
 
 # --- config (Requirements 1.1, 1.2, 1.3, 2.5) -------------------------------
 
@@ -920,6 +923,7 @@ class WarmQueue:
             # 2.4 review rider: a raising sink must not kill the fetch task or
             # cost it its already-recorded memo outcome — schedule()'s
             # never-raise discipline, applied to the emit edge.
+            logger.debug('econ warm emit sink failed', exc_info=True)
             pass
 
     def _record(self, candidate: Candidate, shunt: ShuntResult) -> None:
@@ -991,8 +995,9 @@ class EconShunt:
         rewrite, no counters, no fetch, nothing set on the diagnostic
         (Req 5.3). When a ``diagnostic`` namespace is passed and counters
         exist, they are set on it as one plain attribute
-        (``diagnostic.econ``); the diagnostics tasks own the real
-        RequestDiagnostic field.
+        (``diagnostic.econ``); diagnostics.py owns the 3.1 reconciliation,
+        converting the counters object to the allowlisted econ_* event keys
+        at emit time — this object-identity seam is what the tests assert.
 
         Per candidate the memo decides: a stored summary replaces only that
         message's ``content`` (Req 3.1) and counts ``replaced``; a bypass is

@@ -6,6 +6,7 @@ no trace IDs are invented here and no exporter is installed.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import datetime, timezone
 import sys
 import time
@@ -42,6 +43,40 @@ def clear_exporter() -> None:
     _exporter = None
 
 
+# The econ event schema (design: Data Models). The per-request event carries
+# the counters EconShunt.apply records plus an outcome; the warm event carries
+# the outcome, latency and size. Only these names may ever leave the process.
+_ECON_EVENT_KEYS = (
+    'econ_outcome', 'econ_eligible', 'econ_replaced', 'econ_bypassed',
+    'econ_pending', 'econ_in_bytes', 'econ_out_bytes', 'econ_est_saved_tokens',
+)
+_ECON_WARM_KEYS = ('econ_outcome', 'econ_latency_ms', 'econ_in_bytes')
+
+
+def _econ_fields(econ) -> dict:
+    """The allowlisted econ_* view of one request's economics (Req 5.1, 5.2).
+
+    EconShunt.apply records its EconCounters object on the diagnostic (the
+    seam its tests assert); the proxy's error path records a plain mapping.
+    Either way only allowlisted names survive — ints and the outcome enum,
+    never content, hints or paths (Req 1.4). The estimate keeps its 'est'
+    labelling and may be negative; it is relayed unchanged.
+    """
+    if isinstance(econ, Mapping):
+        return {key: econ[key] for key in _ECON_EVENT_KEYS
+                if key in econ and econ[key] is not None}
+    return {
+        'econ_outcome': 'applied',
+        'econ_eligible': econ.eligible,
+        'econ_replaced': econ.replaced,
+        'econ_bypassed': econ.bypassed,
+        'econ_pending': econ.pending,
+        'econ_in_bytes': econ.in_bytes,
+        'econ_out_bytes': econ.out_bytes,
+        'econ_est_saved_tokens': econ.est_saved_tokens,
+    }
+
+
 class RequestDiagnostic:
     def __init__(self):
         self.request_id = uuid.uuid4().hex
@@ -54,6 +89,9 @@ class RequestDiagnostic:
         self.trace_id = None
         self.span_id = None
         self.model = None
+        # Econ counters (EconCounters) or an allowlisted econ_* mapping; set
+        # only when economics acted on this request — absent otherwise.
+        self.econ = None
 
     def failure(self, code: str) -> None:
         # Only fixed codes chosen by owned call sites reach the log renderer.
@@ -80,11 +118,12 @@ class RequestDiagnostic:
 
     def emit(self) -> None:
         try:
+            econ = _econ_fields(self.econ) if self.econ is not None else {}
             if _logger is not None:
                 _logger.info('proxy_request', request_id=self.request_id,
                              phase=self.phase, outcome=self.outcome, status=self.status,
                              elapsed_ms=round((time.monotonic() - self.started) * 1000, 2),
-                             model=self.model, hint=self.hint)
+                             model=self.model, hint=self.hint, **econ)
             if _exporter is not None:
                 # The exporter allowlists by construction; None fields are dropped.
                 _exporter.enqueue({
@@ -99,10 +138,33 @@ class RequestDiagnostic:
                     'elapsed_ms': round((time.monotonic() - self.started) * 1000, 2),
                     'model': self.model,
                     'hint': self.hint,
+                    **econ,
                 })
         except Exception:
             # A closed stdout, faulty processor or failing exporter must never break inference.
             pass
+
+
+def emit_econ_warm(record: Mapping) -> None:
+    """Emit one allowlisted econ_warm event (Req 5.4) through the same
+    stdout and export channels as the per-request event.
+
+    The warm queue's event carries exactly the outcome, latency and size;
+    anything else in `record` is dropped by construction, and a closed
+    stdout or failing exporter must never break a warm fetch.
+    """
+    try:
+        fields = {key: record[key] for key in _ECON_WARM_KEYS
+                  if key in record and record[key] is not None}
+        if _logger is not None:
+            _logger.info('econ_warm', **fields)
+        if _exporter is not None:
+            _exporter.enqueue({'event': 'econ_warm',
+                               'timestamp': datetime.now(timezone.utc).isoformat(),
+                               **fields})
+    except Exception:
+        # Same never-raise discipline as RequestDiagnostic.emit.
+        pass
 
 
 class ProxyDiagnostics:
