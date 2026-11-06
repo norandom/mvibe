@@ -910,11 +910,17 @@ class WarmQueue:
                 kind='failed', reason=type(exc).__name__, at=time.monotonic()))
         finally:
             self._tasks.pop(candidate.sha256, None)
-        self._emit({'event': 'econ_warm',
-                    'econ_outcome': event_outcome,
-                    'econ_latency_ms': max(
-                        0, int((time.monotonic() - started) * 1000)),
-                    'econ_in_bytes': len(candidate.content)})
+        try:
+            self._emit({'event': 'econ_warm',
+                        'econ_outcome': event_outcome,
+                        'econ_latency_ms': max(
+                            0, int((time.monotonic() - started) * 1000)),
+                        'econ_in_bytes': len(candidate.content)})
+        except Exception:
+            # 2.4 review rider: a raising sink must not kill the fetch task or
+            # cost it its already-recorded memo outcome — schedule()'s
+            # never-raise discipline, applied to the emit edge.
+            pass
 
     def _record(self, candidate: Candidate, shunt: ShuntResult) -> None:
         """Memoize one successful fetch: rendered summary or permanent bypass."""
@@ -926,3 +932,111 @@ class WarmQueue:
             raise McpError('protocol: shunt result carries no summary text')
         self._memo.put(candidate.sha256, Outcome(
             kind='summary', summary=render(shunt.summary, candidate)))
+
+
+# --- orchestration: the request-path rewrite (Requirements 3.1, 3.2, 3.4, 5.3) ---
+#
+# EconShunt is the only object proxy.py talks to. apply() is the sync,
+# never-awaiting request-path hook (Req 4.1): it selects the eligible
+# historical read results, replaces ONLY the content of those whose memo
+# already holds a rendered summary — role, call identifier, position and
+# every other field stay untouched (Req 3.1) — relays everything else raw
+# while the background queue warms the hash (Req 3.4), and returns one
+# EconCounters value carrying the per-request arithmetic (Req 5.3's payload;
+# the diagnostics tasks own emitting it). apply itself stays clean and may
+# raise; the proxy wraps the call and relays the original body on any
+# exception (Req 4.5).
+
+
+@dataclass(frozen=True, slots=True)
+class EconCounters:
+    """One request's rewrite counters: ints only, never content or hints.
+
+    Field names are the design's verbatim — they feed the diagnostics
+    allowlist (econ_eligible .. econ_est_saved_tokens). ``in_bytes`` and
+    ``out_bytes`` sum the eligible results' content bytes before and after
+    the rewrite, so a raw-relayed result contributes its unchanged bytes to
+    both and ``est_saved_tokens = (in_bytes - out_bytes) // 4`` — a labelled
+    estimate, the same //4 heuristic as mmhmem — counts only what was
+    actually replaced.
+    """
+
+    eligible: int
+    replaced: int
+    bypassed: int
+    pending: int
+    in_bytes: int
+    out_bytes: int
+    est_saved_tokens: int
+
+
+class EconShunt:
+    """The orchestration boundary: owns the memo, the warm queue, and the
+    one sync hook the request path calls."""
+
+    def __init__(self, config: EconConfig, client: StdioMcpClient,
+                 emit_warm: Callable[[dict], None]):
+        # client/memo/warm are the observable seams: the lifespan starts and
+        # stops the client, tests and diagnostics read the memo and the queue.
+        self.client = client
+        self.memo = Memo(config.memo_max)
+        self.warm = WarmQueue(client, self.memo, config, emit_warm)
+        self._config = config
+
+    def apply(self, body: dict, diagnostic: object = None) -> EconCounters | None:
+        """Rewrite eligible memoized results in place; None when none are.
+
+        ``body['messages']`` is mutated in place (the design contract) and
+        the counters are returned — or None when no result was eligible: no
+        rewrite, no counters, no fetch, nothing set on the diagnostic
+        (Req 5.3). When a ``diagnostic`` namespace is passed and counters
+        exist, they are set on it as one plain attribute
+        (``diagnostic.econ``); the diagnostics tasks own the real
+        RequestDiagnostic field.
+
+        Per candidate the memo decides: a stored summary replaces only that
+        message's ``content`` (Req 3.1) and counts ``replaced``; a bypass is
+        permanent and counts ``bypassed``; anything else — first sight, or a
+        failed fetch inside its back-off — relays raw and counts ``pending``,
+        with WarmQueue.schedule deciding (never raising) whether a
+        background fetch starts. Positions are the candidates' own indices,
+        so nothing else in the body moves.
+        """
+        messages = body.get('messages')
+        if not isinstance(messages, list):
+            return None
+        candidates = select(messages, self._config)
+        if not candidates:
+            return None
+        replaced = bypassed = pending = 0
+        in_bytes = out_bytes = 0
+        for candidate in candidates:
+            original = len(candidate.content.encode('utf-8'))
+            in_bytes += original
+            outcome = self.memo.get(candidate.sha256)
+            if (outcome is not None and outcome.kind == 'summary'
+                    and outcome.summary is not None):
+                messages[candidate.index]['content'] = outcome.summary
+                replaced += 1
+                out_bytes += len(outcome.summary.encode('utf-8'))
+            elif outcome is not None and outcome.kind == 'bypassed':
+                bypassed += 1  # permanent: raw relay, never re-fetched
+                out_bytes += original
+            else:
+                # First sight, or a failure awaiting / due for its retry:
+                # raw now (Req 3.4); the queue dedups and backs off.
+                pending += 1
+                out_bytes += original
+                self.warm.schedule(candidate)
+        counters = EconCounters(
+            eligible=len(candidates), replaced=replaced, bypassed=bypassed,
+            pending=pending, in_bytes=in_bytes, out_bytes=out_bytes,
+            est_saved_tokens=(in_bytes - out_bytes) // 4)
+        if diagnostic is not None:
+            diagnostic.econ = counters
+        return counters
+
+    async def shutdown(self) -> None:
+        """Stop the warm queue, then the supervised child; both stay bounded."""
+        await self.warm.shutdown()
+        await self.client.shutdown()

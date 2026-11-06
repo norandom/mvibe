@@ -7,6 +7,8 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
 - Ollama dialect drops tool ids in compat translation — eligibility intentionally yields no candidates for Ollama-shaped histories (id-free path, task 2.1 note).
 - Proxy's Anthropic dialect parses `tool_call_id` on tool_result blocks (not the SDK's `tool_use_id`); fixtures match compat.py.
 - econ.py single-module size annotation in design.md updated 2026-11-06 after task 2.3 (supervision scope grew the transport section past the pre-amendment ≤500-line estimate).
+- 2.5 → 3.1 handoff (2026-11-06): EconShunt.apply sets `diagnostic.econ = EconCounters` (dataclass object), but design's RequestDiagnostic.econ is typed `dict | None` — task 3.1 owns the reconciliation (either type the field as EconCounters|None and convert at emit time, or convert in apply; pick ONE and keep the event allowlist names `econ_*` consistent with WarmQueue's `{event, econ_outcome, econ_latency_ms, econ_in_bytes}`). est_saved_tokens may be negative in theory (summary longer than original); diagnostics must not assume non-negativity. Warm event names in observability `_ALLOWED_FIELDS` must match WarmQueue emission exactly.
+- 2.4/2.5 riders: emit-sink try/except Exception added (never-raise discipline); optional logger.debug breadcrumb beside it is a sanctioned 3.1 rider.
 
 ## 1. Foundation: configuration, test double and single body parse
 
@@ -47,14 +49,14 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
   - _Boundary: StdioMcpClient_
   - _Requirements: 4.2, 4.3, 4.6, 1.3_
 
-- [ ] 2.4 Background warm-up queue
+- [x] 2.4 Background warm-up queue
   - Schedule one fetch per unknown hash under a concurrency bound; store the outcome in the memo; emit one allowlisted warm event per completion or failure; bounded shutdown
   - Observable completion: tests show deduplicated in-flight fetches, the concurrency bound respected, failure memoized with back-off then retried after expiry, and shutdown within the bound while a fetch hangs
   - _Depends: 2.2, 2.3_
   - _Boundary: WarmQueue_
   - _Requirements: 3.4, 4.2, 4.3, 5.4_
 
-- [ ] 2.5 Request-path rewrite with marker and counters
+- [x] 2.5 Request-path rewrite with marker and counters
   - For each eligible result, replace the content with the memoized rendered text or leave it raw and schedule warm-up; keep role, call identifier and position; compute eligible, replaced, bypassed, pending, bytes and the labelled token estimate; return nothing when no result is eligible
   - Observable completion: tests show replaced content equal to marker plus summary, all other message fields and messages byte-identical, raw relay with a scheduled warm-up on first sight, and no counters when nothing is eligible
   - _Depends: 2.1, 2.2, 2.4_

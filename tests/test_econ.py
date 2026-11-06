@@ -2,7 +2,8 @@
 the fake mmhmem stdio double with synthetic dialect fixtures (proxy-econ-client 1.2),
 the eligibility of historical file-read results (proxy-econ-client 2.1), the bounded
 memo of outcomes (proxy-econ-client 2.2), the minimal supervised stdio JSON-RPC
-client (proxy-econ-client 2.3), and the background warm-up queue (proxy-econ-client 2.4)."""
+client (proxy-econ-client 2.3), the background warm-up queue (proxy-econ-client 2.4),
+and the request-path rewrite with marker and counters (proxy-econ-client 2.5)."""
 import asyncio
 import copy
 import dataclasses
@@ -11,6 +12,7 @@ import json
 import re
 import sys
 import time
+import types
 from contextlib import asynccontextmanager
 
 import httpx
@@ -1636,5 +1638,334 @@ async def test_warm_queue_shutdown_is_bounded_while_a_fetch_hangs(no_spawn):
         await queue.shutdown(timeout_s=0.5)  # idempotent
         assert events == []  # a cancelled fetch is neither completion nor failure
     finally:
+        await client.shutdown()
+        await fake.stop()
+
+
+# --- 2.5: request-path rewrite (EconShunt) ---------------------------------------
+#
+# The real EconShunt over the real Memo, WarmQueue, Eligibility and
+# StdioMcpClient (FakeMmhmem injected streams): first sight relays the body raw
+# and schedules the background warm-up (Req 3.4); a memoized summary replaces
+# ONLY the result's content — role, call identifier, position and every other
+# message stay byte-identical (Req 3.1) — beginning with the fixed marker line
+# from 2.4, byte-identical on every repeat in the process (Req 3.2/3.3); the
+# counters carry eligible/replaced/bypassed/pending, the bytes before and after
+# the rewrite and the labelled //4 token estimate (Req 5.3's payload — the
+# event itself is wired by the diagnostics tasks); nothing eligible means no
+# rewrite, no counters, no fetch, nothing set on a passed diagnostic.
+
+BYPASS_REASON = 'security_critical'
+HIST_READ_INDEX = 2   # openai_econ_body: the historical read result's position
+SECOND_READ_INDEX = 5  # two_read_body: the second historical read result
+OTHER_READ_PATH = 'src/synthetic_other.py'
+
+
+def small_read_body() -> dict:
+    """A historical read result below min_bytes: never eligible (Req 2.2)."""
+    return {
+        'model': 'mistral-large-4',
+        'messages': [
+            {'role': 'user', 'content': 'list the small file'},
+            {'role': 'assistant', 'content': '', 'tool_calls': [
+                {'id': 'call-small-read', 'type': 'function', 'function': {
+                    'name': 'read',
+                    'arguments': json.dumps({'filePath': 'small.txt'})}}]},
+            {'role': 'tool', 'tool_call_id': 'call-small-read', 'content': 'x' * 100},
+            {'role': 'user', 'content': 'thanks'},
+        ],
+    }
+
+
+def trailing_only_body() -> dict:
+    """The only read result sits in the trailing group: never eligible (2.3)."""
+    return {
+        'model': 'mistral-large-4',
+        'messages': [
+            {'role': 'user', 'content': 'read the module'},
+            {'role': 'assistant', 'content': '', 'tool_calls': [
+                {'id': TRAILING_READ_ID, 'type': 'function', 'function': {
+                    'name': 'read',
+                    'arguments': json.dumps({'filePath': TRAILING_READ_PATH})}}]},
+            {'role': 'tool', 'tool_call_id': TRAILING_READ_ID,
+             'content': synthetic_read_content(TRAILING_READ_PATH)},
+        ],
+    }
+
+
+def shell_history_body() -> dict:
+    """A large historical shell result: the allowlist never matches (2.2/2.5)."""
+    return {
+        'model': 'mistral-large-4',
+        'messages': [
+            {'role': 'user', 'content': 'run the suite twice'},
+            {'role': 'assistant', 'content': '', 'tool_calls': [
+                {'id': HIST_BASH_ID, 'type': 'function', 'function': {
+                    'name': 'bash',
+                    'arguments': json.dumps({'command': 'pytest -q'})}}]},
+            {'role': 'tool', 'tool_call_id': HIST_BASH_ID,
+             'content': SHELL_RESULT * 200},
+            {'role': 'user', 'content': 'thanks'},
+        ],
+    }
+
+
+def two_read_body() -> dict:
+    """Two distinct historical read results (positions 2 and 4), both eligible."""
+    return {
+        'model': 'mistral-large-4',
+        'messages': [
+            {'role': 'user', 'content': 'read both modules'},
+            {'role': 'assistant', 'content': '', 'tool_calls': [
+                {'id': HIST_READ_ID, 'type': 'function', 'function': {
+                    'name': 'read',
+                    'arguments': json.dumps({'filePath': HIST_READ_PATH})}}]},
+            {'role': 'tool', 'tool_call_id': HIST_READ_ID,
+             'content': synthetic_read_content(HIST_READ_PATH)},
+            {'role': 'user', 'content': 'now the other one'},
+            {'role': 'assistant', 'content': '', 'tool_calls': [
+                {'id': 'call-other-read', 'type': 'function', 'function': {
+                    'name': 'read',
+                    'arguments': json.dumps({'filePath': OTHER_READ_PATH})}}]},
+            {'role': 'tool', 'tool_call_id': 'call-other-read',
+             'content': synthetic_read_content(OTHER_READ_PATH)},
+            {'role': 'user', 'content': 'compare them'},
+        ],
+    }
+
+
+@asynccontextmanager
+async def econ_shunt(mode: str = 'summarized', *, config: EconConfig | None = None,
+                     events: list | None = None, **kwargs):
+    """A real EconShunt over a started client + fake; everything stopped after."""
+    if events is None:
+        events = []
+    fake = FakeMmhmem(mode, **kwargs)
+    await fake.start()
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=fake.reader, writer=fake.writer)
+    await client.start()
+    shunt = econ.EconShunt(config or econ_config(), client, events.append)
+    try:
+        yield shunt, client, fake, events
+    finally:
+        await shunt.shutdown()
+        await fake.stop()
+
+
+def test_econ_counters_field_set_matches_the_design_contract_and_is_frozen():
+    # The exact design field names: they feed the diagnostics allowlist
+    # (econ_eligible .. econ_est_saved_tokens), ints only, nothing else.
+    assert [field.name for field in dataclasses.fields(econ.EconCounters)] == [
+        'eligible', 'replaced', 'bypassed', 'pending',
+        'in_bytes', 'out_bytes', 'est_saved_tokens']
+    counters = econ.EconCounters(1, 1, 0, 0, 4096, 128, 992)
+    assert all(isinstance(getattr(counters, name), int) for name in
+               ('eligible', 'replaced', 'bypassed', 'pending',
+                'in_bytes', 'out_bytes', 'est_saved_tokens'))
+    assert 'est' in 'est_saved_tokens'  # the estimate stays labelled (Req 5.1)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        counters.eligible = 2
+
+
+@pytest.mark.anyio
+async def test_apply_first_sight_relays_raw_and_schedules_warmup(no_spawn):
+    events: list = []
+    body = openai_econ_body()
+    pristine = copy.deepcopy(body)
+    original = pristine['messages'][HIST_READ_INDEX]['content']
+    original_message = body['messages'][HIST_READ_INDEX]
+    async with econ_shunt(config=econ_config(), events=events) as (shunt, _c, fake, _e):
+        counters = shunt.apply(body)
+        assert counters is not None
+        assert (counters.eligible, counters.replaced,
+                counters.bypassed, counters.pending) == (1, 0, 0, 1)
+        assert body == pristine  # raw relay: the body is untouched (Req 3.4)
+        assert body['messages'][HIST_READ_INDEX] is original_message  # same object
+        assert counters.in_bytes == len(original.encode('utf-8'))
+        # Before/after over the eligible set: nothing replaced, so after == before
+        # and the estimate is honestly zero, not the pending bytes (Req 5.1).
+        assert counters.out_bytes == counters.in_bytes
+        assert counters.est_saved_tokens == 0
+        assert await eventually(lambda: tools_calls(fake) == 1)  # warm-up scheduled
+        method, params = fake.calls[2]  # handshake consumed the first two lines
+        assert (method, params['name']) == ('tools/call', 'shunt_content')
+        assert params['arguments']['content'] == original
+        assert params['arguments']['source_hint'] == HIST_READ_PATH
+        await eventually(lambda: len(events) == 1)  # the scheduled fetch completes
+
+
+@pytest.mark.anyio
+async def test_apply_replaces_only_the_memoized_content_byte_identically(no_spawn):
+    events: list = []
+    config = econ_config()
+    body = openai_econ_body()
+    pristine = copy.deepcopy(body)
+    original_message = body['messages'][HIST_READ_INDEX]
+    async with econ_shunt(config=config, events=events) as (shunt, _c, _f, _e):
+        assert shunt.apply(body).pending == 1
+        assert await eventually(lambda: len(events) == 1)  # the warm fetch finished
+        candidate = econ.select(pristine['messages'], config)[0]
+        memoized = shunt.memo.get(candidate.sha256)
+        assert memoized is not None and memoized.kind == 'summary'
+        assert memoized.summary is not None
+
+        counters = shunt.apply(body)
+        assert counters is not None
+        assert (counters.eligible, counters.replaced,
+                counters.bypassed, counters.pending) == (1, 1, 0, 0)
+        assert counters.in_bytes == len(candidate.content.encode('utf-8'))
+        assert counters.out_bytes == len(memoized.summary.encode('utf-8'))
+        assert counters.est_saved_tokens == (
+            counters.in_bytes - counters.out_bytes) // 4
+
+        expected = copy.deepcopy(pristine)
+        expected['messages'][HIST_READ_INDEX]['content'] = memoized.summary
+        assert body == expected  # ONLY that content differs, deep compare (3.1)
+        assert json.dumps(body) == json.dumps(expected)  # byte-level, same order
+        replaced = body['messages'][HIST_READ_INDEX]
+        assert replaced is original_message  # mutated in place: position kept
+        assert replaced['role'] == 'tool'  # role kept
+        assert replaced['tool_call_id'] == HIST_READ_ID  # call identifier kept
+        assert replaced['content'].startswith(  # the fixed marker line (3.2)
+            econ.MARKER.format(hint=HIST_READ_PATH, lines=candidate.line_count,
+                               sha12=candidate.sha256[:12]))
+        assert f'SUM<{candidate.sha256[:8]}>' in replaced['content']  # then summary
+
+        # Byte-identical on every repeat within the process (Req 3.2/3.3)
+        shunt.apply(body)
+        assert body['messages'][HIST_READ_INDEX]['content'] == memoized.summary
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('build', [small_read_body, trailing_only_body,
+                                   shell_history_body])
+async def test_apply_returns_none_without_counters_or_fetch_when_nothing_eligible(
+        no_spawn, build):
+    events: list = []
+    body = build()
+    pristine = copy.deepcopy(body)
+    diagnostic = types.SimpleNamespace()
+    async with econ_shunt(config=econ_config(), events=events) as (shunt, _c, fake, _e):
+        assert shunt.apply(body, diagnostic) is None  # None: no counters (5.3)
+        assert body == pristine  # and no mutation at all
+        assert tools_calls(fake) == 0  # no warm-up was ever scheduled
+        assert events == []
+        assert not hasattr(diagnostic, 'econ')  # nothing set on the diagnostic
+
+
+@pytest.mark.anyio
+async def test_apply_counts_a_memoized_bypass_and_relays_raw(no_spawn):
+    events: list = []
+    body = openai_econ_body()
+    config = econ_config()
+    async with econ_shunt('bypassed', bypass_reason=BYPASS_REASON, config=config,
+                          events=events) as (shunt, _c, fake, _e):
+        first = shunt.apply(body)
+        assert (first.replaced, first.bypassed, first.pending) == (0, 0, 1)
+        assert await eventually(lambda: len(events) == 1)  # bypass memoized
+        second = shunt.apply(body)
+        assert (second.eligible, second.replaced,
+                second.bypassed, second.pending) == (1, 0, 1, 0)
+        raw = openai_econ_body()['messages'][HIST_READ_INDEX]['content']
+        assert body['messages'][HIST_READ_INDEX]['content'] == raw  # relayed raw
+        assert second.out_bytes == second.in_bytes  # after == before: raw in full
+        assert second.est_saved_tokens == 0
+        assert tools_calls(fake) == 1  # a bypass is permanent: no refetch
+
+
+@pytest.mark.anyio
+async def test_apply_counts_a_recent_failure_as_pending_without_refetching(no_spawn):
+    events: list = []
+    body = openai_econ_body()
+    config = econ_config(retry_s=300)  # the failure stays inside its back-off
+    async with econ_shunt('tool_error', config=config,
+                          events=events) as (shunt, _c, fake, _e):
+        first = shunt.apply(body)
+        assert (first.replaced, first.bypassed, first.pending) == (0, 0, 1)
+        assert await eventually(lambda: len(events) == 1)
+        assert events[0]['econ_outcome'] == 'failed'
+        second = shunt.apply(body)
+        # A failed fetch is not-yet-summarized: the pending bucket, not bypassed
+        assert (second.replaced, second.bypassed, second.pending) == (0, 0, 1)
+        assert second.est_saved_tokens == 0
+        assert tools_calls(fake) == 1  # back-off: no new fetch (Req 4.3)
+        raw = openai_econ_body()['messages'][HIST_READ_INDEX]['content']
+        assert body['messages'][HIST_READ_INDEX]['content'] == raw  # raw relay
+
+
+@pytest.mark.anyio
+async def test_apply_counter_arithmetic_is_exact_on_a_constructed_case(no_spawn):
+    events: list = []
+    body = two_read_body()
+    first_content = body['messages'][2]['content']
+    second_content = body['messages'][SECOND_READ_INDEX]['content']
+    first_sha = hashlib.sha256(first_content.encode('utf-8')).hexdigest()
+    second_sha = hashlib.sha256(second_content.encode('utf-8')).hexdigest()
+    config = econ_config(retry_s=300)
+    async with econ_shunt(config=config, events=events,
+                          modes_by_sha={first_sha: 'summarized',
+                                        second_sha: 'tool_error'}) as (shunt, _c, fake, _e):
+        opening = shunt.apply(body)
+        assert (opening.eligible, opening.replaced,
+                opening.bypassed, opening.pending) == (2, 0, 0, 2)
+        assert await eventually(lambda: len(events) == 2)  # one summary, one failure
+
+        memoized = shunt.memo.get(first_sha)
+        assert memoized is not None and memoized.summary is not None
+        counters = shunt.apply(body)
+        # 2 eligible: 1 replaced, 1 pending (the failed one inside its back-off)
+        assert (counters.eligible, counters.replaced,
+                counters.bypassed, counters.pending) == (2, 1, 0, 1)
+        first_bytes = len(first_content.encode('utf-8'))
+        second_bytes = len(second_content.encode('utf-8'))
+        rendered_bytes = len(memoized.summary.encode('utf-8'))
+        assert counters.in_bytes == first_bytes + second_bytes  # before
+        # after: the replacement plus the raw-relayed pending result in full
+        assert counters.out_bytes == rendered_bytes + second_bytes
+        assert counters.est_saved_tokens == (first_bytes - rendered_bytes) // 4
+        assert counters.est_saved_tokens > 0
+        assert tools_calls(fake) == 2  # one fetch per hash, none retried
+        assert body['messages'][2]['content'] == memoized.summary
+        assert body['messages'][SECOND_READ_INDEX]['content'] == second_content  # raw
+
+
+@pytest.mark.anyio
+async def test_apply_sets_plain_counters_on_a_passed_diagnostic_namespace(no_spawn):
+    events: list = []
+    body = openai_econ_body()
+    async with econ_shunt(config=econ_config(), events=events) as (shunt, _c, _f, _e):
+        assert shunt.apply(body).pending == 1
+        assert await eventually(lambda: len(events) == 1)  # summary memoized
+        diagnostic = types.SimpleNamespace()
+        counters = shunt.apply(body, diagnostic)
+        assert counters is not None
+        assert diagnostic.econ is counters  # plain attribute: the 3.1/3.2 seam
+
+
+@pytest.mark.anyio
+async def test_warm_queue_survives_a_raising_emit_and_still_memoizes(no_spawn):
+    # 2.4 review rider: a raising emit sink must not kill the fetch task or
+    # cost it its already-recorded memo outcome (schedule()'s never-raise
+    # discipline applied to the emit edge).
+    def exploding_emit(event):
+        raise RuntimeError('export sink down')
+
+    content = synthetic_read_content()
+    candidate = make_candidate(content)
+    memo = econ.Memo(100)
+    fake = FakeMmhmem('summarized')
+    await fake.start()
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=fake.reader, writer=fake.writer)
+    await client.start()
+    queue = econ.WarmQueue(client, memo, econ_config(), exploding_emit)
+    try:
+        assert queue.schedule(candidate) is True
+        task = queue._tasks[candidate.sha256]
+        await asyncio.wait_for(task, 2.0)  # completes cleanly despite the emit
+        memoized = memo.get(candidate.sha256)
+        assert memoized is not None and memoized.kind == 'summary'
+        assert memoized.summary is not None
+    finally:
+        await queue.shutdown()
         await client.shutdown()
         await fake.stop()
