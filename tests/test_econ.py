@@ -20,6 +20,9 @@ from econ_helpers import (
 )
 from mvibe_proxy import compat, econ
 from mvibe_proxy.econ import EconConfig, EconConfigError, HARD_EXCLUDED
+from mvibe_auth.request_metadata import (
+    RequestContext, attach_request_metadata, build_request_metadata,
+)
 from test_proxy import Session
 
 ECON_KEYS = (
@@ -558,3 +561,70 @@ async def test_all_three_dialect_fixtures_load_through_the_proxy_harness():
                          and isinstance(message.get('content'), str)]
         assert any(content.startswith(f'Read file {HIST_READ_PATH}') for content in tool_contents)
         assert any(content.startswith(f'Read file {TRAILING_READ_PATH}') for content in tool_contents)
+
+
+# --- 1.3: single body parse shared with account-attribution metadata --------
+
+
+@pytest.mark.anyio
+async def test_forwarded_chat_body_bytes_with_economics_disabled_match_today():
+    """Req 1.1/3.6/6.4: with economics disabled the forwarded chat-completion
+    bytes are exactly the ones today's bytes-level attachment produces."""
+    app, _, requests = econ_harness()
+    body = openai_econ_body()
+    raw = json.dumps(body).encode()  # deliberately non-compact input bytes
+    expected = attach_request_metadata(raw)
+    assert expected != raw  # attribution re-serialization really happens
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            response = await client.post('/v1/chat/completions', content=raw)
+            assert response.status_code == 200
+    assert len(requests) == 1
+    assert requests[0].content == expected
+    forwarded = json.loads(requests[0].content)
+    assert forwarded['messages'] == body['messages']
+    # The trailing tool results make this a secondary call; metadata equals a
+    # fresh build with no account plan (the harness session has none).
+    assert forwarded['metadata'] == build_request_metadata(RequestContext(iteration=1))
+    assert 'user_plan' not in forwarded['metadata']
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('raw', [b'', b'not json', b'[1,2]', b'null', b'\xff',
+                                 b'{"metadata": []}', b'{"value": NaN}',
+                                 b'{"model":"mistral-large-4","metadata":7}'])
+async def test_unattributable_chat_bodies_relay_byte_exact_with_economics_disabled(raw):
+    """Req 1.1: bodies the attribution leaves intact are relayed byte-exact."""
+    app, _, requests = econ_harness()
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            response = await client.post('/v1/chat/completions', content=raw)
+            assert response.status_code == 200
+    assert len(requests) == 1
+    assert requests[0].content == raw
+
+
+@pytest.mark.anyio
+async def test_chat_completion_body_parsed_once_on_the_acquire_path(monkeypatch):
+    """Design risk 'large bodies parsed twice': the acquire path JSON-parses
+    the request body exactly once (model inspection and metadata attachment
+    share one parse)."""
+    app, _, requests = econ_harness()
+    raw = json.dumps(openai_econ_body()).encode()
+    expected = attach_request_metadata(raw)  # computed before the patch window
+    body_parses = []
+    real_loads = json.loads
+
+    def counting_loads(data, *args, **kwargs):
+        if isinstance(data, (bytes, bytearray)) and bytes(data) == raw:
+            body_parses.append(bytes(data))
+        return real_loads(data, *args, **kwargs)
+
+    monkeypatch.setattr(json, 'loads', counting_loads)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            response = await client.post('/v1/chat/completions', content=raw)
+            assert response.status_code == 200
+    assert len(requests) == 1
+    assert requests[0].content == expected
+    assert len(body_parses) == 1

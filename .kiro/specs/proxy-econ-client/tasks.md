@@ -16,7 +16,7 @@ All tasks are required unless marked `- [ ]*`. Sub-tasks are sized for 1–3 hou
   - Observable completion: fixtures load in the existing `harness()` pattern and the fake records every call it received
   - _Requirements: 6.1_
 
-- [ ] 1.3 Single body parse shared with account-attribution metadata
+- [x] 1.3 Single body parse shared with account-attribution metadata
   - Parse the chat-completion body once in the acquire path and attach metadata on the parsed object, keeping the serialized bytes identical to today when economics is disabled
   - Observable completion: existing metadata and proxy tests pass unchanged, and a new test asserts byte equality of the forwarded body with economics disabled
   - _Requirements: 1.1, 3.6, 6.4_

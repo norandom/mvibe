@@ -10,7 +10,8 @@
 """Run with: uv run --script proxy.py"""
 from __future__ import annotations
 
-from mvibe_auth.request_metadata import attach_request_metadata
+from mvibe_auth.request_metadata import (attach_request_metadata_dict, parse_request_body,
+                                          serialize_request_body)
 from mvibe_auth.account_plan import AccountPlanResolver
 
 import argparse
@@ -212,10 +213,18 @@ def create_app(
             client = request.app.state.client
             payload = body if body is not None else await request.body()
             if path == 'chat/completions':
+                parsed = parse_request_body(payload)
                 if diagnostic is not None:
-                    diagnostic.model = _request_model(payload)
+                    # The single strict parse feeds both the model field and the
+                    # attribution below; the tolerant fallback keeps model
+                    # extraction working for bodies that will be relayed raw.
+                    model = parsed.get('model') if parsed is not None else _request_model(payload)
+                    diagnostic.model = model if isinstance(model, str) else None
                 plan = await request.app.state.account_plan.resolve(snapshot)
-                payload = attach_request_metadata(payload, user_plan=plan)
+                attributed = (None if parsed is None
+                              else attach_request_metadata_dict(parsed, user_plan=plan))
+                if attributed is not None:
+                    payload = serialize_request_body(attributed)
             return await client.send(client.build_request(
                 request.method, target, headers=headers,
                 content=payload), stream=True, follow_redirects=False)

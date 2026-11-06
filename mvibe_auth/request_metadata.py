@@ -74,19 +74,36 @@ def build_request_metadata(context: RequestContext | None = None, *, user_plan: 
     return {key: str(value) for key, value in values.items() if value is not None}
 
 
-def attach_request_metadata(body: bytes, context: RequestContext | None = None, *, user_plan: str | None = None) -> bytes:
-    """Merge owned attribution only for JSON objects; leave other bytes intact."""
+def parse_request_body(body: bytes) -> dict | None:
+    """Strict JSON-object parse shared by the acquire path.
+
+    Returns None for everything attach_request_metadata relays raw:
+    undecodable bytes, rejected JSON constants and non-object payloads.
+    """
     try:
         payload = json.loads(body, parse_constant=_reject_constant)
     except (ValueError, UnicodeDecodeError, RecursionError):
-        return body
-    if not isinstance(payload, dict):
-        return body
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def serialize_request_body(payload: dict) -> bytes:
+    """Compact wire form shared by the acquire path and attach_request_metadata."""
+    return json.dumps(payload, separators=(',', ':')).encode('utf-8')
+
+
+def attach_request_metadata_dict(payload: dict, context: RequestContext | None = None, *,
+                                 user_plan: str | None = None) -> dict | None:
+    """Attach attribution metadata to one already-parsed body, in place.
+
+    Returns the attributed payload, or None when the request must stay raw
+    (metadata present but not a JSON object).
+    """
     metadata = payload.get('metadata', {})
     if metadata is None:
         metadata = {}
     if not isinstance(metadata, dict):
-        return body
+        return None
     # Account attribution is server-owned, including its unavailable state.
     metadata.pop('user_plan', None)
     if context is None:
@@ -101,7 +118,15 @@ def attach_request_metadata(body: bytes, context: RequestContext | None = None, 
                         iteration = 1
         context = RequestContext(iteration=iteration)
     payload['metadata'] = {**metadata, **build_request_metadata(context, user_plan=user_plan)}
-    return json.dumps(payload, separators=(',', ':')).encode('utf-8')
+    return payload
+
+
+def attach_request_metadata(body: bytes, context: RequestContext | None = None, *, user_plan: str | None = None) -> bytes:
+    """Merge owned attribution only for JSON objects; leave other bytes intact."""
+    payload = parse_request_body(body)
+    if payload is None or attach_request_metadata_dict(payload, context, user_plan=user_plan) is None:
+        return body
+    return serialize_request_body(payload)
 
 
 def _reject_constant(value: str) -> None:
