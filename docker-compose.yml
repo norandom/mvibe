@@ -73,10 +73,12 @@ services:
       # MVIBE_ECON_CONCURRENCY: "2"
       # The stdio child inherits this environment: mmhmem worker/data settings
       # (a worker-unconfigured child reports tool errors; the proxy stays
-      # fail-open and relays raw).
-      # AGENT_MEM_WORKER_API_URL: https://your-worker-endpoint
-      # AGENT_MEM_WORKER_MODEL: your-provider/your-model
-      # AGENT_MEM_WORKER_API_KEY: change-me
+      # fail-open and relays raw). Worker names are the ones mmhmem's local
+      # profile reads today (WORKER_*); AGENT_MEM_WORKER_* aliases are planned
+      # in the mmhmem companion spec — set the names your pinned ref documents.
+      # WORKER_API_URL: https://your-worker-endpoint
+      # WORKER_MODEL: your-provider/your-model
+      # WORKER_API_KEY: change-me
       # AGENT_MEM_DATA_DIR: /data/mmhmem
       # AGENT_MEM_LOG_FILE: /data/mmhmem/audit/mmhmem.log
     # Same default auth flow as the tested OpenCode provider: existing-vibe.

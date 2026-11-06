@@ -58,10 +58,14 @@ the offline gate are unchanged.
   (default `read`), `MVIBE_ECON_MIN_BYTES` (4096), `MVIBE_ECON_TIMEOUT_MS` (45000),
   `MVIBE_ECON_MEMO_MAX` (2000), `MVIBE_ECON_RETRY_S` (300), `MVIBE_ECON_CONCURRENCY` (2).
 - Child environment: the child inherits the proxy process env; the operator
-  configures mmhmem worker/data settings through the proxy container env
-  (`AGENT_MEM_WORKER_API_URL`, `AGENT_MEM_WORKER_MODEL`, `AGENT_MEM_WORKER_API_KEY`,
-  `AGENT_MEM_DATA_DIR`, `AGENT_MEM_LOG_FILE`). Worker-unconfigured children report
-  tool errors → memoized failure + back-off (fail-open holds).
+  configures mmhmem worker/data settings through the proxy container env.
+  Correction (2026-11-06, task 4.2 review, verified against mmhmem
+  `src/config.rs`/`profile.rs`): mmhmem's local profile reads
+  `WORKER_API_URL`, `WORKER_MODEL`, `WORKER_API_KEY` (no `AGENT_MEM_WORKER_*`
+  prefix; the prefix in the original draft of this amendment was wrong), plus
+  `AGENT_MEM_DATA_DIR`, `AGENT_MEM_LOG_FILE`. `AGENT_MEM_WORKER_*` aliases are
+  a candidate for the mmhmem companion spec. Worker-unconfigured children
+  report tool errors → memoized failure + back-off (fail-open holds).
 
 ### Requirement 1.3 (replaced)
 

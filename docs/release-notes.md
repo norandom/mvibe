@@ -32,6 +32,19 @@ includes the optional proxy with `/openapi.json`, Swagger `/docs`, and opt-in
 `--log` diagnostics. Plugin diagnostics use `options.diagnostics: true`; the CLI
 also needs `--print-logs` for visible events.
 
+## Unreleased
+
+- Optional **token economics** for the proxy: when `MVIBE_ECON_MMHMEM_BIN`
+  selects the mmhmem binary embedded in the Docker image (built from the pinned
+  `MMHMEM_REF`), the proxy replaces *historical* file-read tool results with
+  deterministic, clearly marked summaries from a supervised `mmhmem stdio` child
+  in the same container, cutting the prompt cost of resent history. Off by
+  default and fail-open on every error; `--econ` makes incomplete configuration
+  a startup error. Tool-result contents never traverse a network on this path,
+  and the new allowlisted `econ`/`econ_warm` diagnostics report counts, bytes
+  and a labelled token estimate — never content. See
+  [token economics](token-economics.md).
+
 ## New in 2.0.0
 
 - Major version bump to 2.0.0. There are no breaking changes and no code changes

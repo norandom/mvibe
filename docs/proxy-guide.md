@@ -267,6 +267,17 @@ Reusable live smoke scripts covering all three dialects plus embeddings:
 `smoketests/smoke.ps1` (Windows) and `smoketests/smoke.sh` (bash); see
 `smoketests/README.md`.
 
+## Token economics (optional)
+
+The proxy can replace *historical* file-read tool results in chat requests with
+short, deterministic, clearly marked summaries produced by an embedded mmhmem
+child, cutting the prompt cost of resent conversation history. It is off by
+default and fail-open, and is enabled with the `MVIBE_ECON_MMHMEM_BIN`
+environment variable in the Docker deployment (`--econ` makes incomplete
+configuration a startup error). Tool-result contents never traverse a network
+on that path, and the `econ` diagnostics carry counts, bytes and a labelled
+token estimate — never content. See [token economics](token-economics.md).
+
 ## What about searches?
 
 The proxy supports models, chat completions (including streaming and tool-call
