@@ -159,7 +159,10 @@ def acceptance(root, directory):
     for suite in ('python', 'provider'):
         try:
             suites[suite] = read_junit(directory / f'{suite}.xml')
-            if criterion_status(suites[suite]) != 'passed':
+            # Requirement 10.8 distinguishes passed, failed and skipped checks;
+            # 10.9 fails the run only when a mandatory check fails. A skipped
+            # case is a documented conditional skip, not a suite failure.
+            if criterion_status(suites[suite]) == 'failed':
                 steps[suite] = 'failed'
         except ValueError:
             suites[suite] = []

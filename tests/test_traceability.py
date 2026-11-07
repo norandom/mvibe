@@ -171,5 +171,11 @@ def test_acceptance_rejects_invalid_or_incomplete_execution(tmp_path, mutation):
         assert result['status'] == 'failed'
         if mutation == 'missing-case':
             assert result['criteria']['1.1']['status'] == 'unverified'
+        elif mutation == 'skipped-case':
+            # Requirement 10.8 distinguishes skipped from failed checks: a
+            # skipped case does not fail its suite step, but a skipped
+            # evidence test still blocks its criterion, so the verdict fails.
+            assert result['offline'] == 'passed'
+            assert result['criteria']['1.1']['status'] == 'skipped'
         else:
             assert result['offline'] == 'failed'

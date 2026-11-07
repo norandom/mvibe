@@ -713,7 +713,7 @@
       {
         "kind": "document",
         "path": "docs/opencode-provider.md",
-        "anchor": "# OpenCode Vibe OIDC provider",
+        "anchor": "# OpenCode Mistral-Vibe provider",
         "required": true
       }
     ],
@@ -721,7 +721,7 @@
       {
         "kind": "document",
         "path": "docs/opencode-provider.md",
-        "anchor": "# OpenCode Vibe OIDC provider",
+        "anchor": "# OpenCode Mistral-Vibe provider",
         "required": true
       }
     ],
@@ -729,7 +729,7 @@
       {
         "kind": "document",
         "path": "docs/opencode-provider.md",
-        "anchor": "# OpenCode Vibe OIDC provider",
+        "anchor": "# OpenCode Mistral-Vibe provider",
         "required": true
       }
     ],
