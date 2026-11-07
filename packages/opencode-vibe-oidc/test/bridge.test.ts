@@ -15,7 +15,7 @@ function fixture() {
     const requests: any[] = [];
     const stdin = new Writable({ write(data, _encoding, done) {
       const request = JSON.parse(data.toString()); requests.push(request);
-      if (request.method === "hello" && autoHello) reply(request.id, { protocol: 1, api_version: "2.0.0", audience });
+      if (request.method === "hello" && autoHello) reply(request.id, { protocol: 1, api_version: "3.0.0", audience });
       done();
     } });
     function raw(value: unknown) { stdout.write(Buffer.from(JSON.stringify(value) + "\n")); }

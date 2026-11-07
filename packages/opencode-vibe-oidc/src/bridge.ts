@@ -23,7 +23,7 @@ export type HelperCommand = { executable: string; args: readonly string[] };
 export type BridgeOptions = { command?: HelperCommand; audience: string; apiMajor?: number };
 // mvibe-auth distribution/API version (pyproject.toml), independent of Vibe
 // source provenance and the separately versioned NDJSON protocol.
-const HELPER_API_MAJOR = 2;
+const HELPER_API_MAJOR = 3;
 export type BridgeRuntime = {
   spawn: (command: string, args: string[], options: { shell: false; windowsHide: true; detached: boolean; stdio: ["pipe", "pipe", "pipe"] }) => Child;
   terminate: (child: Child) => Promise<void>;
