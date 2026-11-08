@@ -31,7 +31,7 @@
   - _Boundary: Host integration harness_
   - _Requirements: 1.1, 1.2, 1.3, 5.2_
 - [ ] 4. Validation
-- [ ] 4. Run the full package gate: unit tests, typecheck, lint, build; existing catalog-coalescing, registration, secret-policy and prepared-runtime tests green; confirm via diff that the bridge protocol files and version coupling are untouched.
+- [x] 4. Run the full package gate: unit tests, typecheck, lint, build; existing catalog-coalescing, registration, secret-policy and prepared-runtime tests green; confirm via diff that the bridge protocol files and version coupling are untouched.
   - All checks green in one run; git diff shows no changes under the bridge/protocol or version-coupling surfaces.
   - _Requirements: 2.3, 3.4, 4.2, 5.1_
 
