@@ -33,11 +33,11 @@ services:
     build:
       context: .
       args:
-        # Source ref for the embedded mmhmem economics child (built into the
-        # image at /usr/local/bin/mmhmem). The ref must contain shunt_content
-        # (companion spec shunt-content-tool); the binary is inert while
-        # economics stays off below.
-        MMHMEM_REF: ${MMHMEM_REF:-main}
+        # mmhmem release tag (no leading v) whose CI-built binary is embedded
+        # as the economics child (/usr/local/bin/mmhmem), downloaded from the
+        # published release and checksum-verified at build time. The binary
+        # is inert while economics stays off below.
+        MMHMEM_VERSION: ${MMHMEM_VERSION:-0.5.2}
     image: mvibe-proxy:local
     init: true
     restart: unless-stopped

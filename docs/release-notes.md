@@ -1,4 +1,4 @@
-# mvibe 3.0.0 — third major release
+# mvibe 3.0.1 — patch release
 
 For students, researchers and educators only. This is untested, experimental
 software, not production software. Original mvibe contributions use the Beerware
@@ -11,7 +11,7 @@ API-key entry. Experimental direct ID-token OIDC remains a separate opt-in route
 it counted as API usage on the tested account. The existing-login route consumed
 the expected Vibe allowance in user-confirmed OpenCode tests.
 
-Download `mvibe-3.0.0.zip` and `SHA256SUMS`, verify the checksum, then extract to a
+Download `mvibe-3.0.1.zip` and `SHA256SUMS`, verify the checksum, then extract to a
 permanent directory outside a development checkout. Complete normal Vibe browser
 sign-in under the same native OS/user first. With uv, Bun 1.4.4 and OpenCode 2 installed:
 
@@ -31,6 +31,19 @@ The standalone wheel is also available for Python library consumers. The archive
 includes the optional proxy with `/openapi.json`, Swagger `/docs`, and opt-in
 `--log` diagnostics. Plugin diagnostics use `options.diagnostics: true`; the CLI
 also needs `--print-logs` for visible events.
+
+## New in 3.0.1
+
+- **Pre-built, checksum-verified `mmhmem` `0.5.2` release binary in Docker**:
+  `Dockerfile` and `docker-compose.yml` now embed the published
+  `mmhmem-v0.5.2-x86_64-unknown-linux-musl.tar.gz` binary verified against
+  `SHA256SUMS` at image build time (`ARG MMHMEM_VERSION=0.5.2`), replacing the
+  multi-stage `rust:1-slim` git-clone and source compile from `3.0.0`.
+- **Single-pipeline Dagger container verification**: `.dagger/ci.py check` now
+  builds the `Dockerfile` image, verifies `/usr/local/bin/mmhmem --version`
+  matches the pinned `MMHMEM_VERSION`, and smoke-tests `.venv/bin/python
+  proxy.py --help` in both local WSL and GitHub Actions, backed by an offline
+  version/pipeline coupling test (`tests/test_version_coupling.py`).
 
 ## New in 3.0.0
 

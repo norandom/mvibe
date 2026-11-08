@@ -17,8 +17,11 @@ The explicit environment location avoids slow Python package imports from the
 Windows-mounted filesystem. On ordinary Linux, it is optional. Build output is
 `dist/release`: portable ZIP, universal wheel and SHA256SUMS.
 
-`check` runs Ruff correctness checks, ShellCheck, actionlint, ESLint, TypeScript
-checks/build, Bun tests and the Python suite with two pytest-xdist workers.
+`check` runs Ruff correctness checks, ShellCheck (`install.sh` and
+`start_proxy.sh`), actionlint, ESLint, TypeScript checks/build, Bun tests, the
+Python suite with two pytest-xdist workers, and builds the `Dockerfile` proxy
+image to verify the embedded `mmhmem` binary version and `proxy.py --help`
+entrypoint.
 Ruff does not impose a formatting migration. ESLint keeps TypeScript's name/type
 checks in tsc and documents narrow exceptions for deliberate cleanup failures
 and redacted exceptions. PowerShell scripts use pinned PSScriptAnalyzer 1.25.0:

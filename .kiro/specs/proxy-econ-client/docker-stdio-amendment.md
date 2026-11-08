@@ -9,7 +9,8 @@ the offline gate are unchanged.
 
 - **D1 — Deployment target**: the proxy is deployed from Docker (`docker-compose.yml`
   is the operator entry point), not as a host process.
-- **D2 — mmhmem is embedded**: the mmhmem Rust binary is built from a pinned git ref
+- **D2 — mmhmem is embedded**: the mmhmem binary from the CI-published release
+  pinned by `MMHMEM_VERSION` (see Amendment 2 below) is embedded
   into the proxy image and runs as a **supervised child process in the same container**,
   launched as `mmhmem stdio` (local profile).
 - **D3 — Transport**: MCP JSON-RPC over **stdio pipes** (newline-delimited JSON, one
@@ -101,10 +102,17 @@ hang-beyond-timeout, child death (EOF mid-request). No httpx MockTransport.
 
 ### Deployment artifacts
 
-- `Dockerfile`: multi-stage — a pinned-Rust build stage clones/builds mmhmem from
-  `ARG MMHMEM_REF` (must point at a ref containing `shunt_content`, i.e. the
-  companion spec's implementation) and copies the static binary to
-  `/usr/local/bin/mmhmem` in the proxy image.
+- `Dockerfile`: single-stage — the embedded mmhmem is downloaded from
+  mmhmem's CI-published release for `ARG MMHMEM_VERSION` (the same signed
+  artifact set the installers ship; checksum-verified against the release
+  `SHA256SUMS` at build time) and installed at `/usr/local/bin/mmhmem`.
+  Amendment 2 (2026-11-08, user-directed): replaced the original
+  pinned-ref clone-and-compile builder (`ARG MMHMEM_REF`) so the image
+  consumes the CI-built release binary instead of compiling from source;
+  `.dagger/ci.py check` (the single local + GitHub Actions container pipeline)
+  builds this image and verifies the embedded `mmhmem --version` and `proxy.py`
+  entrypoint. `MMHMEM_VERSION` must always reference an already-published
+  mmhmem release (`0.5.2`, the first release containing `shunt_content`).
 - `docker-compose.yml`: `MVIBE_ECON_MMHMEM_BIN` and `AGENT_MEM_*` env passthrough;
   volumes for mmhmem data/audit when economics is enabled; still no extra ports
   published (the child opens no listener).

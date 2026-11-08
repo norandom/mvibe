@@ -2,27 +2,45 @@
 # Build:  docker build -t mvibe-proxy:local .
 # Run:    docker compose up   (see docker-compose.yml; publishes 127.0.0.1 only)
 #
-# mmhmem builder stage (proxy-econ-client Amendment 1): the token-economics
-# child is built from a pinned git ref and embedded at /usr/local/bin/mmhmem.
-# MMHMEM_REF must point at a ref that CONTAINS shunt_content (companion spec
-# shunt-content-tool; verify the ref has the tool merged before relying on it).
-# The binary stays inert unless MVIBE_ECON_MMHMEM_BIN selects it (off by
-# default), and the stdio child opens no listener, so no port is published.
-FROM rust:1-slim AS mmhmem-build
-ARG MMHMEM_REF=main
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates gcc git libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
-WORKDIR /mmhmem
-# Full clone + checkout so MMHMEM_REF may be a branch, a tag, or a commit sha.
-RUN git clone https://github.com/norandom/mmhmem.git . \
-    && git checkout --detach "${MMHMEM_REF}"
-# Cargo.lock is committed upstream; --locked keeps one ref's build reproducible.
-RUN cargo build --release --locked
-
+# mmhmem embed (proxy-econ-client Amendment 1): the token-economics child is
+# the CI-built binary from mmhmem's published release for the pinned
+# MMHMEM_VERSION tag - the same signed artifact set the installers ship -
+# downloaded and checksum-verified against the release SHA256SUMS instead of
+# compiled from a cloned git ref. The binary stays inert unless
+# MVIBE_ECON_MMHMEM_BIN selects it (off by default), and the stdio child
+# opens no listener, so no port is published.
 FROM python:3.12-slim
 
+# mmhmem release whose CI-built linux binary is embedded (no leading v).
+# Must always reference an already-published release on GitHub.
+ARG MMHMEM_VERSION=0.5.2
+
 RUN pip install --no-cache-dir uv
+
+# Pull the mmhmem release archive and its checksum list, verify, and install
+# the statically linked musl binary. SHA256SUMS itself is signed by mmhmem's
+# publish pipeline; over HTTPS this pins the exact archive bytes.
+RUN set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+        && rm -rf /var/lib/apt/lists/*; \
+    base="https://github.com/norandom/mmhmem/releases/download/v${MMHMEM_VERSION}"; \
+    api="https://api.github.com/repos/norandom/mmhmem/releases/tags/v${MMHMEM_VERSION}"; \
+    arch="mmhmem-v${MMHMEM_VERSION}-x86_64-unknown-linux-musl.tar.gz"; \
+    fetch() { \
+        curl -fsSL --connect-timeout 10 --max-time 30 -o "/tmp/$1" "${base}/$1" || { \
+            test -s /tmp/release.json || curl -fsSL -o /tmp/release.json "${api}"; \
+            asset_url="$(python3 -c 'import json,sys; r=json.load(open("/tmp/release.json")); print(next(a["url"] for a in r["assets"] if a["name"]==sys.argv[1]))' "$1")"; \
+            curl -fsSL -H "Accept: application/octet-stream" -o "/tmp/$1" "${asset_url}"; \
+        }; \
+    }; \
+    fetch "${arch}"; \
+    fetch SHA256SUMS; \
+    grep " ${arch}\$" /tmp/SHA256SUMS > /tmp/sums.check; \
+    cd /tmp && sha256sum -c sums.check; \
+    tar -xzf "/tmp/${arch}" -C /tmp; \
+    install -m 0755 /tmp/mmhmem /usr/local/bin/mmhmem; \
+    /usr/local/bin/mmhmem --version; \
+    rm -rf "/tmp/${arch}" /tmp/SHA256SUMS /tmp/sums.check /tmp/release.json /tmp/mmhmem
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
@@ -37,10 +55,6 @@ ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     PYTHONUNBUFFERED=1 \
     XDG_DATA_HOME=/data
 RUN uv sync --locked --extra proxy --extra docker --no-dev --python /usr/local/bin/python
-
-# The pinned mmhmem binary from the builder stage; present even while economics
-# is off — enabling it is an env decision (MVIBE_ECON_MMHMEM_BIN=/usr/local/bin/mmhmem).
-COPY --from=mmhmem-build /mmhmem/target/release/mmhmem /usr/local/bin/mmhmem
 
 RUN useradd --create-home --uid 1000 app
 USER app

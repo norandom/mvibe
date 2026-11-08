@@ -1,6 +1,6 @@
 # Technology and verification
 
-Updated: 2026-11-01. Bootstrapped to preserve the shared-auth architecture and
+Updated: 2026-11-08. Bootstrapped to preserve the shared-auth architecture and
 the working native Vibe authentication path.
 
 Python 3.12+ owns authentication and transport policy. Use uv or uvx for Python
@@ -93,3 +93,19 @@ and `uv.lock` (`uv lock --offline`). The GitHub release tag must equal `v` + the
 without the `HELPER_API_MAJOR` bump makes the shipped helper look incompatible
 and fails every native CI job. `tests/test_version_coupling.py` enforces all of
 this offline; keep it green before pushing any release tag.
+
+## Single-pipeline CI (Dagger) and sibling release consumption invariants (confirmed by the 2026-11-08 container/CI domino incident)
+
+- **Local CI == GitHub CI via `.dagger/ci.py`**:
+  - `.dagger/ci.py` (`check` and `build`) is the **single source of truth** for all Linux checks, container image builds (`docker_image()`), and release artifact construction.
+  - Local WSL execution (`dagger run uv run --locked --project .dagger --python 3.12 python .dagger/ci.py check|build`) and GitHub Actions (`.github/workflows/release.yml` `build` job) run the **exact same `.dagger/ci.py` pipeline**.
+  - `.github/workflows/release.yml` must remain a thin wrapper around `.dagger/ci.py` (`check` + `build`), the native Windows/macOS installer smoke matrix (`native`), and tagged release publication (`publish`).
+  - **Never split Linux or Docker verification out of `.dagger/ci.py` into separate GitHub Actions jobs**, and never treat "push to GitHub Actions to validate" as a substitute for running `.dagger/ci.py check` locally in WSL.
+  - Keep handover, scratch, and probe files excluded in `.dagger/ci.py` (`EXCLUDE`) so local notes do not bust Dagger's source layer cache.
+- **Consume published, checksum-verified sibling release binaries (`mmhmem`)**:
+  - `Dockerfile` must embed `mmhmem` by downloading the published `x86_64-unknown-linux-musl.tar.gz` release archive and verifying it against `SHA256SUMS` (`sha256sum -c`), pinned to an identical `MMHMEM_VERSION` in both `Dockerfile` and `docker-compose.yml` (enforced offline by `tests/test_version_coupling.py`). Keep the `api.github.com/repos/norandom/mmhmem/releases/tags/v${MMHMEM_VERSION}` (`Accept: application/octet-stream`) fallback in `Dockerfile`'s `fetch()` helper, because `github.com/.../releases/download/...` in `x-github-edge-region: fra` can intermittently return `HTTP/2 504` while the REST API asset endpoint resolves to `release-assets.githubusercontent.com` in <100 ms.
+  - **Never clone or compile sibling repositories from source** (`FROM rust:...`, `cargo build`, `MMHMEM_REF`) inside `mvibe`'s container build.
+  - **Tag != Published Release**: Pushing a git tag to a sibling repo (`norandom/mmhmem`) does **not** mean the GitHub Release exists—its `Publish release` workflow pauses at the approval-gated `release` GitHub environment (`waiting`) until approved. Before bumping `MMHMEM_VERSION`, verify `gh release view v<version> --repo norandom/mmhmem` succeeds and the release assets are live.
+- **Root-cause verification before workarounds**:
+  - When an asset download or container build fails (such as HTTP 404), inspect the exact resolved URL, release publication status (`gh release view` / `gh run list`), and shell quoting before blaming transient infrastructure ("CDN edge flap") or replacing `curl` + `sha256sum -c` with custom fetch scripts or CI splits.
+  - When invoking WSL from Windows PowerShell, do not pass unescaped `$var` inside double-quoted `wsl -d Debian bash -c "..."` strings (PowerShell expands `$var` to empty before `bash` runs), and avoid piping CRLF (`\r\n`) into `sh`.

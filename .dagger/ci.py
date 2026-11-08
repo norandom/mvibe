@@ -12,9 +12,27 @@ ROOT = Path(__file__).resolve().parents[1]
 EXCLUDE = [
     ".git", ".venv", ".venv-*", "**/.venv", "**/__pycache__", "**/node_modules",
     "**/dist", "dist", "reports", ".tools", ".agents", ".codex",
-    ".kiro/settings", ".tmp", "HANDOFF.md", "**/.host", "**/.compat",
-    "**/.task43-debug-*", ".pytest_cache", ".ruff_cache",
+    ".kiro/settings", ".kiro/handover.md", ".tmp", "HANDOFF.md", "handover.md",
+    "**/.host", "**/.compat", "**/.task43-debug-*", "**/vibe-probe-*",
+    ".pytest_cache", ".ruff_cache",
 ]
+
+
+def mmhmem_version() -> str:
+    for line in (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines():
+        if line.startswith("ARG MMHMEM_VERSION="):
+            return line.removeprefix("ARG MMHMEM_VERSION=").strip()
+    raise ValueError("Dockerfile is missing ARG MMHMEM_VERSION=")
+
+
+def docker_image(client: dagger.Client) -> dagger.Container:
+    version = mmhmem_version()
+    source = client.host().directory(str(ROOT), exclude=EXCLUDE)
+    return (
+        source.docker_build()
+        .with_exec(["sh", "-ceu", f'test "$(/usr/local/bin/mmhmem --version)" = "mmhmem {version}"'])
+        .with_exec([".venv/bin/python", "proxy.py", "--help"])
+    )
 
 
 def prepared(client: dagger.Client) -> dagger.Container:
@@ -56,7 +74,7 @@ async def main() -> None:
             container = (
                 container.with_file("/usr/local/bin/actionlint", actionlint)
                 .with_exec(["uv", "run", "--locked", "--offline", "ruff", "check", "mvibe_auth", "mvibe_proxy", "proxy.py", "scripts", "tests", ".dagger"])
-                .with_exec(["shellcheck", "install.sh"])
+                .with_exec(["shellcheck", "install.sh", "start_proxy.sh"])
                 .with_exec(["actionlint", ".github/workflows/release.yml"])
                 .with_workdir("/src/packages/opencode-vibe-oidc")
                 .with_exec(["bun", "run", "lint"])
@@ -68,6 +86,7 @@ async def main() -> None:
                 .with_exec(["uv", "run", "--locked", "--offline", "pytest"])
             )
             print(await container.stdout())
+            print(await docker_image(client).stdout())
         else:
             container = container.with_exec(["uv", "run", "--locked", "--offline", "python", "scripts/build_release.py", "--output", "/out", "--bun", "/usr/local/bin/bun", "--uv", "/usr/local/bin/uv"])
             await container.directory("/out").export(str(ROOT / args.output))

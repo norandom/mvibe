@@ -32,5 +32,13 @@ and the companion-ref pin.
    glibc 2.41, so no glibc pin drift), and the image entrypoint is
    `proxy.py` as designed.
 
+Amendment 2 closure, 2026-11-08: the image now embeds the mmhmem CI-built
+release binary (Amendment 2) instead of compiling from a git ref, and the
+canonical `.dagger/ci.py check` pipeline (shared by local WSL and GitHub
+Actions) builds the image, verifies the embedded `mmhmem --version` matches
+the pinned `MMHMEM_VERSION`, and verifies the `proxy.py --help` entrypoint.
+`MMHMEM_VERSION` is pinned to the published `0.5.2` release (`shunt_content`
+included).
+
 Earlier runs remain recorded under `reports/verification/`; the passing
 verdict follows the gate fixes above, not removal of failing checks.

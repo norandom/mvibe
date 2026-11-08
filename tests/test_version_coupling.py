@@ -54,3 +54,25 @@ def test_lockfile_and_provider_package_match_project_version():
     assert entry["version"] == version
     package = json.loads((ROOT / "packages" / "opencode-vibe-oidc" / "package.json").read_text(encoding="utf-8"))
     assert package["version"] == version
+
+
+def test_docker_mmhmem_release_pin_and_single_ci_pipeline():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    ci_py = (ROOT / ".dagger" / "ci.py").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    arg_match = re.search(r"^ARG MMHMEM_VERSION=(\d+\.\d+\.\d+)$", dockerfile, re.M)
+    assert arg_match, "Dockerfile must declare ARG MMHMEM_VERSION=<X.Y.Z>"
+    compose_match = re.search(r"MMHMEM_VERSION:\s*\$\{MMHMEM_VERSION:-(\d+\.\d+\.\d+)\}", compose)
+    assert compose_match, "docker-compose.yml must declare MMHMEM_VERSION default"
+    assert arg_match.group(1) == compose_match.group(1), (
+        "Dockerfile and docker-compose.yml MMHMEM_VERSION defaults must match"
+    )
+    assert "FROM rust:" not in dockerfile and "MMHMEM_REF" not in dockerfile
+    assert "MMHMEM_REF" not in compose
+    assert "sha256sum -c" in dockerfile
+    assert "docker_build()" in ci_py
+    assert "\n  docker:\n" not in workflow, (
+        "Container checks belong in .dagger/ci.py, not a separate release.yml docker job"
+    )

@@ -68,10 +68,10 @@ setting the environment in `docker-compose.yml` (the commented block):
 
 ### Without Docker
 
-Non-Docker installs need a separately installed mmhmem binary on `PATH`, built
-from a git ref that contains the `shunt_content` tool (companion spec
-`shunt-content-tool`). The configuration key takes the path to that executable
-file — not a bare command name:
+Non-Docker installs need a separately installed mmhmem binary on `PATH` from a
+release that contains the `shunt_content` tool (companion spec
+`shunt-content-tool`, v0.5.2+). The configuration key takes the path to that
+executable file — not a bare command name:
 
 ```bash
 mvibe$ MVIBE_ECON_MMHMEM_BIN="$(command -v mmhmem)" \
@@ -109,28 +109,24 @@ never be re-summarized.
 
 ## The embedded child
 
-The Docker image is multi-stage. A Rust builder stage clones the mmhmem
-repository and checks out `MMHMEM_REF` (a branch, tag, or commit sha), builds
-with `cargo build --release --locked`, and the binary is copied to
-`/usr/local/bin/mmhmem` in the proxy image. It is present even while economics
-is off — enabling it is purely an environment decision.
+The Docker image embeds the statically linked `x86_64-unknown-linux-musl`
+binary from mmhmem's CI-published release for `ARG MMHMEM_VERSION`, verified
+against the release `SHA256SUMS` at build time and installed at
+`/usr/local/bin/mmhmem`. It is present even while economics is off — enabling
+it is purely an environment decision.
 
-- **`MMHMEM_REF` must point at a ref that contains `shunt_content`** (companion
-  spec `shunt-content-tool`). The default `main` did not contain it yet at the
-  time of writing; pin an exact ref that has the tool merged before relying on
-  economics, e.g. `MMHMEM_REF=<sha> docker compose up --build`.
+- **`MMHMEM_VERSION` must always point at an already-published mmhmem release**
+  (`0.5.2` by default, the first release shipping `shunt_content`). Override it at
+  build time if needed, e.g. `MMHMEM_VERSION=0.5.3 docker compose up --build`.
 - **Child environment.** The child is launched as `mmhmem stdio` and inherits
   the proxy container's environment, so you configure it through the same
   compose `environment` block: durable state via `AGENT_MEM_DATA_DIR`, the
   hash-only audit log via `AGENT_MEM_LOG_FILE`, and its worker settings (an
   OpenAI-compatible endpoint the child calls to produce summaries). A child
   without a reachable worker reports tool errors; the proxy stays fail-open and
-  relays raw content. The worker variable names are owned by the pinned mmhmem
-  ref — check its configuration reference. The compose example uses
-  `AGENT_MEM_WORKER_API_URL` / `AGENT_MEM_WORKER_MODEL` /
-  `AGENT_MEM_WORKER_API_KEY`; current mmhmem releases read
+  relays raw content. mmhmem's local stdio profile reads
   `WORKER_API_URL` / `WORKER_MODEL` / `WORKER_API_KEY` (merged with
-  `.mmhmem.json` for the local profile). Set the names your ref documents.
+  `.mmhmem.json`).
 - **Volumes.** mmhmem state is optional and off by default: uncomment the
   `mmhmem-data:/data/mmhmem` mount and the named volume at the bottom of
   `docker-compose.yml` together with `AGENT_MEM_DATA_DIR` /
@@ -141,13 +137,11 @@ is off — enabling it is purely an environment decision.
 - **No ports.** The child runs in the local stdio profile: zero mandatory
   environment variables, no token, and no listener. No port is published for
   it; the only published port remains the proxy's own.
-- **Base-image pinning note.** The builder (`rust:1-slim`) and runtime
-  (`python:3.12-slim`) images must stay glibc-compatible, and both tags float.
-  If a future base drifts (different glibc or a musl switch), the embedded
-  binary can fail to start or run. If that happens, pin both base image digests
-  in the `Dockerfile`. The image build was verified by inspection only at
-  feature time (no Docker CLI in the implementing environment); run
-  `docker compose build` once before first use.
+- **Static binary & CI verification.** Because the embedded binary is
+  statically linked against musl, it does not depend on the `python:3.12-slim`
+  runtime image's glibc version. The Dagger CI pipeline (`.dagger/ci.py check`)
+  builds the image and verifies both `/usr/local/bin/mmhmem --version` and the
+  `proxy.py` entrypoint locally and in GitHub Actions.
 
 ## Trust and privacy boundary
 
@@ -250,20 +244,20 @@ and worker; the release gate stays offline by design. Record results in
 [live results](live-results.md) when performed. The example uses the Docker
 deployment with the embedded child:
 
-1. **Configure.** In `docker-compose.yml`, set `MMHMEM_REF` to a ref that
-   contains `shunt_content`, uncomment the economics block, point the child's
-   worker settings at a reachable endpoint, uncomment the `mmhmem-data` volume,
-   and add `--econ` (and `--log`, to see the events) to the command:
+1. **Configure.** In `docker-compose.yml`, ensure `MMHMEM_VERSION` points to a
+   published release that contains `shunt_content` (v0.5.2+), uncomment the
+   economics block, point the child's worker settings at a reachable endpoint,
+   uncomment the `mmhmem-data` volume, and add `--econ` (and `--log`, to see
+   the events) to the command:
 
    ```yaml
        environment:
          MVIBE_ECON_MMHMEM_BIN: /usr/local/bin/mmhmem
          AGENT_MEM_DATA_DIR: /data/mmhmem
          AGENT_MEM_LOG_FILE: /data/mmhmem/audit/mmhmem.log
-         # worker settings as documented by your pinned mmhmem ref, e.g.:
-         AGENT_MEM_WORKER_API_URL: https://your-worker-endpoint
-         AGENT_MEM_WORKER_MODEL: your-provider/your-model
-         AGENT_MEM_WORKER_API_KEY: change-me
+         WORKER_API_URL: https://your-worker-endpoint
+         WORKER_MODEL: your-provider/your-model
+         WORKER_API_KEY: change-me
        command: ["--host", "0.0.0.0", "--port", "8765", "--econ", "--log"]
    ```
 
@@ -312,6 +306,6 @@ deployment with the embedded child:
     `mvibe_proxy/econ.py` (`MARKER`).
 
 5. **Troubleshoot.** Repeated `econ_warm` events with `econ_outcome: failed`
-   mean the child or worker is erroring (check the worker variable names for
-   your ref, the endpoint, and `MMHMEM_REF`): requests still succeed, relaying
-   raw content — that is the fail-open guarantee.
+   mean the child or worker is erroring (check `WORKER_*`, the endpoint, and
+   `MMHMEM_VERSION`): requests still succeed, relaying raw content — that is
+   the fail-open guarantee.
