@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createModelCatalog, discoverModels, metadataFromHostCatalog } from "../src/models.js";
+import type { CatalogTimer, ModelCatalogOptions } from "../src/models.js";
 import { createProviderFetch } from "../src/provider.js";
 import { ControlledHTTP } from "./preload.js";
 
@@ -86,18 +87,35 @@ test("operator fields cannot inject destinations, IDs or credentials", async () 
   expect(JSON.stringify(result)).not.toContain("SECRET"); expect(result.models[0]).not.toHaveProperty("headers");
 });
 
-function catalogFixture() {
+function catalogFixture(options: ModelCatalogOptions = {}) {
   type Input = Parameters<typeof createModelCatalog>[0];
   let connection: Awaited<ReturnType<Input["active"]>>;
   let signedIn = true, configMatch = true, statuses = 0, reloads = 0, broken = false;
-  const messages: string[] = [], requests: Request[] = [];
+  const messages: string[] = [], requests: Request[] = [], statusSignals: AbortSignal[] = [];
   let respond: Input["fetch"] = async request => { requests.push(new Request(request)); return Response.json({ data: [{ id: "m", ...metadata }] }); };
   const catalog = createModelCatalog({
     active: async () => connection, reload: async () => { reloads++; }, baseURL: base, metadata: {}, report: message => messages.push(message),
-    bridge: { request: async () => { statuses++; if (broken) throw new Error("SECRET helper failure"); return { signed_in: signedIn, config_match: configMatch }; } } as Input["bridge"],
+    bridge: { request: async (_method: "status", _params: Record<string, never>, signal?: AbortSignal) => { statuses++; if (signal) statusSignals.push(signal); if (broken) throw new Error("SECRET helper failure"); return { signed_in: signedIn, config_match: configMatch }; } } as Input["bridge"],
     fetch: (request, init) => respond(request, init),
+    ...options,
   });
-  return { catalog, messages, requests, connect: (id = "one") => { connection = { type: "credential", id, method: "key", label: "Vibe" }; }, disconnect: () => { connection = undefined; }, signedOut: () => { signedIn = false; }, mismatch: () => { configMatch = false; }, failHelper: () => { broken = true; }, respond: (fn: Input["fetch"]) => { respond = fn; }, statuses: () => statuses, reloads: () => reloads };
+  return { catalog, messages, requests, connect: (id = "one") => { connection = { type: "credential", id, method: "key", label: "Vibe" }; }, disconnect: () => { connection = undefined; }, signedOut: () => { signedIn = false; }, mismatch: () => { configMatch = false; }, failHelper: (value = true) => { broken = value; }, respond: (fn: Input["fetch"]) => { respond = fn; }, statusSignals: () => statusSignals, statuses: () => statuses, reloads: () => reloads };
+}
+
+/** Manual deadline clock mirroring the catalog timer seam; no real timer ever fires. */
+type FakeClock = CatalogTimer & { fire: () => boolean; pending: () => number; clearedCount: () => number; delays: number[] };
+function fakeClock(): FakeClock {
+  const armed: Array<{ fire: () => void; handle: ReturnType<typeof setTimeout> }> = [];
+  const delays: number[] = [];
+  let cleared = 0, seq = 0;
+  return {
+    timer: (callback, ms) => { delays.push(ms); const handle = seq++ as unknown as ReturnType<typeof setTimeout>; armed.push({ fire: callback, handle }); return handle; },
+    clearTimer: handle => { const index = armed.findIndex(entry => entry.handle === handle); if (index >= 0) armed.splice(index, 1); cleared++; },
+    fire: () => { const entry = armed.shift(); if (entry === undefined) return false; entry.fire(); return true; },
+    pending: () => armed.length,
+    clearedCount: () => cleared,
+    delays,
+  };
 }
 
 test("late metadata remaps only current authenticated inventory without refetch and clears on disconnect", async () => {
@@ -202,4 +220,121 @@ test("cleanup aborts in-flight discovery and prevents late catalog publication",
   const refresh = f.catalog.refresh(); while (!release) await Promise.resolve();
   f.catalog.close(); expect(signal?.aborted).toBe(true); release(); await refresh;
   expect(f.catalog.snapshot).toEqual({ models: [] }); await f.catalog.refresh(); expect(f.statuses()).toBe(1);
+});
+
+test("deadline expiry abandons the attempt, keeps the last-good list and never aborts the session", async () => {
+  const clock = fakeClock();
+  const f = catalogFixture({ deadlineMs: 1_000, timer: clock });
+  f.connect();
+  await f.catalog.refresh();
+  expect(clock.pending()).toBe(0);
+  expect(clock.clearedCount()).toBe(1);
+  let release!: () => void; let fetchSignal: AbortSignal | null | undefined;
+  f.respond(async (_request, init) => { fetchSignal = init?.signal; await new Promise<void>(resolve => { release = resolve; }); return Response.json({ data: [{ id: "late", ...metadata }] }); });
+  const refresh = f.catalog.refresh();
+  while (!release) await Promise.resolve();
+  expect(clock.pending()).toBe(1);
+  expect(clock.fire()).toBe(true);
+  expect(f.messages).toContain("Model discovery timed out after 1s; kept the last known model list.");
+  expect(f.catalog.snapshot.models.map(model => String(model.id))).toEqual(["m"]);
+  expect(fetchSignal?.aborted).toBe(false);
+  expect(f.statusSignals().at(-1)?.aborted).toBe(false);
+  expect(clock.pending()).toBe(0);
+  release();
+  await refresh;
+  expect(f.catalog.snapshot.models.map(model => String(model.id))).toEqual(["m"]);
+  expect(f.reloads()).toBe(1);
+});
+
+test("follow-up refresh after a timed-out attempt starts a new attempt", async () => {
+  const clock = fakeClock();
+  const f = catalogFixture({ deadlineMs: 1_000, timer: clock });
+  f.connect();
+  let release!: () => void;
+  f.respond(async () => { await new Promise<void>(resolve => { release = resolve; }); return Response.json({ data: [{ id: "stale", ...metadata }] }); });
+  const stalled = f.catalog.refresh();
+  while (!release) await Promise.resolve();
+  clock.fire();
+  expect(f.messages.join()).toContain("timed out");
+  release();
+  await stalled;
+  expect(f.catalog.snapshot.models).toEqual([]);
+  f.respond(async () => Response.json({ data: [{ id: "fresh", ...metadata }] }));
+  await f.catalog.refresh();
+  expect(f.statuses()).toBe(2);
+  expect(clock.delays).toEqual([1_000, 1_000]);
+  expect(f.catalog.snapshot.models.map(model => String(model.id))).toEqual(["fresh"]);
+  expect(f.reloads()).toBe(1);
+});
+
+test("follow-up refresh after a failed helper attempt starts a new attempt", async () => {
+  const f = catalogFixture();
+  f.connect();
+  f.failHelper();
+  await f.catalog.refresh();
+  expect(f.messages.join()).toContain("uv-managed");
+  expect(f.catalog.snapshot.models).toEqual([]);
+  f.failHelper(false);
+  await f.catalog.refresh();
+  expect(f.statuses()).toBe(2);
+  expect(f.catalog.snapshot.models.map(model => String(model.id))).toEqual(["m"]);
+  expect(f.reloads()).toBe(1);
+});
+
+test("superseding refresh clears the previous attempt's deadline timer", async () => {
+  const clock = fakeClock();
+  const f = catalogFixture({ deadlineMs: 1_000, timer: clock });
+  f.connect();
+  const releases: Array<() => void> = [];
+  f.respond(async () => { await new Promise<void>(resolve => releases.push(resolve)); return Response.json({ data: [{ id: "m", ...metadata }] }); });
+  const initial = f.catalog.refresh();
+  while (releases.length < 1) await Promise.resolve();
+  const replacement = f.catalog.refresh();
+  while (releases.length < 2) await Promise.resolve();
+  expect(clock.pending()).toBe(1);
+  expect(clock.clearedCount()).toBe(1);
+  clock.fire();
+  expect(f.messages.join()).toContain("timed out");
+  releases[0]!();
+  releases[1]!();
+  await Promise.all([initial, replacement]);
+  expect(f.catalog.snapshot.models).toEqual([]);
+});
+
+test("close during a pending attempt clears the deadline timer and reports no timeout", async () => {
+  const clock = fakeClock();
+  const f = catalogFixture({ deadlineMs: 1_000, timer: clock });
+  f.connect();
+  let release!: () => void;
+  f.respond(async () => { await new Promise<void>(resolve => { release = resolve; }); return Response.json({ data: [{ id: "m", ...metadata }] }); });
+  const refresh = f.catalog.refresh();
+  while (!release) await Promise.resolve();
+  f.catalog.close();
+  expect(clock.pending()).toBe(0);
+  expect(clock.clearedCount()).toBe(1);
+  expect(clock.fire()).toBe(false);
+  release();
+  await refresh;
+  expect(f.messages.join()).not.toContain("timed out");
+  expect(f.catalog.snapshot).toEqual({ models: [] });
+});
+
+test("attempts arm the default 30s deadline and clear it on settle", async () => {
+  const clock = fakeClock();
+  const f = catalogFixture({ timer: clock });
+  f.connect();
+  await f.catalog.refresh();
+  expect(clock.delays).toEqual([30_000]);
+  expect(clock.pending()).toBe(0);
+  expect(clock.clearedCount()).toBe(1);
+});
+
+test("deadline values at or below zero disable the per-attempt timer", async () => {
+  const clock = fakeClock();
+  const f = catalogFixture({ deadlineMs: 0, timer: clock });
+  f.connect();
+  await f.catalog.refresh();
+  expect(clock.delays).toEqual([]);
+  expect(clock.pending()).toBe(0);
+  expect(f.catalog.snapshot.models).toHaveLength(1);
 });

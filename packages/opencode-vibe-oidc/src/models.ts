@@ -110,6 +110,16 @@ export async function discoverModels(fetch: ProviderFetch, baseURL: string, meta
 
 /** Async work stays outside the host's synchronous provider transform. */
 type ConnectionInfo = NonNullable<Awaited<ReturnType<Plugin.Context["integration"]["connection"]["active"]>>>;
+/** Timing seam mirroring the `bridge.ts` runtime injection so tests use fake timers. */
+export interface CatalogTimer {
+  timer: (callback: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
+}
+/** Per-attempt discovery deadline; `deadlineMs` defaults to 30 000, values <= 0 disable it (tests only). */
+export interface ModelCatalogOptions {
+  deadlineMs?: number;
+  timer?: CatalogTimer;
+}
 export function createModelCatalog(input: {
   active: () => Promise<ConnectionInfo | undefined>;
   reload: () => Promise<void>;
@@ -118,7 +128,7 @@ export function createModelCatalog(input: {
   baseURL: string;
   metadata: unknown;
   report: (message: string) => void;
-}) {
+} & ModelCatalogOptions) {
   let inventory: Inventory | undefined;
   let sourceConnection: ConnectionInfo | undefined;
   const metadata = () => typeof input.metadata === "function" ? (input.metadata as () => unknown)() : input.metadata;
@@ -126,6 +136,10 @@ export function createModelCatalog(input: {
   let generation = 0, closed = false;
   let controller: AbortController | undefined;
   let pending: Promise<void> = Promise.resolve();
+  const io: CatalogTimer = input.timer ?? { timer: setTimeout, clearTimer: clearTimeout };
+  const deadlineMs = input.deadlineMs ?? 30_000;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const clearDeadline = () => { if (deadline !== undefined) { io.clearTimer(deadline); deadline = undefined; } };
   const key = (connection: ConnectionInfo | undefined) => connection?.type === "credential" ? "credential:" + connection.id : connection ? "env:" + connection.name : undefined;
   const invalidate = async () => {
     const hadCatalog = sourceConnection !== undefined;
@@ -135,7 +149,22 @@ export function createModelCatalog(input: {
   async function run() {
       if (closed) return;
       const turn = ++generation;
+      clearDeadline();
       controller?.abort(); const current = controller = new AbortController();
+      let armed: ReturnType<typeof setTimeout> | undefined;
+      if (deadlineMs > 0) {
+        armed = io.timer(() => {
+          if (closed || turn !== generation) return;
+          // Deadline by detachment, not abort: aborting would retire the shared
+          // helper session and fail unrelated in-flight requests. The attempt is
+          // abandoned instead — its generation goes stale so the late result is
+          // discarded by the checks below; only close() ever aborts.
+          generation++;
+          deadline = undefined;
+          input.report(`Model discovery timed out after ${deadlineMs / 1000}s; kept the last known model list.`);
+        }, deadlineMs);
+        deadline = armed;
+      }
       try {
         const connection = await input.active();
         if (turn !== generation || closed) return;
@@ -162,6 +191,8 @@ export function createModelCatalog(input: {
         if (turn !== generation || closed) return;
         await invalidate();
         input.report("Model catalog unavailable; verify the installed uv-managed helper, compatible OpenCode V2/bridge versions and Vibe OIDC connection, then retry.");
+      } finally {
+        if (armed !== undefined && deadline === armed) clearDeadline();
       }
   }
   return {
@@ -170,7 +201,7 @@ export function createModelCatalog(input: {
       // canonical catalog is available, without doing IO inside the transform.
       return inventory && sourceConnection ? { models: mapInventory(inventory, metadata()).models, sourceConnection } : { models: [] };
     },
-    close() { closed = true; generation++; controller?.abort(); clear(); },
+    close() { closed = true; generation++; controller?.abort(); clearDeadline(); clear(); },
     async refresh() {
       if (closed) return;
       pending = run();
