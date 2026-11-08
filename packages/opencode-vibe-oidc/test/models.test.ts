@@ -417,3 +417,53 @@ test("helper-unavailable failures keep the provider registered with the existing
   expect(f.catalog.snapshot.models).toEqual([]);
   expect(f.requests).toEqual([]);
 });
+
+const pendingDiscovery = "Model discovery pending; provider registered with an empty model list until the first successful discovery.";
+
+test("pending-models diagnostic reports once at construction before any refresh", () => {
+  const f = catalogFixture();
+  expect(f.messages).toEqual([pendingDiscovery]);
+  expect(f.catalog.snapshot).toEqual({ models: [] });
+  expect(f.catalog.snapshot).toEqual({ models: [] });
+  expect(f.messages).toEqual([pendingDiscovery]);
+});
+
+test("failed attempts keep the pending-models diagnostic present without duplicating it", async () => {
+  const f = catalogFixture();
+  f.connect();
+  f.failHelper();
+  await f.catalog.refresh();
+  expect(f.messages.join()).toContain("uv-managed");
+  f.failHelper(false);
+  f.respond(async () => new Response(null, { status: 401 }));
+  await f.catalog.refresh();
+  expect(f.messages.join()).toContain("unauthorized");
+  expect(f.messages.filter(message => message === pendingDiscovery)).toHaveLength(1);
+  expect(f.catalog.snapshot.models).toEqual([]);
+});
+
+test("timed-out attempts do not duplicate the pending-models diagnostic", async () => {
+  const clock = fakeClock();
+  const f = catalogFixture({ deadlineMs: 1_000, timer: clock });
+  f.connect();
+  let release!: () => void;
+  f.respond(async () => { await new Promise<void>(resolve => { release = resolve; }); return Response.json({ data: [{ id: "stale", ...metadata }] }); });
+  const stalled = f.catalog.refresh();
+  while (!release) await Promise.resolve();
+  clock.fire();
+  release();
+  await stalled;
+  expect(f.messages.join()).toContain("timed out");
+  expect(f.messages.filter(message => message === pendingDiscovery)).toHaveLength(1);
+});
+
+test("pending-models diagnostic is not re-reported after a publish and later invalidation", async () => {
+  const f = catalogFixture();
+  f.connect();
+  await f.catalog.refresh();
+  expect(f.catalog.snapshot.models).toHaveLength(1);
+  f.signedOut();
+  await f.catalog.refresh();
+  expect(f.catalog.snapshot).toEqual({ models: [] });
+  expect(f.messages.filter(message => message === pendingDiscovery)).toHaveLength(1);
+});

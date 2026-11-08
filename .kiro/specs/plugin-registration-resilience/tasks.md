@@ -11,7 +11,7 @@
   - Unit test: auth-failure attempts (helper reports not signed in, or helper unavailable) keep the provider registered and report the existing sign-in/unavailable diagnostics.
   - _Boundary: ModelCatalog, Discovery classification_
   - _Requirements: 3.2, 3.3, 3.4, 4.1_
-- [ ] 1.3 Report a pending-models diagnostic before the first successful publish: exactly once per catalog instance while the snapshot is empty, stating that the provider is registered and discovery is pending.
+- [x] 1.3 Report a pending-models diagnostic before the first successful publish: exactly once per catalog instance while the snapshot is empty, stating that the provider is registered and discovery is pending.
   - Unit test: after construction (no refresh yet) and after a failed attempt, the pending diagnostic is present and not duplicated.
   - _Boundary: ModelCatalog_
   - _Requirements: 1.3, 1.4_

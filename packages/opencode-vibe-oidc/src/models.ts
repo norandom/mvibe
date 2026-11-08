@@ -139,6 +139,13 @@ export function createModelCatalog(input: {
   metadata: unknown;
   report: (message: string) => void;
 } & ModelCatalogOptions) {
+  // Pending-models diagnostic, reported before the first successful publish:
+  // construction is the earliest seam — it performs no IO, so it can never
+  // delay or abandon registration. "Exactly once per catalog instance" means
+  // once ever: the report is intentionally not repeated by failed or timed-out
+  // attempts, repeated snapshot reads, or a later invalidation that empties a
+  // previously published snapshot again.
+  input.report("Model discovery pending; provider registered with an empty model list until the first successful discovery.");
   let inventory: Inventory | undefined;
   let sourceConnection: ConnectionInfo | undefined;
   const metadata = () => typeof input.metadata === "function" ? (input.metadata as () => unknown)() : input.metadata;
