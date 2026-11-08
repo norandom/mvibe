@@ -63,7 +63,13 @@ export async function setupVibe(ctx: RegistrationContext) {
       try { for await (const _event of updates) { if (events.signal.aborted) break; await catalog.refresh(); } }
       catch { if (!events.signal.aborted) console.warn("Vibe OIDC catalog updates unavailable; verify compatible OpenCode V2 versions and reload the provider."); }
     })();
-    await catalog.refresh();
+    // Registration ends here: the first catalog refresh runs concurrently with
+    // the host finishing plugin load, so no helper process, credential read or
+    // network request can delay or abandon registration. The catalog reports
+    // its own attempt failures; this catch only reports a refresh loop that
+    // rejects unexpectedly (run() never rejects by contract), so the provider
+    // stays registered and no unhandled rejection can escape setup.
+    void catalog.refresh().catch(() => console.warn("Vibe OIDC model catalog refresh failed unexpectedly; provider registration is unaffected; verify compatible OpenCode V2/bridge versions and reload the provider to retry discovery."));
   } catch {
     try { await cleanup(); } catch { /* Report the fixed setup diagnostic below. */ }
     throw new BridgeError("setup", "Vibe OIDC registration failed; install a compatible OpenCode V2 host/plugin pair and configure an installed uv-managed helper runtime.");

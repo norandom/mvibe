@@ -16,7 +16,7 @@
   - _Boundary: ModelCatalog_
   - _Requirements: 1.3, 1.4_
 - [ ] 2. Non-blocking provider registration with step-labeled failures
-- [ ] 2.1 (P) Start the first model-catalog refresh without awaiting it; plugin setup resolves after the synchronous registration transforms only, with a defensive catch that reports unexpected refresh-loop rejections; no helper process spawn and no network on the registration path.
+- [x] 2.1 (P) Start the first model-catalog refresh without awaiting it; plugin setup resolves after the synchronous registration transforms only, with a defensive catch that reports unexpected refresh-loop rejections; no helper process spawn and no network on the registration path.
   - Setup unit test: setup resolves while the refresh promise is gated; bridge-spawn spy records zero spawns.
   - _Boundary: Setup orchestration_
   - _Requirements: 1.1, 1.2, 1.4, 4.1_

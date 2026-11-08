@@ -82,6 +82,9 @@ test.each(["bridge", "bridge-vibe"])("existing-vibe selects native helper from %
   try {
     f.connect("initial");
     cleanup = await setupVibe(f.ctx);
+    // The helper status round-trip now completes after setup resolves: the
+    // first catalog refresh runs concurrently with registration (req 1.1).
+    for (let i = 0; i < 100 && commands.length < 1; i++) await Promise.resolve();
     expect(commands).toEqual([{ executable: configured.executable, args: [...configured.args.slice(0, -1), "bridge-vibe"] }]);
     expect(f.methods).toEqual([{ integrationID: "vibe-oidc", method: { id: "vibe-browser", type: "command", label: "Use existing Vibe login", command: [configured.executable, ...configured.args.slice(0, -1), "login-vibe"] } }]);
     expect(configured.args.at(-1)).toBe(ending);
@@ -170,7 +173,7 @@ test("registration failure rolls back earlier provider and sanitizes host errors
   expect(f.disposed).toEqual(["provider"]);
 });
 
-test("setup waits for credential event discovery that supersedes its initial request", async () => {
+test("setup does not wait for credential event discovery that supersedes its initial request", async () => {
   const f = fixture();
   f.connect("initial");
   Object.assign(f.ctx.options, { modelMetadata: { available: { name: "Synthetic", capabilities: { tools: false, input: ["text"], output: ["text"] }, limit: { context: 2048, output: 256 }, time: { released: 1 }, status: "active", cost: [{ input: 1, output: 2, cache: { read: 0, write: 0 } }] } } });
@@ -186,9 +189,12 @@ test("setup waits for credential event discovery that supersedes its initial req
     while (releases.length < 2) await Promise.resolve();
     releases[0]!();
     for (let i = 0; i < 30; i++) await Promise.resolve();
-    expect(settled).toBe(false);
+    // Registration no longer rides the discovery chain: setup settled while the
+    // superseding credential discovery is still gated (req 1.1).
+    expect(settled).toBe(true);
     releases[1]!();
     const cleanup = await setup;
+    for (let i = 0; i < 100 && f.providers.length < 2; i++) await Promise.resolve();
     expect(f.providers.at(-1)).toMatchObject({ models: [{ id: "available" }], sourceConnection: { id: "connection-one" } });
     await cleanup();
   } finally {
@@ -212,6 +218,10 @@ test.each(["integration.updated", "credential.updated", "credential.switched", "
     cleanup = await setupVibe(f.ctx);
     if (lazy) {
       expect(f.providers).toEqual([]);
+      // The first discovery now runs after setup resolves: let the background
+      // refresh fetch and publish before the transform materializes it.
+      for (let i = 0; i < 100 && http.requests.length < 1; i++) await Promise.resolve();
+      for (let i = 0; i < 30; i++) await Promise.resolve();
       f.readProvider();
       expect(http.requests).toHaveLength(1);
     } else {
