@@ -6,7 +6,7 @@
   - Unit test: a follow-up refresh() after a timed-out or failed attempt starts a new attempt (failures are not cached).
   - _Boundary: ModelCatalog_
   - _Requirements: 2.1, 2.2, 4.3_
-- [ ] 1.2 Classify discovery failures with cause text: prefix existing diagnostics with a failure class (unreachable, unauthorized, invalid) and append the underlying error message; keep messages single-line, secret-free (no tokens, headers, prompts, bodies).
+- [x] 1.2 Classify discovery failures with cause text: prefix existing diagnostics with a failure class (unreachable, unauthorized, invalid) and append the underlying error message; keep messages single-line, secret-free (no tokens, headers, prompts, bodies).
   - Unit tests assert the classified message content per failure mode; existing isolation/diagnostics tests remain green.
   - Unit test: auth-failure attempts (helper reports not signed in, or helper unavailable) keep the provider registered and report the existing sign-in/unavailable diagnostics.
   - _Boundary: ModelCatalog, Discovery classification_

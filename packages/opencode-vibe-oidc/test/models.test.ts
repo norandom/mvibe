@@ -99,7 +99,7 @@ function catalogFixture(options: ModelCatalogOptions = {}) {
     fetch: (request, init) => respond(request, init),
     ...options,
   });
-  return { catalog, messages, requests, connect: (id = "one") => { connection = { type: "credential", id, method: "key", label: "Vibe" }; }, disconnect: () => { connection = undefined; }, signedOut: () => { signedIn = false; }, mismatch: () => { configMatch = false; }, failHelper: (value = true) => { broken = value; }, respond: (fn: Input["fetch"]) => { respond = fn; }, statusSignals: () => statusSignals, statuses: () => statuses, reloads: () => reloads };
+  return { catalog, messages, requests, connect: (id = "one") => { connection = { type: "credential", id, method: "key", label: "Vibe" }; }, disconnect: () => { connection = undefined; }, signedOut: (value = true) => { signedIn = !value; }, mismatch: () => { configMatch = false; }, failHelper: (value = true) => { broken = value; }, respond: (fn: Input["fetch"]) => { respond = fn; }, statusSignals: () => statusSignals, statuses: () => statuses, reloads: () => reloads };
 }
 
 /** Manual deadline clock mirroring the catalog timer seam; no real timer ever fires. */
@@ -337,4 +337,83 @@ test("deadline values at or below zero disable the per-attempt timer", async () 
   expect(clock.delays).toEqual([]);
   expect(clock.pending()).toBe(0);
   expect(f.catalog.snapshot.models).toHaveLength(1);
+});
+
+test("transport rejects classify as unreachable and carry the underlying cause", async () => {
+  const result = await discoverModels(async () => { throw new TypeError("fetch failed: connection refused"); }, base);
+  expect(result.models).toEqual([]);
+  expect(result.diagnostics).toHaveLength(1);
+  expect(result.diagnostics[0]).toContain("Model discovery unavailable (unreachable): fetch failed: connection refused");
+  expect(result.diagnostics[0]).toContain("uv-managed");
+  expect(result.diagnostics[0]).not.toContain("\n");
+});
+
+test("multi-line transport errors collapse into a single-line classified message", async () => {
+  const result = await discoverModels(async () => { throw new Error("connect failed\nat socket layer"); }, base);
+  expect(result.diagnostics).toHaveLength(1);
+  expect(result.diagnostics[0]).toContain("Model discovery unavailable (unreachable): connect failed at socket layer");
+  expect(result.diagnostics[0]).not.toContain("\n");
+});
+
+test.each([401, 403])("upstream %s classifies as unauthorized keeping the existing guidance", async status => {
+  const result = await discoverModels(async () => new Response(null, { status }), base);
+  expect(result.models).toEqual([]);
+  expect(result.diagnostics).toEqual(["[unauthorized] Model discovery was not authorized; reconnect Vibe OIDC and verify account model access."]);
+});
+
+test.each([302, 500])("upstream %s classifies as unreachable keeping the existing guidance", async status => {
+  const result = await discoverModels(async () => new Response(null, { status }), base);
+  expect(result.diagnostics).toEqual(["[unreachable] Model discovery failed upstream; retry explicitly and verify the configured audience."]);
+});
+
+test("non-array payload data classifies as invalid keeping the existing guidance", async () => {
+  const result = await discoverModels(async () => Response.json({ data: {} }), base);
+  expect(result.models).toEqual([]);
+  expect(result.diagnostics).toEqual(["[invalid] Invalid model discovery/configuration data; verify the upstream models response and options.modelMetadata object."]);
+});
+
+test("undecodable upstream JSON classifies as invalid without echoing the body", async () => {
+  const result = await discoverModels(async () => new Response("SECRET malformed JSON"), base);
+  expect(result.models).toEqual([]);
+  expect(result.diagnostics.join()).toContain("Model discovery unavailable (invalid)");
+  expect(result.diagnostics.join()).toContain("uv-managed");
+  expect(result.diagnostics.join()).not.toContain("SECRET");
+});
+
+test("catalog reports the classified unreachable diagnostic and stays usable", async () => {
+  const f = catalogFixture();
+  f.connect();
+  f.respond(async () => { throw new TypeError("fetch failed: connection refused"); });
+  await f.catalog.refresh();
+  expect(f.messages.join()).toContain("Model discovery unavailable (unreachable): fetch failed: connection refused");
+  expect(f.messages.join()).not.toContain("\n");
+  expect(f.catalog.snapshot.models).toEqual([]);
+  f.respond(async () => Response.json({ data: [{ id: "m", ...metadata }] }));
+  await f.catalog.refresh();
+  expect(f.catalog.snapshot.models.map(model => String(model.id))).toEqual(["m"]);
+});
+
+test("sign-in failures keep the provider registered with the existing sign-in diagnostic", async () => {
+  const f = catalogFixture();
+  f.connect();
+  await f.catalog.refresh();
+  expect(f.catalog.snapshot.models).toHaveLength(1);
+  f.signedOut();
+  await f.catalog.refresh();
+  expect(f.messages.join()).toContain("Model discovery requires current Vibe OIDC sign-in matching the configured audience; connect using Vibe OIDC.");
+  expect(f.catalog.snapshot.models).toEqual([]);
+  f.signedOut(false);
+  await f.catalog.refresh();
+  expect(f.catalog.snapshot.models.map(model => String(model.id))).toEqual(["m"]);
+});
+
+test("helper-unavailable failures keep the provider registered with the existing unavailable diagnostic", async () => {
+  const f = catalogFixture();
+  f.connect();
+  f.failHelper();
+  await f.catalog.refresh();
+  expect(f.messages.join()).toContain("Model catalog unavailable; verify the installed uv-managed helper, compatible OpenCode V2/bridge versions and Vibe OIDC connection, then retry.");
+  expect(f.messages.join()).not.toContain("SECRET");
+  expect(f.catalog.snapshot.models).toEqual([]);
+  expect(f.requests).toEqual([]);
 });

@@ -77,16 +77,24 @@ function mapInventory(inventory: Inventory, metadata: unknown): { models: Model.
   }
   return { models, diagnostics: [...inventory.diagnostics, ...(incomplete ? [metadataGuidance] : [])] };
 }
+/** Single-line, secret-free cause text for a swallowed discovery error. */
+function causeOf(error: unknown): string {
+  // Parse failures may quote fragments of the upstream body, so they are
+  // summarized instead of echoed; transport errors carry no secrets.
+  if (error instanceof SyntaxError) return "upstream models response is not valid JSON";
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, " ").trim();
+}
 async function discoverInventory(fetch: ProviderFetch, baseURL: string, signal?: AbortSignal): Promise<Inventory> {
   try {
     const response = await fetch(baseURL + "/models", { method: "GET", ...(signal ? { signal } : {}) });
     if (!response.ok) {
       await response.body?.cancel();
-      return { entries: [], incomplete: false, diagnostics: [response.status === 401 || response.status === 403 ? "Model discovery was not authorized; reconnect Vibe OIDC and verify account model access." : "Model discovery failed upstream; retry explicitly and verify the configured audience."] };
+      return { entries: [], incomplete: false, diagnostics: [response.status === 401 || response.status === 403 ? "[unauthorized] Model discovery was not authorized; reconnect Vibe OIDC and verify account model access." : "[unreachable] Model discovery failed upstream; retry explicitly and verify the configured audience."] };
     }
     const payload: unknown = await response.json();
     const data = record(payload)?.data;
-    if (!Array.isArray(data)) return { entries: [], incomplete: false, diagnostics: ["Invalid model discovery/configuration data; verify the upstream models response and options.modelMetadata object."] };
+    if (!Array.isArray(data)) return { entries: [], incomplete: false, diagnostics: ["[invalid] Invalid model discovery/configuration data; verify the upstream models response and options.modelMetadata object."] };
     const entries: Record<string, unknown>[] = []; let incomplete = false;
     const seen = new Set<string>();
     for (const item of data) {
@@ -100,8 +108,10 @@ async function discoverInventory(fetch: ProviderFetch, baseURL: string, signal?:
       entries.push(safe);
     }
     return { entries, incomplete, diagnostics: [] };
-  } catch {
-    return { entries: [], incomplete: false, diagnostics: ["Model discovery unavailable; configure an installed uv-managed mvibe-auth runtime, compatible bridge versions and current Vibe OIDC sign-in, then retry."] };
+  } catch (error) {
+    // Transport-class failures lead with the failure class and the underlying
+    // cause; JSON parse errors are "invalid" and never quote the upstream body.
+    return { entries: [], incomplete: false, diagnostics: [`Model discovery unavailable (${error instanceof SyntaxError ? "invalid" : "unreachable"}): ${causeOf(error)}; configure an installed uv-managed mvibe-auth runtime, compatible bridge versions and current Vibe OIDC sign-in, then retry.`] };
   }
 }
 export async function discoverModels(fetch: ProviderFetch, baseURL: string, metadata: unknown = {}, signal?: AbortSignal): Promise<{ models: Model.Info[]; diagnostics: string[] }> {
