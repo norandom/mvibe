@@ -8,7 +8,7 @@ import { Model, Provider } from "@opencode/plugin";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { setupVibe } from "../src/index.js";
 import type { RegistrationContext } from "../src/index.js";
-import { StdioBridge } from "../src/bridge.js";
+import { BridgeError, StdioBridge } from "../src/bridge.js";
 import fixture from "./synthetic-plugin.js";
 
 test("adapter model uses the V3 contract required by the V2 host", () => {
@@ -143,5 +143,72 @@ test("unexpected first-refresh rejection is reported without abandoning registra
     await cleanup();
     expect(f.disposed).toEqual(["aisdk", "integration", "provider"]);
   } finally { await cleanup?.(); request.mockRestore(); transport.mockRestore(); warn.mockRestore(); }
+});
+
+/** Captures the rejection of a setup promise that must fail (fail-fast if it resolves). */
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(() => { throw new Error("expected setupVibe to reject"); }, error => error);
+}
+
+/** 3.1/3.3: the thrown BridgeError names the failing registration phase, stays
+ * single-line, and keeps the underlying sentinel error as its cause. */
+function expectPhaseFailure(failure: unknown, phase: string, sentinel: Error): void {
+  expect(failure).toBeInstanceOf(BridgeError);
+  if (!(failure instanceof BridgeError)) throw new Error(`expected a BridgeError naming the ${phase} phase`);
+  expect(failure.code).toBe("setup");
+  expect(failure.message).toContain(phase);
+  expect(failure.message).toContain(sentinel.message);
+  expect(failure.message).not.toContain("\n");
+  expect(failure.cause).toBe(sentinel);
+}
+
+test("request-context phase failure names the phase and attaches the cause", async () => {
+  const f = registrationFixture();
+  const sentinel = new Error("synthetic request-context rejection");
+  Object.assign(f.ctx, { session: { hook: async () => { throw sentinel; } } });
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expectPhaseFailure(await rejectionOf(setupVibe(f.ctx)), "request-context", sentinel);
+    // Cleanup semantics unchanged: no registration completed before the failure.
+    expect(f.disposed).toEqual([]);
+  } finally { warn.mockRestore(); }
+});
+
+test("provider-transform phase failure names the phase and attaches the cause", async () => {
+  const f = registrationFixture();
+  const sentinel = new Error("synthetic provider-transform rejection");
+  Object.assign(f.ctx, { session: { hook: async () => ({ dispose: async () => { f.disposed.push("request-context"); } }) } });
+  Object.assign(f.ctx.provider, { transform: async () => { throw sentinel; } });
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expectPhaseFailure(await rejectionOf(setupVibe(f.ctx)), "provider-transform", sentinel);
+    // Earlier registrations are still disposed in reverse order (cleanup
+    // unchanged); request-context registers two session hooks.
+    expect(f.disposed).toEqual(["request-context", "request-context"]);
+  } finally { warn.mockRestore(); }
+});
+
+test("integration-transform phase failure names the phase and attaches the cause", async () => {
+  const f = registrationFixture();
+  const sentinel = new Error("synthetic integration-transform rejection");
+  Object.assign(f.ctx, { session: { hook: async () => ({ dispose: async () => { f.disposed.push("request-context"); } }) } });
+  Object.assign(f.ctx.integration, { transform: async () => { throw sentinel; } });
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expectPhaseFailure(await rejectionOf(setupVibe(f.ctx)), "integration-transform", sentinel);
+    expect(f.disposed).toEqual(["provider", "request-context", "request-context"]);
+  } finally { warn.mockRestore(); }
+});
+
+test("aisdk-hook phase failure names the phase and attaches the cause", async () => {
+  const f = registrationFixture();
+  const sentinel = new Error("synthetic aisdk-hook rejection");
+  Object.assign(f.ctx, { session: { hook: async () => ({ dispose: async () => { f.disposed.push("request-context"); } }) } });
+  Object.assign(f.ctx.aisdk, { hook: async () => { throw sentinel; } });
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expectPhaseFailure(await rejectionOf(setupVibe(f.ctx)), "aisdk-hook", sentinel);
+    expect(f.disposed).toEqual(["integration", "provider", "request-context", "request-context"]);
+  } finally { warn.mockRestore(); }
 });
 

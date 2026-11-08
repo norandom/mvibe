@@ -20,7 +20,7 @@
   - Setup unit test: setup resolves while the refresh promise is gated; bridge-spawn spy records zero spawns.
   - _Boundary: Setup orchestration_
   - _Requirements: 1.1, 1.2, 1.4, 4.1_
-- [ ] 2.2 Label each registration phase (request-context, provider-transform, integration-transform, aisdk-hook); on failure throw an error whose message names the failing phase and attaches the original error as cause, replacing the current generic-only setup message.
+- [x] 2.2 Label each registration phase (request-context, provider-transform, integration-transform, aisdk-hook); on failure throw an error whose message names the failing phase and attaches the original error as cause, replacing the current generic-only setup message.
   - Setup unit tests with failing phase stubs assert the phase name in the message and the cause identity.
   - _Boundary: Setup orchestration_
   - _Requirements: 3.1, 3.3, 5.2_
