@@ -25,7 +25,7 @@
   - _Boundary: Setup orchestration_
   - _Requirements: 3.1, 3.3, 5.2_
 - [ ] 3. Real-host integration evidence
-- [ ] 3. Extend the host-integration harness: gate the discovery fetch; assert the provider is queryable and setup evidence is recorded before the gate releases; capture the pending diagnostic through the existing console.warn patch.
+- [x] 3. Extend the host-integration harness: gate the discovery fetch; assert the provider is queryable and setup evidence is recorded before the gate releases; capture the pending diagnostic through the existing console.warn patch.
   - Host-integration run produces a compatibility report showing the provider query succeeded while discovery was gated, with the pending diagnostic captured.
   - _Depends: 1.1, 1.3, 2.1_
   - _Boundary: Host integration harness_

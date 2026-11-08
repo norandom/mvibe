@@ -19,6 +19,11 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   let inference = 0, models = 0, sdkCalls = 0, languageCalls = 0;
   let mode = "text", upstreamFinished = false, cancelled = false;
   let release: (() => void) | undefined;
+  // Gated discovery: every authenticated /models fetch parks on one controllable
+  // promise until released, so the run proves registration completed and the
+  // provider stayed queryable before any discovery IO resolved (1.1/1.2/1.4, 5.2).
+  let discoveryGate: Promise<void> | undefined, releaseDiscovery: (() => void) | undefined, discoveryReleased = false;
+  const gatedDiscovery: { providerQueriedBeforeRelease?: boolean; providerNameWhileGated?: string; providerActivationWhileGated?: string; vibeModelsBeforeRelease?: string[]; pendingDiagnosticCaptured?: boolean; pendingDiagnostic?: string; modelsPublishedAfterRelease?: string[] } = {};
   const observedCredentials: string[] = [];
   const nativeRequests: Array<{ metadata: Record<string, string>; toolResult: boolean }> = [];
   const efforts: unknown[] = [];
@@ -63,6 +68,12 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     assert.equal(request.headers.get("x-mvibe-request-context"), null, "private context must not reach upstream");
     if (request.url.endsWith("/models")) {
       models++;
+      // Hold every discovery fetch on the shared gate: event-triggered refresh
+      // attempts supersede each other, and none may resolve before release.
+      if (!discoveryReleased) {
+        discoveryGate ??= new Promise<void>(resolve => { releaseDiscovery = resolve; });
+        await discoveryGate;
+      }
       const entry = (id: string) => ({ id, name: id, capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 131072, output: 4096 }, time: { released: 0 }, status: "active" as const, cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }] });
       return Response.json({ data: [entry("synthetic-model"), entry("mistral-large-4"), entry("mistral-medium-latest")] });
     }
@@ -131,6 +142,32 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     checks.markerOnly = true;
     // Cold packaged-host/helper startup can exceed the ordinary event budget.
     await wait(() => models > 0, "authenticated discovery", 20_000);
+    // The discovery fetch is parked at the gate and this point is reachable
+    // only after `await setupVibe(ctx)` already resolved: setup evidence
+    // exists while no discovery IO has settled, the pending diagnostic must
+    // already be in the captured warn channel, and the provider must be
+    // queryable with an empty model list (1.1/1.2/1.3/1.4, 5.2).
+    // Note: this fixture has no active connection during setup, so it cannot
+    // distinguish blocking from fire-and-forget setup; that distinction is
+    // unit-pinned in test/setup.test.ts (see design.md Testing Strategy).
+    const pendingDiagnostic = "Model discovery pending; provider registered with an empty model list until the first successful discovery.";
+    assert.ok(warnings.includes(pendingDiagnostic), "pending diagnostic captured while discovery is gated");
+    checks.pendingDiagnosticCaptured = true;
+    gatedDiscovery.pendingDiagnosticCaptured = true;
+    gatedDiscovery.pendingDiagnostic = pendingDiagnostic;
+    const gatedEntry = (await ctx.provider.list()).data.find(provider => String(provider.id) === "vibe-oidc");
+    assert.ok(gatedEntry, "provider listed while discovery is gated");
+    const gatedProvider = (await ctx.provider.get({ providerID: "vibe-oidc" })).data;
+    assert.equal(String(gatedProvider.id), "vibe-oidc", "provider queryable while discovery is gated");
+    checks.providerQueriedBeforeRelease = true;
+    gatedDiscovery.providerQueriedBeforeRelease = true;
+    gatedDiscovery.providerNameWhileGated = String(gatedProvider.name);
+    gatedDiscovery.providerActivationWhileGated = String(gatedProvider.activation);
+    const vibeModelsBeforeRelease = (await ctx.model.list()).data.filter(item => String(item.providerID) === "vibe-oidc").map(item => String(item.id));
+    assert.deepEqual(vibeModelsBeforeRelease, [], "provider model list empty while discovery is gated");
+    gatedDiscovery.vibeModelsBeforeRelease = vibeModelsBeforeRelease;
+    discoveryReleased = true;
+    releaseDiscovery?.();
     let visible = false;
     for (let i = 0; i < 100 && !visible; i++) {
       visible = JSON.stringify(await ctx.model.list()).includes("synthetic-model");
@@ -139,6 +176,10 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
     assert.ok(visible, "authenticated inventory visible through native host model API");
     checks.modelDiscovery = true;
     const listed = await ctx.model.list();
+    const publishedAfterRelease = listed.data.filter(item => String(item.providerID) === "vibe-oidc").map(item => String(item.id));
+    assert.ok(publishedAfterRelease.length > 0, "models published after the discovery gate released");
+    gatedDiscovery.modelsPublishedAfterRelease = publishedAfterRelease;
+    checks.modelsPublishedAfterRelease = true;
     const large4 = listed.data.find(model => String(model.id) === "mistral-large-4");
     assert.ok(large4, "curated model visible through native host model API");
     assert.deepEqual(large4!.variants.map(variant => String(variant.id)), ["low", "high", "max"], "variants offered");
@@ -276,11 +317,13 @@ export default Plugin.define({ id: "vibe-consumer-integration", async setup(ctx)
   } finally {
     try {
       try { release?.(); } catch { /* A cancelled synthetic controller is already closed. */ }
+      // A failed gated assertion must never leave discovery parked forever.
+      discoveryReleased = true; releaseDiscovery?.();
       for (const registration of registrations.reverse()) await registration.dispose();
       await cleanup?.(); checks.cleanup = true;
     } catch { failure = "Owned fixture/provider cleanup failed"; }
     globalThis.fetch = originalFetch; console.warn = originalWarn; StdioBridge.prototype.request = originalRequest; monitor.abort();
-    writeFileSync(evidence, JSON.stringify({ status: failure ? "failed" : "passed", checks, ...(failure ? { failure, warnings, eventTypes } : {}), counts: { inference, models, sdkCalls, languageCalls }, optionKeys }, null, 2));
+    writeFileSync(evidence, JSON.stringify({ status: failure ? "failed" : "passed", checks, ...(failure ? { failure, warnings, eventTypes } : {}), gatedDiscovery, counts: { inference, models, sdkCalls, languageCalls }, optionKeys }, null, 2));
   } };
   setTimeout(() => { void run(); }, 50);
   return async () => { await cleanup?.(); globalThis.fetch = originalFetch; };
