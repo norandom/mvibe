@@ -1,4 +1,4 @@
-# mvibe 3.0.1 — patch release
+# mvibe 3.0.2 — plugin registration resilience
 
 For students, researchers and educators only. This is untested, experimental
 software, not production software. Original mvibe contributions use the Beerware
@@ -11,7 +11,7 @@ API-key entry. Experimental direct ID-token OIDC remains a separate opt-in route
 it counted as API usage on the tested account. The existing-login route consumed
 the expected Vibe allowance in user-confirmed OpenCode tests.
 
-Download `mvibe-3.0.1.zip` and `SHA256SUMS`, verify the checksum, then extract to a
+Download `mvibe-3.0.2.zip` and `SHA256SUMS`, verify the checksum, then extract to a
 permanent directory outside a development checkout. Complete normal Vibe browser
 sign-in under the same native OS/user first. With uv, Bun 1.4.4 and OpenCode 2 installed:
 
@@ -31,6 +31,31 @@ The standalone wheel is also available for Python library consumers. The archive
 includes the optional proxy with `/openapi.json`, Swagger `/docs`, and opt-in
 `--log` diagnostics. Plugin diagnostics use `options.diagnostics: true`; the CLI
 also needs `--print-logs` for visible events.
+
+## New in 3.0.2
+
+- **Provider registers immediately.** Plugin setup no longer waits on the auth
+  helper, keyring or the upstream model endpoint: the Mistral-Vibe provider
+  appears within moments of OpenCode startup with an empty model list plus a
+  one-time "Model discovery pending" notice, and models publish as soon as the
+  first authenticated discovery completes (typically seconds later). A slow,
+  hung or failing upstream can no longer delay or prevent registration.
+- **Bounded model discovery.** Every discovery attempt now has a 30-second
+  wall-clock deadline. On timeout the attempt is abandoned, the last known
+  model list is kept, and a timeout diagnostic names the deadline — without
+  aborting the shared helper session, so in-flight chats are unaffected.
+  Failed attempts retry on the next credential/connection event or reload.
+- **Visible failure causes.** Discovery failures are classified
+  (`unreachable`, `unauthorized`, `invalid`) with the underlying error text,
+  and setup failures name the failing phase (`request-context`,
+  `provider-transform`, `integration-transform`, `aisdk-hook`) with the
+  original error attached as `cause`, replacing the previous generic-only
+  message. Diagnostics stay single-line and secret-free; see them with
+  `--print-logs` (CLI) or `options.diagnostics: true` (per-request JSONL).
+- Version metadata moved 3.0.1 → 3.0.2 in `pyproject.toml`,
+  `packages/opencode-vibe-oidc/package.json` and `uv.lock`. The helper API
+  major is unchanged (3); v3.0.2 installs the v3 helper and provider together
+  with no protocol or installation-layout changes.
 
 ## New in 3.0.1
 
