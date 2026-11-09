@@ -1,0 +1,107 @@
+# Implementation Plan
+
+- [ ] 1. Proxy rate-limit module (`mvibe_proxy/ratelimit.py`)
+- [ ] 1.1 Add `RateLimitConfig` with `from_env` parsing of `MVIBE_RATE_LIMIT_RPS`, `MVIBE_RATE_LIMIT_MODEL_RPS` (`model=rps[,model=rps]`), `MVIBE_RATE_LIMIT_MAX_WAIT_S` (120), `MVIBE_RATE_LIMIT_MAX_QUEUE` (64), `MVIBE_RATE_LIMIT_BACKOFF_CAP_S` (30), `RateLimitConfigError` naming the offending variable, and `rate_for(key)` returning the model override, the default, or `None` for `models`.
+  - Unit tests in `tests/test_ratelimit.py`: unset env yields defaults with `default_rps=None`; each variable rejects non-numeric, zero and negative values and a malformed per-model entry with the variable name in the message and no other env values echoed; `rate_for('models')` is `None` even when a default is set.
+  - Observable: `RateLimitConfig.from_env({'MVIBE_RATE_LIMIT_RPS': '0.5'}).rate_for('mistral-large-latest') == 0.5`.
+  - _Boundary: RateLimitConfig_
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.6_
+- [ ] 1.2 Add `parse_retry_after` (delay-seconds and HTTP-date via `email.utils`, past dates yield 0, garbage yields `None`) and `classify(status, headers, fallback_wait_s, cap_s, now)` returning `RateLimitSignal` only for status 429, with `wait_s` from `Retry-After` when present or the capped fallback otherwise, and a header snapshot limited to `x-ratelimit-*` names with values truncated to 64 characters. Extends `mvibe_proxy/ratelimit.py` and `tests/test_ratelimit.py` from 1.1 (same files, sequential).
+  - Unit tests: 200, 401, 503 return `None`; 429 without `Retry-After` returns the fallback capped at `cap_s`; `Retry-After: 7` returns 7; HTTP-date 10 s ahead returns about 10; headers snapshot excludes `authorization`, `content-type` and body-derived values.
+  - Observable: `classify(429, {'retry-after': '3'}, fallback_wait_s=1, cap_s=30, now=0).wait_s == 3`.
+  - _Boundary: classify_
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6_
+- [ ] 1.3 Implement the scheduling core of `UpstreamGate`: per-key FIFO waiters, `next_slot` pacing for paced keys (`config.rate_for`), unpaced `models` key, total held bound `max_queue` with an immediate synthesized 429 JSON response (`retry-after` at least 1) when exceeded, cancellation releasing the waiter and waking the next, exceptions from `attempt` propagating after release, `held` property, and injectable `clock`/`sleep`/`random`/`warn`. The gate fills a `GateRecord` supplied by the caller (defined in task 2.2; until then use a minimal local stand-in dataclass with the same fields and replace it in 2.3). Non-429 responses are returned unchanged.
+  - Unit tests with `tests/fakes.Clock`: three runs on one key at 0.5 rps start at t=0, 2, 4; unpaced `models` key starts immediately; two keys do not block each other; 65th concurrent run gets a synthesized 429 without calling `attempt`; cancelling a waiting run removes it and the next waiter proceeds; an `AuthError` from `attempt` propagates and releases the key; `held` returns to 0 after all runs settle.
+  - Observable: send times recorded by a fake `attempt` are spaced by exactly `1 / rate` on the fake clock.
+  - _Depends: 1.1_
+  - _Boundary: UpstreamGate_
+  - _Requirements: 2.2, 3.1, 3.2, 3.3, 3.5, 6.3_
+- [ ] 1.4 Add the 429 handling to `UpstreamGate.run`: on a classified 429 read the body up to 64 KiB and close the stream, record the rejection and `x-ratelimit-*` headers, set the key's shared `hold_until = now + min(wait, max_wait_s)` using `Retry-After` or jittered exponential backoff (start at the pacing interval or 1 s, factor 2, capped), call `warn(key, wait)` once per hold start, re-enter the rejected run at the head of its key's queue, and when `hold_until` exceeds the run's deadline (`arrived + max_wait_s`) return the materialized last 429 with `Retry-After` ensured and `record.exhausted = True`; `queued_ms` accumulates all waiting time.
+  - Unit tests: a 429 on the first run holds the second run until `hold_until`; the rejected run is sent before later arrivals; `Retry-After: 7` yields a 7 s hold; without `Retry-After` the second rejection waits roughly twice the first and never beyond the cap; `max_wait_s` exceeded returns a response whose body equals the last upstream body, whose `retry-after` is at least 1 and whose `x-ratelimit-*` headers are preserved; `warn` is called once per hold; the record shows `rejections == 1` and `queued_ms > 0` after a 429-then-200 run.
+  - Observable: a scripted 429-then-200 `attempt` pair completes `run` with the 200 response and exactly two `attempt` calls.
+  - _Depends: 1.2, 1.3_
+  - _Boundary: UpstreamGate_
+  - _Requirements: 1.3, 2.1, 2.2, 2.5, 5.1, 5.3, 6.3_
+
+- [ ] 2. Proxy integration
+- [ ] 2.1 (P) Streaming owner and route body reads (shipped together so the proxy never breaks between tasks): read `request.body()` in `proxy`, `models` (Anthropic dialect), `ollama_tags_route` and `adapter_post` before constructing the owned response or acquiring (Starlette caches it, so `make_acquire`'s later `request.body()` is a cache hit); start the disconnect watcher task group before awaiting `acquire()` in `_OwnedResponse.__call__`, cancel acquisition on `http.disconnect` with diagnostic `cancelled` and no response start; add `ProxyStreamOwner.acquire_watching(receive, acquire, diagnostic)` running an acquisition under the same watcher and raising `ClientDisconnected` after recording `cancelled`; forward `retry-after` and every `x-ratelimit-*` upstream header on `http.response.start` only when the upstream status is 429.
+  - Extend `tests/test_streaming.py`: disconnect while `acquire` is pending → `acquire` cancelled, no `http.response.start`, diagnostic outcome `cancelled`; `acquire_watching` returns the upstream response normally and raises `ClientDisconnected` without completing `acquire` on disconnect; a 429 upstream with `retry-after: 2` and `x-ratelimit-remaining-req-minute: 0` reaches the client with both headers while a 200 keeps exactly today's header set; all existing streaming tests remain green.
+  - `tests/test_proxy.py`: POST `/v1/chat/completions`, `/v1/models` with `anthropic-version` and `/api/tags` still succeed with the body read up front and forwarded bytes unchanged; the full `tests/test_proxy.py` and `tests/test_compat.py` stay green.
+  - Observable: the recorded ASGI messages for the disconnect case contain no `http.response.start`.
+  - _Boundary: ProxyStreamOwner, _OwnedResponse, proxy routes (body read only)_
+  - _Requirements: 2.3, 2.4, 2.6, 2.7, 6.2, 6.4_
+- [ ] 2.2 (P) Diagnostics and export: define `GateRecord` (queued_ms, rejections, headers, exhausted) in `mvibe_proxy/diagnostics.py` and import it into `mvibe_proxy/ratelimit.py` in place of the 1.3 stand-in (all group-1 writers of that file are finished); add `RequestDiagnostic.rate_limit`; emit `queued_ms` and `rate_limit_rejections` (plus `rate_limit_headers` on stdout only); add `failure('rate_limited')` with its hint naming `MVIBE_RATE_LIMIT_MAX_WAIT_S`, `MVIBE_RATE_LIMIT_MAX_QUEUE` and `MVIBE_RATE_LIMIT_RPS`; make `upstream(429)` select `rate_limited` when the record is exhausted; allowlist `queued_ms` and `rate_limit_rejections` in `observability._ALLOWED_FIELDS`.
+  - `tests/test_proxy_diagnostics.py`: fields present and numeric; exhausted record → outcome `rate_limited` and hint contains the setting names; `rate_limit_headers` values never contain body text; the existing 429 hint test is updated.
+  - `tests/test_observability.py`: exported record includes the two numeric fields and excludes `rate_limit_headers`; `tests/test_ratelimit.py` stays green after the import swap.
+  - Observable: a `--log` line for an exhausted request shows `"outcome": "rate_limited"`.
+  - _Depends: 1.4_
+  - _Boundary: RequestDiagnostic, exporter allowlist, ratelimit GateRecord import_
+  - _Requirements: 1.4, 1.6, 5.1, 5.2, 5.4_
+- [ ] 2.3 Configuration wiring: add `rate_limit_config: RateLimitConfig | None` and `gate_factory: Callable[[RateLimitConfig], UpstreamGate]` parameters to `create_app`, build the gate in the lifespan (`None` config means reactive-only defaults) and store it as `app.state.rate_gate`; load `RateLimitConfig.from_env()` in `main()` and exit 2 with the error text on `RateLimitConfigError`; pass the config into both `create_app` calls in `main()`.
+  - `tests/test_proxy.py`: `create_app` with an injected `gate_factory` exposes the injected gate as `app.state.rate_gate` after lifespan start; `main()` with `MVIBE_RATE_LIMIT_RPS=abc` exits 2 and the message names the variable; `main()` with no rate-limit variables starts normally (uvicorn patched out as the existing startup tests do).
+  - Observable: `app.state.rate_gate.held == 0` on a freshly started test app.
+  - _Depends: 1.4, 2.2_
+  - _Boundary: create_app, main_
+  - _Requirements: 3.3, 3.4, 3.6_
+- [ ] 2.4 Gate loop in `make_acquire`: parse the body once for `key_for(path, model)` and the diagnostic model; make the `attempt` closure resolve a fresh snapshot, assemble headers and traceparent on every attempt, run metadata attribution (`account_plan.resolve(snapshot)`) and econ on the first attempt only with the bytes cached for re-sends, and send; run it through `app.state.rate_gate.run(key, attempt, arrived, record)` with the record attached to the diagnostic.
+  - `tests/test_proxy.py`: 429 (no `Retry-After`) then 200 on `/v1/chat/completions` with a fake-clock gate → client 200, two identical upstream bodies, two `resolve` events, attribution and econ applied once using the first attempt's snapshot; 429 with `Retry-After: 5` and `max_wait_s=1` → client 429 with `retry-after`, upstream body bytes and `x-ratelimit-*` forwarded; three parallel chat requests at 0.5 rps are sent 2 s apart; GET `/v1/models` is not paced; success without pacing is byte-exact with `queued_ms == 0`.
+  - Observable: during a scripted hold the test client receives no bytes until the upstream accepts.
+  - _Depends: 2.1, 2.3_
+  - _Boundary: make_acquire_
+  - _Requirements: 2.1, 2.2, 2.5, 2.8, 3.1, 3.5, 6.2_
+- [ ] 2.5 Adapter route integration: make `adapter_post` obtain the upstream response through `stream_owner.acquire_watching(request.receive, acquire, diagnostic)` and return an empty response on `ClientDisconnected`; copy `retry-after` and `x-ratelimit-*` from an upstream 429 onto the translated adapter error `JSONResponse`.
+  - `tests/test_compat.py`: `/api/chat` and `/v1/messages` exhaustion keeps the dialect error body and carries `retry-after` and `x-ratelimit-*`; disconnect during a hold on `/api/chat` sends nothing upstream and records `cancelled`; existing adapter tests remain green.
+  - Observable: an `/api/chat` request whose client disconnects during the hold produces zero upstream sends in the fake transport.
+  - _Depends: 2.1, 2.4_
+  - _Boundary: adapter_post_
+  - _Requirements: 2.3, 2.4, 2.6, 6.4_
+
+- [ ] 3. Plugin rate-limit module (`packages/opencode-vibe-oidc/src/rate-limit.ts`)
+- [ ] 3.1 (P) Add `RateLimitOptions`, `parseRateLimitOptions(raw)` (defaults 120000 ms, 64, 30000 ms; absent `requestsPerSecond` means no pacing; any non-positive or non-numeric field throws `BridgeError("setup")` naming `rateLimit.<field>`), `rateFor(options, key)` returning `undefined` for `models`, `parseRetryAfter` and `classifyRateLimit` with the same contract as task 1.2.
+  - `test/rate-limit.test.ts`: undefined input yields defaults; `{ requestsPerSecond: "fast" }` and `{ maxQueue: 0 }` throw with the field name; `classifyRateLimit` returns `undefined` for 200/401/503 and a capped wait for a header-less 429; `Retry-After` seconds and HTTP-date are honored; header snapshot limited to `x-ratelimit-*`.
+  - Observable: `parseRateLimitOptions({ requestsPerSecond: 0.5 }).maxWaitMs === 120000`.
+  - _Boundary: rate-limit options and classify (ts)_
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 3.4, 3.6, 4.7_
+- [ ] 3.2 Implement the scheduling core of the TypeScript `UpstreamGate`: `GateRecord` interface, per-key FIFO, `next_slot` pacing via `rateFor`, unpaced `models`, `maxQueue` bound returning a synthesized 429 `Response` (`content-type: application/json`, `retry-after`), abort-aware `sleep(ms, signal)` that removes the waiter and throws `BridgeError("cancelled")`, transport errors propagating after release, `held` getter, injectable `now`/`sleep`/`random`/`warn`.
+  - `test/rate-limit.test.ts`: with fake timers three runs at 0.5 rps start 2000 ms apart; `models` key unpaced; abort during the pacing wait throws `cancelled` and `attempt` is not called; 65th concurrent run returns a synthesized 429 without calling `attempt`; a transport error from `attempt` propagates and releases the key; `held` returns to 0 after all runs settle.
+  - Observable: recorded attempt timestamps on the fake clock differ by exactly 2000 ms.
+  - _Depends: 3.1_
+  - _Boundary: UpstreamGate (ts)_
+  - _Requirements: 3.1, 3.5, 4.1, 4.2, 6.3_
+- [ ] 3.3 Add the 429 handling to the TypeScript `UpstreamGate.run`: classify, cancel the retried 429 body (`response.body?.cancel()`), record rejection and headers, shared `hold_until` with `Retry-After` or jittered backoff clamped to `maxWaitMs`, `warn` once per hold start, head re-entry, abort during the hold throwing `cancelled`, and exhaustion returning the last 429 `Response` object unread with `record.exhausted = true`.
+  - `test/rate-limit.test.ts`: 429 then 200 completes with `rejections === 1` and the 429 body cancelled; a hold delays a second run on the same key; the rejected run is sent before later arrivals; abort during the hold throws `cancelled` and `attempt` is not called again; exhaustion returns the very same `Response` object as the last attempt with its body unread.
+  - Observable: `record.queuedMs` is greater than 0 after a 429-then-200 run.
+  - _Depends: 3.2_
+  - _Boundary: UpstreamGate (ts)_
+  - _Requirements: 1.3, 4.1, 4.2, 4.3, 5.1, 5.3_
+
+- [ ] 4. Plugin integration
+- [ ] 4.1 Re-sendable attempts in `provider.ts`: materialize body bytes once per fetch (the attributed chat JSON string, otherwise `request.clone().arrayBuffer()` for non-GET); restructure the fetch so `resolve → snapshot validation → header policy → capture → transport` is an `attempt` closure that rebuilds the outbound `Request` from method, URL, headers, bytes, `redirect: "manual"` and the original signal on every call; without a gate the closure runs exactly once and all existing behavior (including `x-should-retry: false`) is preserved.
+  - `test/provider.test.ts`: all existing tests pass unchanged; a new test calls the exported attempt path twice via an injected gate stub and asserts both sent bodies are byte-equal and each attempt resolved a fresh snapshot (`resolved.length === 2`, second `Authorization` differs).
+  - Observable: a POST `/v1/embeddings` body read from the sent `Request` equals the caller's original bytes on a second attempt.
+  - _Depends: 3.3_
+  - _Boundary: createProviderFetch_
+  - _Requirements: 4.1, 4.4, 4.6, 6.2_
+- [ ] 4.2 Gate wiring in `provider.ts`: accept `gate?: UpstreamGate` in `ProviderFetchOptions`; derive the key (`models` for discovery, chat `model`, `embeddings` otherwise); run the attempt closure through `gate.run(key, attempt, request.signal, record)`; add `queued_ms` and `rate_limit_rejections` from the record to the diagnostic, with outcome `rate_limited` and the hint naming `rateLimit.maxWaitMs`, `rateLimit.maxQueue` and `rateLimit.requestsPerSecond` when exhausted; keep `x-should-retry: false` on every returned response; diagnostics output stays behind `options.diagnostics === true`.
+  - `test/provider.test.ts`: gate fixture with 429 then 200 → one `fetch` resolves 200 and `sent.length === 2`; abort during the hold → `BridgeError` `cancelled` and `sent.length === 1`; exhaustion returns the upstream 429 with original body and `x-should-retry: false`; GET `/models` is never delayed by pacing.
+  - `test/diagnostics.test.ts`: the diagnostics line contains `queued_ms` and `rate_limit_rejections` only when `diagnostics: true`.
+  - Observable: the exhausted-case response body text equals the scripted upstream 429 payload.
+  - _Depends: 4.1_
+  - _Boundary: createProviderFetch_
+  - _Requirements: 1.6, 3.5, 4.1, 4.2, 4.3, 4.4, 5.1, 5.2, 5.5_
+- [ ] 4.3 Wire options in `index.ts`: parse `ctx.options.rateLimit` inside `settings()` so invalid values fail setup through the existing labeled `setup` failure path naming `rateLimit.<field>`; construct one `UpstreamGate` per plugin instance with `warn` bound to `console.warn` only when `diagnostics` is enabled; pass the gate to `createProviderFetch`; leave `maxRetries = 0`.
+  - `test/setup.test.ts`: `rateLimit: { requestsPerSecond: "fast" }` rejects setup with a message containing `rateLimit.requestsPerSecond`; valid `rateLimit` leaves registration and the catalog refresh unaffected; model-catalog discovery with a never-answering gate still times out under its existing deadline.
+  - Observable: setup with `rateLimit: { requestsPerSecond: 0.5 }` registers the provider and the resulting fetch paces two chat requests 2000 ms apart on a fake clock.
+  - _Depends: 4.2_
+  - _Boundary: setupVibe settings_
+  - _Requirements: 3.4, 4.4, 4.5, 4.7_
+
+- [ ] 5. Run the full offline gates and confirm untouched contracts: `uv run --locked --offline ruff check .` and `uv run --locked --offline pytest` (two xdist workers) in the repository root; `bun run lint`, `bun run typecheck`, `bun run build` and `bun test` in `packages/opencode-vibe-oidc`; `git diff --stat` against the pre-feature baseline shows no changes under `mvibe_auth/`, `src/bridge.ts`, `src/protocol.ts`, `src/protocol.schema.json`, `tests/test_version_coupling.py` or the version fields; no live inference executed.
+  - Observable: all commands exit 0 in one run and the diff check lists only the files in the design's File Structure Plan.
+  - _Depends: 2.5, 4.3_
+  - _Requirements: 6.1, 6.2, 6.3, 6.4_
+
+> Operator documentation for `MVIBE_RATE_LIMIT_*` and `options.rateLimit` (docs/proxy-guide.md, docs/opencode-provider.md, release notes) is deliberately left to the release step; task rules exclude documentation tasks.
+
+## Implementation Notes
