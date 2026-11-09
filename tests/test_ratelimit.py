@@ -1,11 +1,20 @@
 """Offline unit contracts for the proxy rate-limit module (upstream-rate-limit-queue):
 operator configuration parsed from MVIBE_RATE_LIMIT_* (task 1.1, Requirements 3.1,
-3.2, 3.3, 3.4, 3.6)."""
+3.2, 3.3, 3.4, 3.6) and 429 classification with Retry-After parsing (task 1.2,
+Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6)."""
 import dataclasses
 
+import httpx2
 import pytest
 
-from mvibe_proxy.ratelimit import RateLimitConfig, RateLimitConfigError
+from mvibe_proxy import ratelimit
+from mvibe_proxy.ratelimit import (
+    RateLimitConfig,
+    RateLimitConfigError,
+    RateLimitSignal,
+    classify,
+    parse_retry_after,
+)
 
 RPS = 'MVIBE_RATE_LIMIT_RPS'
 MODEL_RPS = 'MVIBE_RATE_LIMIT_MODEL_RPS'
@@ -189,3 +198,224 @@ def test_errors_never_echo_other_environment_values(key, value):
 
 def test_config_error_is_a_value_error():
     assert issubclass(RateLimitConfigError, ValueError)
+
+
+# --- Retry-After parsing (Requirement 1.2) ------------------------------------
+
+# 2025-11-09 12:00:00 UTC as a POSIX timestamp; the HTTP-dates below are relative to it.
+NOW = 1_762_689_600.0
+TEN_SECONDS_AHEAD = 'Sun, 09 Nov 2025 12:00:10 GMT'
+
+
+@pytest.mark.parametrize('value,expected', [
+    ('7', 7.0),
+    (' 7 ', 7.0),
+    ('0', 0.0),
+    ('120', 120.0),
+    ('007', 7.0),
+    ('1.5', 1.5),                       # decimal accepted defensively
+])
+def test_parse_retry_after_delay_seconds(value, expected):
+    wait = parse_retry_after(value, NOW)
+    assert wait == expected
+    assert isinstance(wait, float)
+
+
+@pytest.mark.parametrize('value', [
+    TEN_SECONDS_AHEAD,                  # IMF-fixdate
+    'Sunday, 09-Nov-25 12:00:10 GMT',   # obsolete RFC 850 form
+    'Sun Nov  9 12:00:10 2025',         # obsolete asctime form, no zone: UTC
+    'Sun, 09 Nov 2025 12:00:10 -0000',  # unknown zone: UTC
+    'Sun, 09 Nov 2025 13:00:10 +0100',  # explicit offset is honoured
+])
+def test_parse_retry_after_http_date_ten_seconds_ahead(value):
+    assert parse_retry_after(value, NOW) == pytest.approx(10.0)
+
+
+def test_parse_retry_after_http_date_uses_the_fractional_now():
+    assert parse_retry_after(TEN_SECONDS_AHEAD, NOW + 0.25) == pytest.approx(9.75)
+
+
+@pytest.mark.parametrize('value', [
+    'Sun, 09 Nov 2025 12:00:00 GMT',    # exactly now
+    'Sun, 09 Nov 2025 11:59:00 GMT',    # one minute ago
+    'Wed, 21 Oct 2015 07:28:00 GMT',    # years ago
+])
+def test_parse_retry_after_past_or_present_http_date_yields_zero(value):
+    assert parse_retry_after(value, NOW) == 0.0
+
+
+@pytest.mark.parametrize('value', [
+    None, '', '   ',
+    'abc', 'soon', '7 seconds', '7s',
+    '-1', '-0', '-0.5', '+5',           # delay-seconds is a non-negative number
+    'nan', 'inf', '1e3', '0x10', '1_000', '1.', '.5', '1,5', '3, 5',
+    '\u0661\u0662',                     # non-ASCII digits
+    '9' * 400,                          # overflows to infinity
+    'Wed, 99 Foo 2015 07:28:00 GMT',    # not a date
+    'Wed, 21 Oct 2015',                 # date without a time
+    'Sat, 01 Jan 10000 00:00:00 GMT',   # year out of range
+])
+def test_parse_retry_after_garbage_yields_none(value):
+    assert parse_retry_after(value, NOW) is None
+
+
+# --- classification (Requirements 1.1, 1.3, 1.4, 1.5, 1.6) -------------------
+
+def _classify(status, headers, *, fallback_wait_s=1.0, cap_s=30.0, now=NOW):
+    return classify(status, headers, fallback_wait_s=fallback_wait_s, cap_s=cap_s, now=now)
+
+
+def test_observable_retry_after_seconds_sets_the_wait():
+    assert classify(429, {'retry-after': '3'}, fallback_wait_s=1, cap_s=30, now=0).wait_s == 3
+
+
+@pytest.mark.parametrize('status', (200, 201, 400, 401, 403, 404, 428, 430, 500, 502, 503, 504))
+def test_statuses_other_than_429_are_not_rate_limit_rejections(status):
+    headers = {'retry-after': '7', 'x-ratelimit-remaining-req-minute': '0'}
+    assert _classify(status, headers) is None
+
+
+def test_429_without_retry_after_uses_the_fallback():
+    signal = _classify(429, {'content-type': 'application/json'}, fallback_wait_s=2.0)
+    assert isinstance(signal, RateLimitSignal)
+    assert signal.wait_s == 2.0
+    assert signal.retry_after_present is False
+    assert dict(signal.headers) == {}
+
+
+def test_429_fallback_is_capped():
+    signal = _classify(429, {}, fallback_wait_s=45.0, cap_s=30.0)
+    assert signal.wait_s == 30.0
+    assert signal.retry_after_present is False
+
+
+@pytest.mark.parametrize('fallback', (0.001, 0.5, 1.0, 29.999, 30.0, 30.001, 1e9, float('inf')))
+def test_429_fallback_wait_is_positive_and_never_exceeds_the_cap(fallback):
+    signal = _classify(429, {}, fallback_wait_s=fallback, cap_s=30.0)
+    assert 0 < signal.wait_s <= 30.0
+
+
+def test_429_retry_after_seconds_sets_the_wait():
+    signal = _classify(429, {'retry-after': '7'}, fallback_wait_s=1.0)
+    assert signal.wait_s == 7.0
+    assert signal.retry_after_present is True
+
+
+def test_429_retry_after_http_date_sets_the_wait():
+    signal = _classify(429, {'retry-after': TEN_SECONDS_AHEAD})
+    assert signal.wait_s == pytest.approx(10.0)
+    assert signal.retry_after_present is True
+
+
+def test_429_retry_after_in_the_past_yields_zero_wait():
+    signal = _classify(429, {'retry-after': 'Wed, 21 Oct 2015 07:28:00 GMT'}, fallback_wait_s=5.0)
+    assert signal.wait_s == 0.0
+    assert signal.retry_after_present is True
+
+
+def test_429_retry_after_is_not_capped_here():
+    # Upstream guidance wins; the gate clamps it to max_wait_s later.
+    signal = _classify(429, {'retry-after': '45'}, cap_s=30.0)
+    assert signal.wait_s == 45.0
+
+
+@pytest.mark.parametrize('value', ('soon', '-1', '', '3, 5'))
+def test_429_with_unusable_retry_after_counts_as_absent(value):
+    signal = _classify(429, {'retry-after': value}, fallback_wait_s=4.0)
+    assert signal.wait_s == 4.0
+    assert signal.retry_after_present is False
+
+
+@pytest.mark.parametrize('name', ('Retry-After', 'RETRY-AFTER', 'retry-after'))
+def test_retry_after_name_is_matched_case_insensitively(name):
+    signal = _classify(429, {name: '7'})
+    assert signal.wait_s == 7.0
+    assert signal.retry_after_present is True
+
+
+def test_429_is_classified_whatever_the_content_type():
+    # The body shape is irrelevant (1.1): classify never sees the body.
+    for content_type in ('application/json', 'text/html', 'text/plain', ''):
+        assert _classify(429, {'content-type': content_type}) is not None
+
+
+# Distinctive values that must never reach the signal (1.6).
+SECRET_HEADERS = {
+    'Authorization': 'Bearer sk-sentinel-secret-value',
+    'Cookie': 'session=sentinel-cookie',
+    'Set-Cookie': 'session=sentinel-set-cookie',
+    'Content-Type': 'application/json',
+    'Content-Length': '87',
+    'X-Request-Id': 'sentinel-request-id',
+    'X-Mistral-Error': '{"message":"Rate limit exceeded","code":"1300"}',
+    'RateLimit-Policy': 'sentinel-ietf-policy',
+    'X-RateLimit': 'sentinel-no-dash',
+    'X-RateLimitRemaining': 'sentinel-no-separator',
+}
+
+
+def test_header_snapshot_keeps_only_x_ratelimit_headers():
+    headers = dict(SECRET_HEADERS)
+    headers.update({
+        'Retry-After': '3',
+        'X-RateLimit-Limit-Req-Minute': '5',
+        'x-ratelimit-remaining-req-minute': '0',
+    })
+    signal = _classify(429, headers)
+    assert dict(signal.headers) == {
+        'x-ratelimit-limit-req-minute': '5',
+        'x-ratelimit-remaining-req-minute': '0',
+    }
+    rendered = repr(signal)
+    for name, value in SECRET_HEADERS.items():
+        assert value not in rendered
+        assert name.lower() not in signal.headers
+    assert 'Rate limit exceeded' not in rendered
+
+
+def test_header_snapshot_is_recorded_without_retry_after():
+    signal = _classify(429, {'x-ratelimit-remaining-req-minute': '0'})
+    assert signal.retry_after_present is False
+    assert dict(signal.headers) == {'x-ratelimit-remaining-req-minute': '0'}
+
+
+@pytest.mark.parametrize('length,kept', [(0, 0), (63, 63), (64, 64), (65, 64), (500, 64)])
+def test_header_snapshot_values_are_truncated_to_64_characters(length, kept):
+    signal = _classify(429, {'x-ratelimit-note': 'v' * length})
+    assert signal.headers['x-ratelimit-note'] == 'v' * kept
+
+
+def test_signal_is_frozen_and_header_snapshot_is_a_read_only_copy():
+    headers = {'x-ratelimit-remaining-req-minute': '0'}
+    signal = _classify(429, headers)
+    headers['x-ratelimit-remaining-req-minute'] = '9'
+    headers['x-ratelimit-added-later'] = '1'
+    assert dict(signal.headers) == {'x-ratelimit-remaining-req-minute': '0'}
+    with pytest.raises(TypeError):
+        signal.headers['x-ratelimit-other'] = '1'
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        signal.wait_s = 0.0
+
+
+def test_classify_accepts_upstream_httpx2_headers():
+    headers = httpx2.Headers({
+        'Retry-After': '7',
+        'X-RateLimit-Remaining-Req-Minute': '0',
+        'Authorization': 'Bearer sk-sentinel-secret-value',
+    })
+    signal = _classify(429, headers)
+    assert signal.wait_s == 7.0
+    assert signal.retry_after_present is True
+    assert dict(signal.headers) == {'x-ratelimit-remaining-req-minute': '0'}
+
+
+@pytest.mark.parametrize('fallback,cap', [(0.0, 30.0), (-1.0, 30.0), (float('nan'), 30.0),
+                                          (1.0, 0.0), (1.0, -1.0), (1.0, float('nan'))])
+def test_classify_rejects_a_non_positive_fallback_or_cap(fallback, cap):
+    with pytest.raises(ValueError):
+        _classify(429, {}, fallback_wait_s=fallback, cap_s=cap)
+
+
+def test_classification_api_is_exported():
+    assert {'RateLimitSignal', 'classify', 'parse_retry_after'} <= set(ratelimit.__all__)

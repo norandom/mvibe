@@ -1,10 +1,12 @@
 """Upstream rate-limit policy for the proxy.
 
 Mistral rejects a request that exceeds a workspace limit with HTTP 429 before any
-inference runs. This module holds the proxy's policy for that rejection. So far it
-contains the operator configuration: RateLimitConfig.from_env reads the
-MVIBE_RATE_LIMIT_* settings and validates them all at startup, so the rest of the
-rate-limit path can trust the values.
+inference runs. This module holds the proxy's policy for that rejection.
+RateLimitConfig.from_env reads the MVIBE_RATE_LIMIT_* settings and validates them
+all at startup, so the rest of the rate-limit path can trust the values. classify
+recognizes the rejection by its status alone and turns it into a RateLimitSignal:
+the wait from Retry-After (parse_retry_after) or a capped fallback, plus a copy of
+the x-ratelimit-* headers that is safe to record.
 
 Pacing is off by default. While MVIBE_RATE_LIMIT_RPS and MVIBE_RATE_LIMIT_MODEL_RPS
 are unset, no key has a rate and the proxy only reacts to rejections. No
@@ -16,8 +18,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC
+import email.utils
 import math
 import os
+import re
 from types import MappingProxyType
 
 __all__ = [
@@ -32,6 +37,9 @@ __all__ = [
     'MODELS_KEY',
     'RateLimitConfig',
     'RateLimitConfigError',
+    'RateLimitSignal',
+    'classify',
+    'parse_retry_after',
 ]
 
 # --- config (Requirements 3.1, 3.2, 3.3, 3.4, 3.6) ---------------------------
@@ -153,3 +161,97 @@ class RateLimitConfig:
         if key == MODELS_KEY:
             return None
         return self.model_rps.get(key, self.default_rps)
+
+
+# --- classification (Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6) -------------
+
+_RATE_LIMIT_STATUS = 429
+_RETRY_AFTER = 'retry-after'
+_SNAPSHOT_PREFIX = 'x-ratelimit-'
+_SNAPSHOT_VALUE_CHARS = 64
+# delay-seconds is 1*DIGIT (RFC 9110 section 10.2.3); a decimal fraction is
+# tolerated. ASCII digits only, no sign, exponent, underscore or 'inf'/'nan'.
+_DELAY_SECONDS = re.compile('[0-9]+(?:[.][0-9]+)?')
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitSignal:
+    """A classified upstream 429: how long to wait and what the upstream said.
+
+    `headers` holds only the upstream `x-ratelimit-*` headers, with lower-cased
+    names and values cut to 64 characters. Nothing else is copied, so the signal
+    never carries credentials or body content and is safe to record.
+    """
+
+    wait_s: float
+    retry_after_present: bool
+    headers: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}))
+
+
+def parse_retry_after(value: str | None, now: float) -> float | None:
+    """The wait in seconds that a `Retry-After` value asks for, or None if unusable.
+
+    Delay-seconds must be a non-negative number of ASCII digits (a decimal
+    fraction is tolerated). An HTTP-date is read with `email.utils` in any form
+    RFC 9110 names (IMF-fixdate, RFC 850, asctime); a date without a zone is UTC,
+    and a date at or before `now` yields 0.0. Anything else, a negative number
+    included, yields None.
+
+    `now` is the current POSIX time in seconds (`time.time()`). It only turns an
+    HTTP-date into a delay; the gate's monotonic clock is separate.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if _DELAY_SECONDS.fullmatch(text):
+        delay = float(text)
+        return delay if math.isfinite(delay) else None
+    try:
+        when = email.utils.parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    delay = when.timestamp() - now
+    if not math.isfinite(delay):
+        return None
+    return delay if delay > 0 else 0.0
+
+
+def classify(status: int, headers: Mapping[str, str], *, fallback_wait_s: float,
+             cap_s: float, now: float) -> RateLimitSignal | None:
+    """The rate-limit signal for an upstream response, or None unless it is a 429.
+
+    The status alone decides; the body is never read. A usable `Retry-After` sets
+    `wait_s` to the parsed value, uncapped (the gate clamps it to `max_wait_s`).
+    Without one, `wait_s` is `fallback_wait_s` capped at `cap_s`; an unparsable
+    `Retry-After` counts as absent. Header names match case-insensitively, so a
+    plain dict and `httpx2.Headers` behave the same. Only `x-ratelimit-*` headers
+    are copied into the read-only snapshot.
+
+    `now` is the current POSIX time in seconds, used only for an HTTP-date
+    `Retry-After` (see parse_retry_after). `fallback_wait_s` and `cap_s` must be
+    positive.
+    """
+    if not (fallback_wait_s > 0 and cap_s > 0):
+        raise ValueError('fallback_wait_s and cap_s must be positive')
+    if status != _RATE_LIMIT_STATUS:
+        return None
+    retry_after: str | None = None
+    snapshot: dict[str, str] = {}
+    for name, value in headers.items():
+        lowered = name.lower()
+        if lowered == _RETRY_AFTER:
+            retry_after = value
+        elif lowered.startswith(_SNAPSHOT_PREFIX):
+            snapshot[lowered] = value[:_SNAPSHOT_VALUE_CHARS]
+    parsed = parse_retry_after(retry_after, now)
+    if parsed is None:
+        return RateLimitSignal(wait_s=float(min(fallback_wait_s, cap_s)),
+                               retry_after_present=False,
+                               headers=MappingProxyType(snapshot))
+    return RateLimitSignal(wait_s=parsed, retry_after_present=True,
+                           headers=MappingProxyType(snapshot))

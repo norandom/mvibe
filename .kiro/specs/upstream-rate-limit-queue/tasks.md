@@ -6,7 +6,7 @@
   - Observable: `RateLimitConfig.from_env({'MVIBE_RATE_LIMIT_RPS': '0.5'}).rate_for('mistral-large-latest') == 0.5`.
   - _Boundary: RateLimitConfig_
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.6_
-- [ ] 1.2 Add `parse_retry_after` (delay-seconds and HTTP-date via `email.utils`, past dates yield 0, garbage yields `None`) and `classify(status, headers, fallback_wait_s, cap_s, now)` returning `RateLimitSignal` only for status 429, with `wait_s` from `Retry-After` when present or the capped fallback otherwise, and a header snapshot limited to `x-ratelimit-*` names with values truncated to 64 characters. Extends `mvibe_proxy/ratelimit.py` and `tests/test_ratelimit.py` from 1.1 (same files, sequential).
+- [x] 1.2 Add `parse_retry_after` (delay-seconds and HTTP-date via `email.utils`, past dates yield 0, garbage yields `None`) and `classify(status, headers, fallback_wait_s, cap_s, now)` returning `RateLimitSignal` only for status 429, with `wait_s` from `Retry-After` when present or the capped fallback otherwise, and a header snapshot limited to `x-ratelimit-*` names with values truncated to 64 characters. Extends `mvibe_proxy/ratelimit.py` and `tests/test_ratelimit.py` from 1.1 (same files, sequential).
   - Unit tests: 200, 401, 503 return `None`; 429 without `Retry-After` returns the fallback capped at `cap_s`; `Retry-After: 7` returns 7; HTTP-date 10 s ahead returns about 10; headers snapshot excludes `authorization`, `content-type` and body-derived values.
   - Observable: `classify(429, {'retry-after': '3'}, fallback_wait_s=1, cap_s=30, now=0).wait_s == 3`.
   - _Boundary: classify_
