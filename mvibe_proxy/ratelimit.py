@@ -6,7 +6,9 @@ RateLimitConfig.from_env reads the MVIBE_RATE_LIMIT_* settings and validates the
 all at startup, so the rest of the rate-limit path can trust the values. classify
 recognizes the rejection by its status alone and turns it into a RateLimitSignal:
 the wait from Retry-After (parse_retry_after) or a capped fallback, plus a copy of
-the x-ratelimit-* headers that is safe to record.
+the x-ratelimit-* headers that is safe to record. UpstreamGate schedules the
+upstream attempts: one FIFO line per key with a single attempt in flight,
+optional pacing per key, and a bound on the runs held across all keys.
 
 Pacing is off by default. While MVIBE_RATE_LIMIT_RPS and MVIBE_RATE_LIMIT_MODEL_RPS
 are unset, no key has a rate and the proxy only reacts to rejections. No
@@ -16,14 +18,21 @@ environment.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+from collections import deque
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC
 import email.utils
+import json
 import math
 import os
+import random
 import re
+import time
 from types import MappingProxyType
+
+import httpx2
 
 __all__ = [
     'DEFAULT_BACKOFF_CAP_S',
@@ -35,9 +44,11 @@ __all__ = [
     'ENV_MODEL_RPS',
     'ENV_RPS',
     'MODELS_KEY',
+    'GateRecord',
     'RateLimitConfig',
     'RateLimitConfigError',
     'RateLimitSignal',
+    'UpstreamGate',
     'classify',
     'parse_retry_after',
 ]
@@ -255,3 +266,190 @@ def classify(status: int, headers: Mapping[str, str], *, fallback_wait_s: float,
                                headers=MappingProxyType(snapshot))
     return RateLimitSignal(wait_s=parsed, retry_after_present=True,
                            headers=MappingProxyType(snapshot))
+
+
+# --- scheduling (Requirements 2.2, 3.1, 3.2, 3.3, 3.5, 6.3) -----------------
+
+_JSON = 'application/json'
+_EXHAUSTED_MESSAGE = 'Upstream rate limit persisted; retry after {} seconds'
+
+
+@dataclass
+class GateRecord:
+    """What the gate did for one request. The caller supplies it and reads it after.
+
+    `queued_ms` is the total time the request waited inside the gate,
+    `rejections` the number of upstream 429s it met, `headers` the latest
+    `x-ratelimit-*` snapshot, and `exhausted` tells whether the gate gave up and
+    answered 429 itself. The fields are the contract with the request
+    diagnostic, which takes ownership of this type.
+    """
+
+    queued_ms: float = 0.0
+    rejections: int = 0
+    headers: dict[str, str] = field(default_factory=dict)
+    exhausted: bool = False
+
+
+@dataclass(slots=True)
+class _KeyState:
+    """One gate key: its pacing clock, its rate-limit hold and its FIFO line.
+
+    `waiters[0]` belongs to the run that owns the key. That run waits for the
+    slot and then has the key's only attempt in flight. Every later run waits on
+    its own future until the run ahead of it leaves and promotes it.
+    """
+
+    next_slot: float = 0.0
+    hold_until: float = 0.0
+    waiters: deque[asyncio.Future[None]] = field(default_factory=deque)
+
+    def ready_at(self) -> float:
+        """The earliest `clock` time at which the head may send."""
+        return max(self.next_slot, self.hold_until)
+
+
+def _exhausted(record: GateRecord, wait_s: float) -> httpx2.Response:
+    """The 429 the gate answers itself, with a Retry-After of at least 1 second.
+
+    The body is fixed text plus the number of seconds; nothing from the request,
+    the environment or an upstream response goes into it.
+    """
+    record.exhausted = True
+    retry_after = max(1, math.ceil(wait_s))
+    body = {'error': {'message': _EXHAUSTED_MESSAGE.format(retry_after),
+                      'type': 'rate_limit_error', 'code': 'rate_limited'}}
+    return httpx2.Response(
+        _RATE_LIMIT_STATUS, content=json.dumps(body).encode(),
+        headers={'content-type': _JSON, _RETRY_AFTER: str(retry_after)})
+
+
+class UpstreamGate:
+    """Schedules upstream attempts per key: FIFO order, optional pacing, bounded depth.
+
+    A key (`models`, a model id, `default`, `embeddings`) is one line. Runs on a
+    key are served in arrival order, and only the run at the head of the line
+    has an attempt in flight. A paced key (`config.rate_for(key)` returns a
+    rate) starts its attempts at least `1 / rate` seconds apart. An unpaced key,
+    `models` always among them, lets the head send as soon as the run ahead has
+    finished. Keys never wait for one another.
+
+    At most `config.max_queue` runs are inside the gate at once, waiting or in
+    flight, counted across all keys. A run beyond that bound, or a run whose next
+    slot lies past its deadline (`arrived + config.max_wait_s`), gets a
+    synthesized 429 at once and its attempt is never called.
+
+    `clock` and `sleep` share one time base in seconds (monotonic by default);
+    tests inject a fake clock. `random` and `warn` are kept for rate-limit holds.
+    """
+
+    def __init__(self, config: RateLimitConfig, *, clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 random: Callable[[], float] = random.random,
+                 warn: Callable[[str, float], None] | None = None) -> None:
+        self._config = config
+        self._clock = clock
+        self._sleep = sleep
+        self._random = random
+        self._warn = warn
+        self._keys: dict[str, _KeyState] = {}
+        self._held = 0
+
+    @property
+    def held(self) -> int:
+        """The runs inside the gate right now, waiting or in flight, on every key."""
+        return self._held
+
+    async def run(self, key: str, attempt: Callable[[], Awaitable[httpx2.Response]], *,
+                  arrived: float, record: GateRecord) -> httpx2.Response:
+        """Call `attempt` when `key` comes to this run and return its response.
+
+        `arrived` is the `clock` reading taken when the request arrived. The run
+        stops waiting at `arrived + config.max_wait_s`. The upstream response is
+        returned unchanged and unread, whatever its status. When the gate is full
+        or the key's next slot lies past the deadline, the gate returns a
+        synthesized 429 instead (JSON body, `retry-after` of at least 1), sets
+        `record.exhausted` and never calls `attempt`. Time spent waiting is added
+        to `record.queued_ms`.
+
+        A run cancelled while it waits leaves the line without sending and
+        promotes the next run. An exception from `attempt` propagates unchanged
+        once the key is released.
+        """
+        if self._held >= self._config.max_queue:
+            state = self._keys.get(key)
+            wait_s = 0.0 if state is None else state.ready_at() - self._clock()
+            return _exhausted(record, wait_s)
+        state = self._state(key)
+        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        state.waiters.append(waiter)
+        self._held += 1
+        try:
+            return await self._serve(key, state, waiter, attempt,
+                                     deadline=arrived + self._config.max_wait_s,
+                                     record=record)
+        finally:
+            self._held -= 1
+            self._leave(state, waiter)
+
+    async def _serve(self, key: str, state: _KeyState, waiter: asyncio.Future[None],
+                     attempt: Callable[[], Awaitable[httpx2.Response]], *,
+                     deadline: float, record: GateRecord) -> httpx2.Response:
+        """Wait for the head position and the slot, then send once."""
+        waited_from = self._clock()
+        if state.waiters[0] is not waiter:
+            await waiter
+        late_by = await self._wait_for_slot(state, deadline)
+        now = self._clock()
+        record.queued_ms += (now - waited_from) * 1000
+        if late_by is not None:
+            return _exhausted(record, late_by)
+        rate = self._config.rate_for(key)
+        if rate is not None:
+            state.next_slot = now + 1 / rate
+        # The head keeps the key while its attempt is in flight. The response
+        # goes back unread; a 429 is where the hold and re-send loop takes over.
+        return await attempt()
+
+    async def _wait_for_slot(self, state: _KeyState, deadline: float) -> float | None:
+        """Sleep until the key's slot has come and return None.
+
+        If the slot lies past `deadline`, return at once with the seconds left
+        until the slot. Each sleep covers exactly the remaining delta, and the
+        slot is checked again after waking.
+        """
+        while True:
+            now = self._clock()
+            ready_at = state.ready_at()
+            if now >= ready_at:
+                return None
+            if ready_at > deadline:
+                return ready_at - now
+            await self._sleep(ready_at - now)
+
+    def _state(self, key: str) -> _KeyState:
+        """The state for `key`, created on first use.
+
+        Before creating one, the gate drops idle keys whose slot and hold have
+        passed. A dropped key behaves exactly like a new one, so the key map
+        holds only keys that still have something to enforce.
+        """
+        state = self._keys.get(key)
+        if state is None:
+            now = self._clock()
+            for idle in [name for name, known in self._keys.items()
+                         if not known.waiters and known.ready_at() <= now]:
+                del self._keys[idle]
+            state = self._keys[key] = _KeyState()
+        return state
+
+    def _leave(self, state: _KeyState, waiter: asyncio.Future[None]) -> None:
+        """Take `waiter` out of its line. If it was the head, promote the next run.
+
+        A next run whose future is already done was cancelled. That run leaves
+        through this method as well, from the head, and promotes the run after it.
+        """
+        was_head = state.waiters[0] is waiter
+        state.waiters.remove(waiter)
+        if was_head and state.waiters and not state.waiters[0].done():
+            state.waiters[0].set_result(None)

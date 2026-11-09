@@ -170,7 +170,7 @@ sequenceDiagram
     end
 ```
 
-Flow decisions: the deadline is `arrival + max_wait`; a `Retry-After` value is clamped to `max_wait`, and if the resulting `hold_until` lies beyond the deadline the gate stops waiting and returns the last 429 (materialized in the proxy, unread in the plugin) with `Retry-After` set to the remaining hold. Client disconnect or `AbortSignal` cancels the wait, removes the waiter, and never sends. Pacing advances `next_slot` only for paced keys; the `models` key is never paced. Attribution and econ run inside the first attempt because they need that attempt's credential snapshot; later attempts re-send the cached bytes with a fresh snapshot's headers.
+Flow decisions: the deadline is `arrival + max_wait`; a `Retry-After` value is clamped to `max_wait` and floored at the key's pacing interval (1 s when unpaced) so a zero or past `Retry-After` never produces back-to-back re-sends; if the resulting `hold_until` lies beyond the deadline the gate stops waiting and returns the last 429 (materialized in the proxy, unread in the plugin) with `Retry-After` set to the remaining hold. Client disconnect or `AbortSignal` cancels the wait, removes the waiter, and never sends. Pacing advances `next_slot` only for paced keys; the `models` key is never paced. Attribution and econ run inside the first attempt because they need that attempt's credential snapshot; later attempts re-send the cached bytes with a fresh snapshot's headers.
 
 ### Gate key state
 
