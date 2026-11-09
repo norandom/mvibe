@@ -2,9 +2,12 @@
 operator configuration parsed from MVIBE_RATE_LIMIT_* (task 1.1, Requirements 3.1,
 3.2, 3.3, 3.4, 3.6), 429 classification with Retry-After parsing (task 1.2,
 Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6) and the UpstreamGate scheduling core
-(task 1.3, Requirements 2.2, 3.1, 3.2, 3.3, 3.5, 6.3)."""
+(task 1.3, Requirements 2.2, 3.1, 3.2, 3.3, 3.5, 6.3) and its rate-limit holds
+(task 1.4, Requirements 1.3, 2.1, 2.2, 2.5, 5.1, 5.3, 6.3)."""
 import asyncio
 import dataclasses
+import email.utils
+import gzip
 import json
 import time
 
@@ -458,6 +461,26 @@ class Upstream:
             return response if response is not None else _response()
         return send
 
+    def script(self, label, *steps, latency=0.0, release=None):
+        """An attempt that answers call n with `steps[n]`; the last step repeats.
+
+        A step is a zero-argument response factory, called once per use, or an
+        exception to raise. `latency` advances the fake clock inside every call,
+        like an upstream round trip; `release` holds every call until it is set.
+        """
+        remaining = list(steps)
+
+        async def send():
+            self.sent.append((label, self.clock.time()))
+            if release is not None:
+                await release.wait()
+            self.clock.advance(latency)
+            step = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+            if isinstance(step, BaseException):
+                raise step
+            return step()
+        return send
+
     def labels(self):
         return [label for label, _ in self.sent]
 
@@ -714,9 +737,10 @@ async def test_next_slot_past_the_deadline_yields_a_synthesized_429(clock):
     gate = _gate(clock, RateLimitConfig(default_rps=0.5, max_wait_s=1.0), sleep=sleeps)
     upstream = Upstream(clock)
     t0 = clock.time()
-    await gate.run(LARGE, upstream.attempt('a1'), arrived=t0, record=GateRecord())
+    await _bounded(gate.run(LARGE, upstream.attempt('a1'), arrived=t0, record=GateRecord()))
     record = GateRecord()
-    response = await gate.run(LARGE, upstream.attempt('a2'), arrived=t0, record=record)
+    response = await _bounded(gate.run(LARGE, upstream.attempt('a2'), arrived=t0,
+                                       record=record))
     _assert_synthesized_429(response, 2)
     assert record.exhausted is True
     assert upstream.labels() == ['a1']
@@ -725,7 +749,8 @@ async def test_next_slot_past_the_deadline_yields_a_synthesized_429(clock):
     assert gate.held == 0
     # The refused run did not take the slot: the next run gets it at t0 + 2.
     clock.advance(2)
-    await gate.run(LARGE, upstream.attempt('a3'), arrived=clock.time(), record=GateRecord())
+    await _bounded(gate.run(LARGE, upstream.attempt('a3'), arrived=clock.time(),
+                            record=GateRecord()))
     assert upstream.sent == [('a1', t0), ('a3', t0 + 2)]
 
 
@@ -735,20 +760,19 @@ async def test_deadline_counts_from_arrival(clock, arrived_offset, sent):
     gate = _gate(clock, RateLimitConfig(default_rps=0.5, max_wait_s=3.0))
     upstream = Upstream(clock)
     t0 = clock.time()
-    await gate.run(LARGE, upstream.attempt('a1'), arrived=t0, record=GateRecord())
+    await _bounded(gate.run(LARGE, upstream.attempt('a1'), arrived=t0, record=GateRecord()))
     record = GateRecord()
-    response = await gate.run(LARGE, upstream.attempt('a2'), arrived=t0 + arrived_offset,
-                              record=record)
+    response = await _bounded(gate.run(LARGE, upstream.attempt('a2'),
+                                       arrived=t0 + arrived_offset, record=record))
     assert (response.status_code == 200) is sent
     assert record.exhausted is not sent
     assert upstream.labels() == (['a1', 'a2'] if sent else ['a1'])
 
 
 @pytest.mark.anyio
-async def test_a_slot_that_has_already_come_is_used_even_past_the_deadline(clock):
-    # The deadline bounds the pacing wait. A run that reaches the head late,
-    # behind a long attempt, while its slot has already come needs no wait,
-    # so it is sent rather than refused.
+async def test_a_run_reaching_the_head_after_its_deadline_is_refused(clock):
+    # Strict Requirement 2.5: a run that reaches the head late, behind a long
+    # attempt, is refused even though its slot has already come.
     gate = _gate(clock, RateLimitConfig(default_rps=0.5, max_wait_s=1.0))
     upstream = Upstream(clock)
     release = asyncio.Event()
@@ -759,11 +783,14 @@ async def test_a_slot_that_has_already_come_is_used_even_past_the_deadline(clock
     await _settle()
     clock.advance(3)                          # a1 is in flight for 3 s
     release.set()
-    assert (await _bounded(a2)).status_code == 200
+    response = await _bounded(a2)
     await _bounded(a1)
-    assert upstream.sent == [('a1', t0), ('a2', t0 + 3)]
-    assert record.exhausted is False
+    # The slot (t0 + 2) has passed; the hint is still the 2 s pacing interval.
+    _assert_synthesized_429(response, 2)
+    assert upstream.sent == [('a1', t0)]
+    assert record.exhausted is True
     assert record.queued_ms == 3000.0
+    assert gate.held == 0
 
 
 @pytest.mark.anyio
@@ -907,10 +934,12 @@ async def test_a_new_key_does_not_reset_another_keys_pending_slot(clock):
     gate = _gate(clock)
     upstream = Upstream(clock)
     t0 = clock.time()
-    await gate.run('a', upstream.attempt('a1'), arrived=t0, record=GateRecord())
+    await _bounded(gate.run('a', upstream.attempt('a1'), arrived=t0, record=GateRecord()))
     clock.advance(0.5)
-    await gate.run('b', upstream.attempt('b1'), arrived=clock.time(), record=GateRecord())
-    await gate.run('a', upstream.attempt('a2'), arrived=clock.time(), record=GateRecord())
+    await _bounded(gate.run('b', upstream.attempt('b1'), arrived=clock.time(),
+                            record=GateRecord()))
+    await _bounded(gate.run('a', upstream.attempt('a2'), arrived=clock.time(),
+                            record=GateRecord()))
     assert upstream.sent == [('a1', t0), ('b1', t0 + 0.5), ('a2', t0 + 2.0)]
 
 
@@ -943,10 +972,520 @@ async def test_gate_runs_on_the_real_clock_by_default():
         return response
 
     record = GateRecord()
-    assert await gate.run(LARGE, attempt, arrived=time.monotonic(), record=record) is response
-    assert await gate.run(LARGE, attempt, arrived=time.monotonic(), record=record) is response
+    for _ in range(2):
+        assert await _bounded(gate.run(LARGE, attempt, arrived=time.monotonic(),
+                                       record=record)) is response
     assert gate.held == 0
     assert record.exhausted is False
+
+
+# --- rate-limit holds (task 1.4; Requirements 1.3, 2.1, 2.2, 2.5, 5.1, 5.3, 6.3) ---
+
+RATE_LIMITED_BODY = b'{"object":"error","message":"Rate limit exceeded","type":"rate_limited"}'
+RATE_LIMIT_HEADERS = {'x-ratelimit-limit-req-minute': '5',
+                      'x-ratelimit-remaining-req-minute': '0'}
+BODY_LIMIT = 64 * 1024
+
+
+class Body(httpx2.AsyncByteStream):
+    """A streamed upstream body of `chunks` copies of `data`; records reads and close."""
+
+    def __init__(self, data=RATE_LIMITED_BODY, *, chunks=1):
+        self.data = data
+        self.chunks = chunks
+        self.read = 0
+        self.closed = False
+
+    async def __aiter__(self):
+        for _ in range(self.chunks):
+            self.read += 1
+            yield self.data
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _rejection(retry_after=None, *, headers=None, stream=None):
+    """A Mistral-shaped upstream 429, streamed from `stream` when one is given."""
+    values = {'content-type': 'application/json'}
+    if retry_after is not None:
+        values['retry-after'] = retry_after
+    values.update(headers or {})
+    if stream is not None:
+        return httpx2.Response(429, headers=values, stream=stream)
+    return httpx2.Response(429, headers=values, content=RATE_LIMITED_BODY)
+
+
+def _http_date(posix):
+    return email.utils.formatdate(posix, usegmt=True)
+
+
+class Warnings:
+    """Records every warn(key, wait) call the gate makes."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, key, wait):
+        self.calls.append((key, wait))
+
+    def waits(self):
+        return [wait for _, wait in self.calls]
+
+
+class HeldSleep:
+    """A sleep that records its delay and returns only when the test wakes it.
+
+    The clock stands still while a run sleeps, so the test can watch other runs
+    during a hold. `wake(seconds)` advances the clock and ends every pending sleep.
+    """
+
+    def __init__(self, clock):
+        self.clock = clock
+        self.calls = []
+        self._pending = []
+
+    async def __call__(self, seconds):
+        self.calls.append(seconds)
+        woken = asyncio.Event()
+        self._pending.append(woken)
+        await woken.wait()
+
+    def wake(self, seconds):
+        self.clock.advance(seconds)
+        for woken in self._pending:
+            woken.set()
+        self._pending.clear()
+
+
+def _holding_gate(clock, config=UNPACED, *, sleep=None, random=lambda: 0.5, warn=None):
+    """A gate for rejection tests. A draw of 0.5 makes every backoff exactly its base."""
+    return UpstreamGate(config, clock=clock.time, sleep=sleep or clock.sleep, random=random,
+                        warn=warn, wall_clock=clock.time)
+
+
+@pytest.mark.anyio
+async def test_observable_429_then_200_completes_with_the_200_after_two_attempts(clock):
+    warnings = Warnings()
+    gate = _holding_gate(clock, PACED, warn=warnings)
+    upstream = Upstream(clock)
+    rejected = Body()
+    accepted = _response()
+    record = GateRecord()
+    t0 = clock.time()
+    response = await _bounded(gate.run(LARGE, upstream.script(
+        'a', lambda: _rejection(headers=RATE_LIMIT_HEADERS, stream=rejected),
+        lambda: accepted), arrived=t0, record=record))
+    assert response is accepted
+    # Without Retry-After the first backoff is the key's 2 s pacing interval.
+    assert upstream.sent == [('a', t0), ('a', t0 + 2)]
+    assert rejected.closed
+    assert record.rejections == 1
+    assert record.queued_ms == 2000.0
+    assert record.headers == RATE_LIMIT_HEADERS
+    assert record.exhausted is False
+    assert warnings.calls == [(LARGE, 2.0)]
+    assert gate.held == 0
+
+
+@pytest.mark.anyio
+async def test_the_rejected_run_is_sent_again_first_and_later_runs_wait_for_the_hold(clock):
+    warnings = Warnings()
+    gate = _holding_gate(clock, PACED, random=_never, warn=warnings)
+    upstream = Upstream(clock)
+    release = asyncio.Event()
+    t0 = clock.time()
+    records = [GateRecord() for _ in range(3)]
+    tasks = [
+        _start(gate, clock, LARGE, upstream.script('a', lambda: _rejection('5'), _response,
+                                                   release=release), records[0]),
+        _start(gate, clock, LARGE, upstream.attempt('b'), records[1]),
+        _start(gate, clock, LARGE, upstream.attempt('c'), records[2]),
+    ]
+    await _settle()                             # all three are in the gate at t0
+    release.set()
+    responses = await _bounded(asyncio.gather(*tasks))
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    # a holds the key for 5 s and is sent again ahead of b and c, which then
+    # follow at the 2 s pace.
+    assert upstream.sent == [('a', t0), ('a', t0 + 5), ('b', t0 + 7), ('c', t0 + 9)]
+    assert warnings.calls == [(LARGE, 5.0)]
+    assert [record.rejections for record in records] == [1, 0, 0]
+    assert [record.queued_ms for record in records] == [5000.0, 7000.0, 9000.0]
+    assert gate.held == 0
+
+
+@pytest.mark.anyio
+async def test_a_run_arriving_after_the_rejection_waits_for_the_shared_hold(clock):
+    # The key is unpaced, so only its hold can delay a2. Creating key 'b' in
+    # between must not drop the held key either.
+    warnings = Warnings()
+    gate = _holding_gate(clock, RateLimitConfig(max_wait_s=5.0), random=_never, warn=warnings)
+    upstream = Upstream(clock)
+    t0 = clock.time()
+    first = GateRecord()
+    # a1 arrived 1 s before it reached the gate, so its deadline is t0 + 4; the
+    # 7 s Retry-After, clamped to max_wait 5 s, ends past it.
+    response = await _bounded(gate.run('a', upstream.script('a1', lambda: _rejection('7')),
+                                       arrived=t0 - 1, record=first))
+    assert response.status_code == 429
+    assert first.exhausted is True
+    assert warnings.calls == [('a', 5.0)]
+    await _bounded(gate.run('b', upstream.attempt('b1'), arrived=t0, record=GateRecord()))
+    record = GateRecord()
+    response = await _bounded(gate.run('a', upstream.attempt('a2'), arrived=t0,
+                                       record=record))
+    assert response.status_code == 200
+    assert upstream.sent == [('a1', t0), ('b1', t0), ('a2', t0 + 5)]
+    assert record.queued_ms == 5000.0
+    assert record.rejections == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('config', [PACED, UNPACED], ids=['paced', 'unpaced'])
+async def test_retry_after_seconds_sets_the_hold(clock, config):
+    warnings = Warnings()
+    gate = _holding_gate(clock, config, random=_never, warn=warnings)
+    upstream = Upstream(clock)
+    record = GateRecord()
+    t0 = clock.time()
+    response = await _bounded(gate.run(LARGE, upstream.script(
+        'a', lambda: _rejection('7'), _response), arrived=t0, record=record))
+    assert response.status_code == 200
+    assert upstream.times() == [t0, t0 + 7]
+    assert warnings.calls == [(LARGE, 7.0)]
+    assert record.queued_ms == 7000.0
+
+
+@pytest.mark.anyio
+async def test_retry_after_http_date_sets_the_hold_from_the_wall_clock(clock):
+    warnings = Warnings()
+    gate = _holding_gate(clock, random=_never, warn=warnings)
+    upstream = Upstream(clock)
+    t0 = clock.time()
+    await _bounded(gate.run(LARGE, upstream.script(
+        'a', lambda: _rejection(_http_date(t0 + 10)), _response), arrived=t0,
+        record=GateRecord()))
+    assert upstream.times() == [t0, t0 + 10]
+    assert warnings.calls == [(LARGE, 10.0)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('retry_after', ['0', 'past'])
+@pytest.mark.parametrize('config,floor', [(PACED, 2.0), (UNPACED, 1.0)],
+                         ids=['paced', 'unpaced'])
+async def test_a_zero_or_past_retry_after_still_holds_for_the_pacing_interval(
+        clock, config, floor, retry_after):
+    warnings = Warnings()
+    gate = _holding_gate(clock, config, random=_never, warn=warnings)
+    upstream = Upstream(clock)
+    t0 = clock.time()
+    value = _http_date(t0 - 60) if retry_after == 'past' else retry_after
+    await _bounded(gate.run(LARGE, upstream.script(
+        'a', lambda: _rejection(value), _response), arrived=t0, record=GateRecord()))
+    # Never back to back: the hold is the pacing interval, or 1 s when unpaced.
+    assert upstream.times() == [t0, t0 + floor]
+    assert warnings.calls == [(LARGE, floor)]
+
+
+@pytest.mark.anyio
+async def test_without_retry_after_each_rejection_doubles_the_backoff(clock):
+    warnings = Warnings()
+    gate = _holding_gate(clock, warn=warnings)
+    upstream = Upstream(clock)
+    record = GateRecord()
+    t0 = clock.time()
+    response = await _bounded(gate.run(LARGE, upstream.script(
+        'a', _rejection, _rejection, _rejection, _response), arrived=t0, record=record))
+    assert response.status_code == 200
+    # Unpaced, the backoff starts at 1 s and doubles; one warning per hold.
+    assert warnings.calls == [(LARGE, 1.0), (LARGE, 2.0), (LARGE, 4.0)]
+    assert upstream.times() == [t0, t0 + 1, t0 + 3, t0 + 7]
+    assert record.rejections == 3
+    assert record.queued_ms == 7000.0
+
+
+@pytest.mark.anyio
+async def test_paced_backoff_starts_at_the_pacing_interval_and_stops_at_the_cap(clock):
+    warnings = Warnings()
+    gate = _holding_gate(clock, PACED, warn=warnings)          # backoff cap 30 s
+    upstream = Upstream(clock)
+    t0 = clock.time()
+    await _bounded(gate.run(LARGE, upstream.script('a', *[_rejection] * 6, _response),
+                            arrived=t0, record=GateRecord()))
+    assert warnings.waits() == [2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+    assert upstream.times() == [t0, t0 + 2, t0 + 6, t0 + 14, t0 + 30, t0 + 60, t0 + 90]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('draw,waits', [
+    (0.0, [1.0, 1.0, 1.5, 1.5, 1.5]),
+    (0.999999, [1.499999, 2.999998, 3.0, 3.0, 3.0]),
+], ids=['lowest-draw', 'highest-draw'])
+async def test_jittered_backoff_is_positive_and_never_beyond_the_cap(clock, draw, waits):
+    warnings = Warnings()
+    gate = _holding_gate(clock, RateLimitConfig(backoff_cap_s=3.0), random=lambda: draw,
+                         warn=warnings)
+    upstream = Upstream(clock)
+    response = await _bounded(gate.run(LARGE, upstream.script(
+        'a', *[_rejection] * 5, _response), arrived=clock.time(), record=GateRecord()))
+    assert response.status_code == 200
+    assert warnings.waits() == pytest.approx(waits)
+    assert all(0 < wait <= 3.0 for wait in warnings.waits())
+
+
+@pytest.mark.anyio
+async def test_the_backoff_honours_a_cap_below_one_second(clock):
+    warnings = Warnings()
+    gate = _holding_gate(clock, RateLimitConfig(backoff_cap_s=0.25), warn=warnings)
+    upstream = Upstream(clock)
+    t0 = clock.time()
+    await _bounded(gate.run(LARGE, upstream.script('a', _rejection, _rejection, _response),
+                            arrived=t0, record=GateRecord()))
+    assert warnings.waits() == [0.25, 0.25]
+    assert upstream.times() == [t0, t0 + 0.25, t0 + 0.5]
+
+
+@pytest.mark.anyio
+async def test_a_long_run_of_rejections_keeps_the_backoff_finite(clock):
+    # 1100 one-second holds fit in max_wait; the doubling must not overflow.
+    warnings = Warnings()
+    gate = _holding_gate(clock, RateLimitConfig(max_wait_s=2000.0), random=_never,
+                         warn=warnings)
+    upstream = Upstream(clock)
+    record = GateRecord()
+    response = await _bounded(gate.run(LARGE, upstream.script(
+        'a', *[lambda: _rejection('1')] * 1100, _response), arrived=clock.time(),
+        record=record))
+    assert response.status_code == 200
+    assert record.rejections == 1100
+    assert set(warnings.waits()) == {1.0}
+
+
+@pytest.mark.anyio
+async def test_exhaustion_returns_the_last_upstream_429_with_its_body_and_headers(clock):
+    warnings = Warnings()
+    gate = _holding_gate(clock, RateLimitConfig(max_wait_s=1.0), random=_never, warn=warnings)
+    upstream = Upstream(clock)
+    body = Body()
+    record = GateRecord()
+    t0 = clock.time()
+    response = await _bounded(gate.run(LARGE, upstream.script(
+        'a', lambda: _rejection('30', headers=RATE_LIMIT_HEADERS, stream=body),
+        latency=0.25), arrived=t0, record=record))
+    # The 30 s Retry-After, clamped to max_wait 1 s, would end at t0 + 1.25, past
+    # the deadline t0 + 1: the gate gives up without a further attempt.
+    assert upstream.sent == [('a', t0)]
+    assert response.status_code == 429
+    assert response.content == RATE_LIMITED_BODY
+    assert response.headers['content-type'] == 'application/json'
+    assert response.headers['retry-after'] == '30'
+    assert {name: response.headers[name] for name in RATE_LIMIT_HEADERS} == RATE_LIMIT_HEADERS
+    assert body.closed
+    assert record.exhausted is True
+    assert record.rejections == 1
+    assert record.headers == RATE_LIMIT_HEADERS
+    assert warnings.calls == [(LARGE, 1.0)]
+    assert gate.held == 0
+    # The body is in memory: streaming it again and closing it are safe.
+    assert b''.join([chunk async for chunk in response.aiter_bytes()]) == RATE_LIMITED_BODY
+    await response.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('retry_after', [None, 'soon', '0', '0.5'])
+async def test_exhaustion_sets_retry_after_when_the_upstream_gave_no_usable_one(
+        clock, retry_after):
+    gate = _holding_gate(clock, RateLimitConfig(default_rps=0.5, max_wait_s=1.5),
+                         warn=Warnings())
+    upstream = Upstream(clock)
+    record = GateRecord()
+    t0 = clock.time()
+    response = await _bounded(gate.run(LARGE, upstream.script(
+        'a', lambda: _rejection(retry_after, headers=RATE_LIMIT_HEADERS), latency=0.25),
+        arrived=t0, record=record))
+    # The hold (the 2 s interval, clamped to 1.5 s) would end at t0 + 1.75, past
+    # t0 + 1.5. The hint is max(1.75 s to the next slot, the 2 s interval).
+    assert upstream.sent == [('a', t0)]
+    assert response.status_code == 429
+    assert response.headers['retry-after'] == '2'
+    assert response.content == RATE_LIMITED_BODY
+    assert {name: response.headers[name] for name in RATE_LIMIT_HEADERS} == RATE_LIMIT_HEADERS
+    assert record.exhausted is True
+
+
+@pytest.mark.anyio
+async def test_exhaustion_after_two_rejections_hints_the_remaining_hold(clock):
+    warnings = Warnings()
+    gate = _holding_gate(clock, RateLimitConfig(max_wait_s=3.0), warn=warnings)
+    upstream = Upstream(clock)
+    record = GateRecord()
+    t0 = clock.time()
+    response = await _bounded(gate.run(LARGE, upstream.script('a', _rejection, latency=0.25),
+                                       arrived=t0, record=record))
+    # A 1 s hold to t0 + 1.25 and a re-send; the 2 s hold after it would end at
+    # t0 + 3.5, past the deadline t0 + 3.
+    assert upstream.times() == [t0, t0 + 1.25]
+    assert warnings.waits() == [1.0, 2.0]
+    assert response.status_code == 429
+    assert response.headers['retry-after'] == '2'
+    assert response.content == RATE_LIMITED_BODY
+    assert record.rejections == 2
+    assert record.queued_ms == 1000.0
+    assert record.exhausted is True
+
+
+@pytest.mark.anyio
+async def test_the_materialized_429_keeps_the_decoded_body_and_only_rate_limit_headers(clock):
+    gate = _holding_gate(clock, RateLimitConfig(max_wait_s=1.0), random=_never,
+                         warn=Warnings())
+    upstream = Upstream(clock)
+
+    def rejection():
+        return httpx2.Response(429, content=gzip.compress(RATE_LIMITED_BODY), headers={
+            'content-type': 'application/json', 'content-encoding': 'gzip',
+            'retry-after': '30', 'set-cookie': 'session=sentinel-secret',
+            'x-request-id': 'req-1', **RATE_LIMIT_HEADERS})
+
+    response = await _bounded(gate.run(LARGE, upstream.script('a', rejection, latency=0.25),
+                                       arrived=clock.time(), record=GateRecord()))
+    assert response.content == RATE_LIMITED_BODY
+    assert set(response.headers) == {'content-type', 'content-length', 'retry-after',
+                                     *RATE_LIMIT_HEADERS}
+    assert response.headers['content-length'] == str(len(RATE_LIMITED_BODY))
+
+
+@pytest.mark.anyio
+async def test_a_429_body_is_read_up_to_64_kib_and_its_stream_closed(clock):
+    body = Body(b'x' * 10_000, chunks=100)      # 1 MB on offer
+    gate = _holding_gate(clock, RateLimitConfig(max_wait_s=1.0), random=_never,
+                         warn=Warnings())
+    upstream = Upstream(clock)
+    response = await _bounded(gate.run(LARGE, upstream.script(
+        'a', lambda: _rejection('30', stream=body), latency=0.25), arrived=clock.time(),
+        record=GateRecord()))
+    assert response.status_code == 429
+    assert response.content == b'x' * BODY_LIMIT
+    assert body.read == 7                       # stopped once 64 KiB were in
+    assert body.closed
+
+
+@pytest.mark.anyio
+async def test_a_run_whose_deadline_passed_behind_a_hold_is_refused_at_the_head(clock):
+    gate = _holding_gate(clock, RateLimitConfig(max_wait_s=8.0), random=_never,
+                         warn=Warnings())
+    upstream = Upstream(clock)
+    t0 = clock.time()
+
+    def slow_acceptance():
+        clock.advance(2)                        # the re-send takes 2 s
+        return _response()
+
+    release = asyncio.Event()
+    a = _start(gate, clock, LARGE, upstream.script('a', lambda: _rejection('5'),
+                                                    slow_acceptance, release=release))
+    late = GateRecord()
+    b = _start(gate, clock, LARGE, upstream.attempt('b'), late, arrived=t0 - 2)
+    c = _start(gate, clock, LARGE, upstream.attempt('c'))
+    await _settle()                             # all three are in the gate at t0
+    release.set()
+    first, refused, last = await _bounded(asyncio.gather(a, b, c))
+    # b reaches the head at t0 + 7, past its deadline t0 + 6: it is refused and
+    # never sent. c, within its deadline t0 + 8, is sent at once after it.
+    assert (first.status_code, last.status_code) == (200, 200)
+    _assert_synthesized_429(refused, 1)
+    assert late.exhausted is True
+    assert late.queued_ms == 7000.0
+    assert upstream.sent == [('a', t0), ('a', t0 + 5), ('c', t0 + 7)]
+    assert gate.held == 0
+
+
+@pytest.mark.anyio
+async def test_cancelling_a_run_during_its_hold_keeps_the_hold_for_the_next(clock):
+    sleep = HeldSleep(clock)
+    gate = _holding_gate(clock, sleep=sleep, random=_never, warn=Warnings())
+    upstream = Upstream(clock)
+    t0 = clock.time()
+    a = _start(gate, clock, LARGE, upstream.script('a', lambda: _rejection('5'), _response))
+    b = _start(gate, clock, LARGE, upstream.attempt('b'))
+    await _settle()
+    assert sleep.calls == [5.0]                 # a sleeps through its hold
+    a.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await _bounded(a)
+    await _settle()
+    # b now leads the line, but the key is still held: b sleeps the same 5 s.
+    assert sleep.calls == [5.0, 5.0]
+    assert upstream.sent == [('a', t0)]
+    sleep.wake(5)
+    assert (await _bounded(b)).status_code == 200
+    assert upstream.sent == [('a', t0), ('b', t0 + 5)]
+    assert gate.held == 0
+
+
+@pytest.mark.anyio
+async def test_a_hold_on_one_key_does_not_hold_another(clock):
+    sleep = HeldSleep(clock)
+    gate = _holding_gate(clock, sleep=sleep, random=_never, warn=Warnings())
+    upstream = Upstream(clock)
+    t0 = clock.time()
+    a = _start(gate, clock, 'a', upstream.script('a', lambda: _rejection('5'), _response))
+    await _settle()
+    assert sleep.calls == [5.0]
+    record = GateRecord()
+    response = await _bounded(gate.run('b', upstream.attempt('b'), arrived=t0, record=record))
+    assert response.status_code == 200
+    assert record.queued_ms == 0.0
+    sleep.wake(5)
+    assert (await _bounded(a)).status_code == 200
+    assert upstream.sent == [('a', t0), ('b', t0), ('a', t0 + 5)]
+    assert gate.held == 0
+
+
+@pytest.mark.anyio
+async def test_an_error_from_the_re_send_propagates_and_releases_the_key(clock):
+    gate = _holding_gate(clock, random=_never, warn=Warnings())
+    upstream = Upstream(clock)
+    error = AuthError(AuthFailure('invalid'))
+    t0 = clock.time()
+    a = _start(gate, clock, LARGE, upstream.script('a', lambda: _rejection('3'), error))
+    b = _start(gate, clock, LARGE, upstream.attempt('b'))
+    with pytest.raises(AuthError) as excinfo:
+        await _bounded(a)
+    assert excinfo.value is error
+    assert (await _bounded(b)).status_code == 200
+    assert upstream.sent == [('a', t0), ('a', t0 + 3), ('b', t0 + 3)]
+    assert gate.held == 0
+
+
+@pytest.mark.anyio
+async def test_a_queue_full_refusal_on_a_paced_key_hints_at_least_its_interval(clock):
+    gate = _gate(clock, RateLimitConfig(default_rps=0.5, max_queue=1))
+    upstream = Upstream(clock)
+    release = asyncio.Event()
+    a1 = _start(gate, clock, 'a', upstream.attempt('a1', release=release))
+    await _settle()
+    record = GateRecord()
+    # Key 'b' has no state yet, but its pacing interval is still 2 s.
+    response = await _bounded(gate.run('b', upstream.attempt('b1'), arrived=clock.time(),
+                                       record=record))
+    _assert_synthesized_429(response, 2)
+    assert record.exhausted is True
+    release.set()
+    await _bounded(a1)
+    assert upstream.labels() == ['a1']
+    assert gate.held == 0
+
+
+@pytest.mark.anyio
+async def test_a_gate_without_a_warn_callback_still_holds(clock):
+    gate = UpstreamGate(UNPACED, clock=clock.time, sleep=clock.sleep, random=lambda: 0.5)
+    upstream = Upstream(clock)
+    t0 = clock.time()
+    response = await _bounded(gate.run(LARGE, upstream.script('a', _rejection, _response),
+                                       arrived=t0, record=GateRecord()))
+    assert response.status_code == 200
+    assert upstream.times() == [t0, t0 + 1]
 
 
 def test_gate_record_defaults():

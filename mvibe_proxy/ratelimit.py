@@ -8,7 +8,10 @@ recognizes the rejection by its status alone and turns it into a RateLimitSignal
 the wait from Retry-After (parse_retry_after) or a capped fallback, plus a copy of
 the x-ratelimit-* headers that is safe to record. UpstreamGate schedules the
 upstream attempts: one FIFO line per key with a single attempt in flight,
-optional pacing per key, and a bound on the runs held across all keys.
+optional pacing per key, and a bound on the runs held across all keys. A 429
+holds its key for the Retry-After or a jittered backoff, and the rejected
+request is sent again first. When the hold would outlast the request's maximum
+wait, the gate answers with that last 429 instead.
 
 Pacing is off by default. While MVIBE_RATE_LIMIT_RPS and MVIBE_RATE_LIMIT_MODEL_RPS
 are unset, no key has a rate and the proxy only reacts to rejections. No
@@ -21,6 +24,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
+import contextlib
 from dataclasses import dataclass, field
 from datetime import UTC
 import email.utils
@@ -268,10 +272,16 @@ def classify(status: int, headers: Mapping[str, str], *, fallback_wait_s: float,
                            headers=MappingProxyType(snapshot))
 
 
-# --- scheduling (Requirements 2.2, 3.1, 3.2, 3.3, 3.5, 6.3) -----------------
+# --- scheduling (Requirements 1.3, 2.1, 2.2, 2.5, 3.1, 3.2, 3.3, 3.5, 5.1, 5.3, 6.3) ---
 
 _JSON = 'application/json'
+_CONTENT_TYPE = 'content-type'
 _EXHAUSTED_MESSAGE = 'Upstream rate limit persisted; retry after {} seconds'
+# A rejected attempt's body is kept for the client only up to this size (Req 6.3).
+_REJECTION_BODY_LIMIT = 64 * 1024
+# The backoff stops doubling here. Any cap is reached long before, and without a
+# bound 2.0 ** n raises OverflowError after about a thousand rejections.
+_MAX_DOUBLINGS = 64
 
 
 @dataclass
@@ -297,7 +307,8 @@ class _KeyState:
 
     `waiters[0]` belongs to the run that owns the key. That run waits for the
     slot and then has the key's only attempt in flight. Every later run waits on
-    its own future until the run ahead of it leaves and promotes it.
+    its own future until the run ahead of it leaves and promotes it. A 429 sets
+    `hold_until`, which every run on the key honours, whoever set it.
     """
 
     next_slot: float = 0.0
@@ -309,23 +320,70 @@ class _KeyState:
         return max(self.next_slot, self.hold_until)
 
 
-def _exhausted(record: GateRecord, wait_s: float) -> httpx2.Response:
-    """The 429 the gate answers itself, with a Retry-After of at least 1 second.
+@dataclass(frozen=True, slots=True)
+class _Rejection:
+    """An upstream 429 read into memory, so its stream is closed while the run waits.
 
-    The body is fixed text plus the number of seconds; nothing from the request,
-    the environment or an upstream response goes into it.
+    `headers` keeps only what may reach the client again: `content-type`, every
+    `x-ratelimit-*` header as received, and `retry-after` when the upstream sent
+    a usable one of at least one second.
+    """
+
+    body: bytes
+    headers: Mapping[str, str]
+
+
+async def _read_rejection(response: httpx2.Response,
+                          signal: RateLimitSignal) -> _Rejection:
+    """Read at most 64 KiB of the 429's decoded body; the stream is closed in any case.
+
+    The body is decoded, so `content-encoding` and `content-length` are not kept.
+    """
+    body = bytearray()
+    try:
+        async with contextlib.aclosing(response.aiter_bytes()) as chunks:
+            async for chunk in chunks:
+                body += chunk[:_REJECTION_BODY_LIMIT - len(body)]
+                if len(body) >= _REJECTION_BODY_LIMIT:
+                    break
+    finally:
+        await response.aclose()
+    headers: dict[str, str] = {}
+    for name, value in response.headers.items():
+        lowered = name.lower()
+        if lowered == _CONTENT_TYPE or lowered.startswith(_SNAPSHOT_PREFIX):
+            headers[lowered] = value
+    if signal.retry_after_present and signal.wait_s >= 1:
+        headers[_RETRY_AFTER] = response.headers[_RETRY_AFTER]
+    return _Rejection(bytes(body), MappingProxyType(headers))
+
+
+def _exhausted(record: GateRecord, wait_s: float,
+               rejection: _Rejection | None = None) -> httpx2.Response:
+    """The 429 the gate answers when it gives up, with a Retry-After of at least 1 second.
+
+    After an upstream 429 the answer is that rejection as read: its body and kept
+    headers, plus a `retry-after` of `wait_s` rounded up when the upstream sent
+    none that is usable. Without a rejection the body is fixed text plus the
+    number of seconds; nothing from the request, the environment or an upstream
+    response goes into it.
     """
     record.exhausted = True
-    retry_after = max(1, math.ceil(wait_s))
+    retry_after = str(max(1, math.ceil(wait_s)))
+    if rejection is not None:
+        headers = dict(rejection.headers)
+        headers.setdefault(_RETRY_AFTER, retry_after)
+        return httpx2.Response(_RATE_LIMIT_STATUS, content=rejection.body, headers=headers)
     body = {'error': {'message': _EXHAUSTED_MESSAGE.format(retry_after),
                       'type': 'rate_limit_error', 'code': 'rate_limited'}}
     return httpx2.Response(
         _RATE_LIMIT_STATUS, content=json.dumps(body).encode(),
-        headers={'content-type': _JSON, _RETRY_AFTER: str(retry_after)})
+        headers={'content-type': _JSON, _RETRY_AFTER: retry_after})
 
 
 class UpstreamGate:
-    """Schedules upstream attempts per key: FIFO order, optional pacing, bounded depth.
+    """Schedules upstream attempts per key: FIFO order, optional pacing, rate-limit
+    holds, and a bounded wait and depth.
 
     A key (`models`, a model id, `default`, `embeddings`) is one line. Runs on a
     key are served in arrival order, and only the run at the head of the line
@@ -334,21 +392,34 @@ class UpstreamGate:
     `models` always among them, lets the head send as soon as the run ahead has
     finished. Keys never wait for one another.
 
+    An upstream 429 holds its key: no run on it is sent before the hold ends.
+    The hold lasts as long as `Retry-After` asks, but at least the pacing
+    interval (1 s when unpaced). Without a usable `Retry-After` it is a jittered
+    backoff that starts at that interval, doubles with each rejection of the run
+    and never exceeds `config.backoff_cap_s`. No hold is longer than
+    `config.max_wait_s`. `warn(key, wait)` is called as each hold starts. The
+    rejected run keeps the head of the line and is sent again when the hold ends.
+
     At most `config.max_queue` runs are inside the gate at once, waiting or in
-    flight, counted across all keys. A run beyond that bound, or a run whose next
-    slot lies past its deadline (`arrived + config.max_wait_s`), gets a
-    synthesized 429 at once and its attempt is never called.
+    flight, counted across all keys. A run beyond that bound, a run that reaches
+    the head after its deadline (`arrived + config.max_wait_s`), and a run whose
+    next slot or hold ends past that deadline get a 429 at once, without a
+    further attempt.
 
     `clock` and `sleep` share one time base in seconds (monotonic by default);
-    tests inject a fake clock. `random` and `warn` are kept for rate-limit holds.
+    tests inject a fake clock. `wall_clock` is the POSIX time (`time.time` by
+    default) and only turns an HTTP-date `Retry-After` into a delay. `random`
+    draws the backoff jitter from [0, 1).
     """
 
     def __init__(self, config: RateLimitConfig, *, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
                  random: Callable[[], float] = random.random,
-                 warn: Callable[[str, float], None] | None = None) -> None:
+                 warn: Callable[[str, float], None] | None = None,
+                 wall_clock: Callable[[], float] = time.time) -> None:
         self._config = config
         self._clock = clock
+        self._wall_clock = wall_clock
         self._sleep = sleep
         self._random = random
         self._warn = warn
@@ -362,24 +433,31 @@ class UpstreamGate:
 
     async def run(self, key: str, attempt: Callable[[], Awaitable[httpx2.Response]], *,
                   arrived: float, record: GateRecord) -> httpx2.Response:
-        """Call `attempt` when `key` comes to this run and return its response.
+        """Call `attempt` when `key` comes to this run and return the upstream answer.
 
-        `arrived` is the `clock` reading taken when the request arrived. The run
-        stops waiting at `arrived + config.max_wait_s`. The upstream response is
-        returned unchanged and unread, whatever its status. When the gate is full
-        or the key's next slot lies past the deadline, the gate returns a
-        synthesized 429 instead (JSON body, `retry-after` of at least 1), sets
-        `record.exhausted` and never calls `attempt`. Time spent waiting is added
-        to `record.queued_ms`.
+        `arrived` is the `clock` reading taken when the request arrived; the run
+        gives up at `arrived + config.max_wait_s`. A response other than a 429 is
+        returned unchanged and unread. A 429 is read (64 KiB at most) and closed,
+        counted in `record` with its `x-ratelimit-*` headers, and holds the key;
+        the run then waits at the head of its line and calls `attempt` again.
+        When the hold would end past the deadline, the run returns that last 429
+        instead: its body, `content-type` and `x-ratelimit-*` headers, with a
+        `retry-after` of at least 1. When the gate is full, the run reaches the
+        head too late, or the key's slot lies past the deadline before any
+        attempt, the gate returns a synthesized 429 (JSON body, `retry-after` of
+        at least 1) without calling `attempt`. Every such answer sets
+        `record.exhausted`. Time spent waiting, holds included, is added to
+        `record.queued_ms`.
 
         A run cancelled while it waits leaves the line without sending and
-        promotes the next run. An exception from `attempt` propagates unchanged
-        once the key is released.
+        promotes the next run; the key's hold stays. An exception from `attempt`
+        propagates unchanged once the key is released.
         """
         if self._held >= self._config.max_queue:
+            now = self._clock()
             state = self._keys.get(key)
-            wait_s = 0.0 if state is None else state.ready_at() - self._clock()
-            return _exhausted(record, wait_s)
+            ready_at = now if state is None else state.ready_at()
+            return _exhausted(record, max(ready_at - now, self._interval(key)))
         state = self._state(key)
         waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         state.waiters.append(waiter)
@@ -395,37 +473,87 @@ class UpstreamGate:
     async def _serve(self, key: str, state: _KeyState, waiter: asyncio.Future[None],
                      attempt: Callable[[], Awaitable[httpx2.Response]], *,
                      deadline: float, record: GateRecord) -> httpx2.Response:
-        """Wait for the head position and the slot, then send once."""
+        """Wait for the head position, then send until the upstream takes the request.
+
+        Each 429 holds the key and sends again from the head, until the run is
+        out of time.
+        """
         waited_from = self._clock()
         if state.waiters[0] is not waiter:
             await waiter
-        late_by = await self._wait_for_slot(state, deadline)
-        now = self._clock()
-        record.queued_ms += (now - waited_from) * 1000
-        if late_by is not None:
-            return _exhausted(record, late_by)
-        rate = self._config.rate_for(key)
-        if rate is not None:
-            state.next_slot = now + 1 / rate
-        # The head keeps the key while its attempt is in flight. The response
-        # goes back unread; a 429 is where the hold and re-send loop takes over.
-        return await attempt()
+        interval = self._interval(key)
+        shortest = interval if interval > 0 else 1.0
+        rejection: _Rejection | None = None
+        rejections = 0
+        while True:
+            on_time = await self._wait_for_slot(state, deadline)
+            now = self._clock()
+            record.queued_ms += (now - waited_from) * 1000
+            if not on_time:
+                return _exhausted(record, max(state.ready_at() - now, interval), rejection)
+            if interval > 0:
+                state.next_slot = now + interval
+            # The head keeps the key while its attempt is in flight.
+            response = await attempt()
+            signal = classify(
+                response.status_code, response.headers,
+                fallback_wait_s=shortest * 2.0 ** min(rejections, _MAX_DOUBLINGS),
+                cap_s=self._config.backoff_cap_s, now=self._wall_clock())
+            if signal is None:
+                return response
+            rejection = await _read_rejection(response, signal)
+            rejections += 1
+            record.rejections += 1
+            record.headers.update(signal.headers)
+            self._hold(key, state, signal, shortest)
+            waited_from = self._clock()
 
-    async def _wait_for_slot(self, state: _KeyState, deadline: float) -> float | None:
-        """Sleep until the key's slot has come and return None.
+    def _hold(self, key: str, state: _KeyState, signal: RateLimitSignal,
+              shortest: float) -> None:
+        """Hold `key` after a 429 and warn once as the hold starts.
 
-        If the slot lies past `deadline`, return at once with the seconds left
-        until the slot. Each sleep covers exactly the remaining delta, and the
-        slot is checked again after waking.
+        `Retry-After` sets the hold, floored at `shortest` (the pacing interval,
+        1 s when unpaced) so that a zero or past value never makes the re-send
+        follow at once. Without one, the backoff from `classify` (already capped)
+        is jittered between half and one and a half times itself, then kept
+        within `shortest` and the cap. No hold is longer than `max_wait_s`.
         """
+        if signal.retry_after_present:
+            wait = max(signal.wait_s, shortest)
+        else:
+            jittered = signal.wait_s * (0.5 + self._random())
+            wait = min(max(jittered, shortest), self._config.backoff_cap_s)
+        wait = min(wait, self._config.max_wait_s)
+        hold_until = self._clock() + wait
+        if hold_until > state.hold_until:
+            state.hold_until = hold_until
+            if self._warn is not None:
+                self._warn(key, wait)
+
+    async def _wait_for_slot(self, state: _KeyState, deadline: float) -> bool:
+        """Sleep until the key may send and return True, or return False to give up.
+
+        The run gives up at once, without sleeping, when it is already past its
+        deadline or when the key's next slot or hold ends past it. Each sleep
+        covers exactly the remaining delta, and the slot is checked again after
+        waking. Only the slot is held against the deadline after a sleep, so a
+        late wake-up from a sleep that ended within it still sends.
+        """
+        if self._clock() > deadline:
+            return False
         while True:
             now = self._clock()
             ready_at = state.ready_at()
             if now >= ready_at:
-                return None
+                return True
             if ready_at > deadline:
-                return ready_at - now
+                return False
             await self._sleep(ready_at - now)
+
+    def _interval(self, key: str) -> float:
+        """The pacing interval of `key` in seconds, or 0.0 when the key is not paced."""
+        rate = self._config.rate_for(key)
+        return 0.0 if rate is None else 1 / rate
 
     def _state(self, key: str) -> _KeyState:
         """The state for `key`, created on first use.

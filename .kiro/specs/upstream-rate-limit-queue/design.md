@@ -334,6 +334,7 @@ class GateRecord:
 # mvibe_proxy/ratelimit.py
 class UpstreamGate:
     def __init__(self, config: RateLimitConfig, *, clock: Callable[[], float] = time.monotonic,
+                 wall_clock: Callable[[], float] = time.time,          # POSIX seconds, only for HTTP-date Retry-After
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
                  random: Callable[[], float] = random.random,
                  warn: Callable[[str, float], None] | None = None) -> None: ...
