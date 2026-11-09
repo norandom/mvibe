@@ -1,7 +1,7 @@
 # Implementation Plan
 
 - [ ] 1. Proxy rate-limit module (`mvibe_proxy/ratelimit.py`)
-- [ ] 1.1 Add `RateLimitConfig` with `from_env` parsing of `MVIBE_RATE_LIMIT_RPS`, `MVIBE_RATE_LIMIT_MODEL_RPS` (`model=rps[,model=rps]`), `MVIBE_RATE_LIMIT_MAX_WAIT_S` (120), `MVIBE_RATE_LIMIT_MAX_QUEUE` (64), `MVIBE_RATE_LIMIT_BACKOFF_CAP_S` (30), `RateLimitConfigError` naming the offending variable, and `rate_for(key)` returning the model override, the default, or `None` for `models`.
+- [x] 1.1 Add `RateLimitConfig` with `from_env` parsing of `MVIBE_RATE_LIMIT_RPS`, `MVIBE_RATE_LIMIT_MODEL_RPS` (`model=rps[,model=rps]`), `MVIBE_RATE_LIMIT_MAX_WAIT_S` (120), `MVIBE_RATE_LIMIT_MAX_QUEUE` (64), `MVIBE_RATE_LIMIT_BACKOFF_CAP_S` (30), `RateLimitConfigError` naming the offending variable, and `rate_for(key)` returning the model override, the default, or `None` for `models`.
   - Unit tests in `tests/test_ratelimit.py`: unset env yields defaults with `default_rps=None`; each variable rejects non-numeric, zero and negative values and a malformed per-model entry with the variable name in the message and no other env values echoed; `rate_for('models')` is `None` even when a default is set.
   - Observable: `RateLimitConfig.from_env({'MVIBE_RATE_LIMIT_RPS': '0.5'}).rate_for('mistral-large-latest') == 0.5`.
   - _Boundary: RateLimitConfig_

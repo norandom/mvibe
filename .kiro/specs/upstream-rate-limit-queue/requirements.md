@@ -19,7 +19,7 @@ mvibe forwards every consumer request to Mistral's inference API the moment it a
 #### Acceptance Criteria
 1. When the upstream responds with HTTP status 429 to a request from the proxy or the plugin, the consumer shall classify the response as a rate-limit rejection regardless of the response body shape.
 2. When a rate-limit rejection carries a `Retry-After` header in delay-seconds or HTTP-date form, the consumer shall derive the wait duration from that header.
-3. If a rate-limit rejection carries no usable `Retry-After` header, the consumer shall derive the wait duration from a bounded exponential backoff with jitter that starts at the configured pacing interval, or at 1 second when no pacing is configured, and never exceeds 30 seconds for a single wait.
+3. If a rate-limit rejection carries no usable `Retry-After` header, the consumer shall derive the wait duration from a bounded exponential backoff with jitter that starts at the configured pacing interval, or at 1 second when no pacing is configured, and never exceeds the configured backoff cap (default 30 seconds) for a single wait.
 4. When a rate-limit rejection carries `x-ratelimit-*` headers, the consumer shall record their names and values in the request diagnostic.
 5. The consumer shall not treat any status other than 429 as a rate-limit rejection; other upstream statuses keep their current forwarding behavior.
 6. While recording rate-limit diagnostics, the consumer shall not include credentials, request or response bodies, or prompts.
