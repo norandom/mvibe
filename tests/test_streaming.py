@@ -654,10 +654,12 @@ TERMINAL = {'type': 'http.response.body', 'body': b'', 'more_body': False}
 def tapped(app, factory):
     """Make every response the app's routes build pass `factory` as observe_factory.
 
-    The routes call response(acquire, diagnostic[, transform]) positionally."""
+    The routes call response(acquire, diagnostic[, transform]) positionally and,
+    since task 3.2, pass their own usage observe_factory as a keyword; the test's
+    factory replaces it so these tests observe exactly what they inject."""
     owner = app.state.stream_owner
     plain = owner.response
-    owner.response = lambda acquire, diagnostic=None, transform=None: plain(
+    owner.response = lambda acquire, diagnostic=None, transform=None, observe_factory=None: plain(
         acquire, diagnostic, transform, observe_factory=factory)
 
 

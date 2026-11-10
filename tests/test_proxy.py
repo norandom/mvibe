@@ -885,3 +885,86 @@ async def test_a_request_arriving_during_a_hold_waits_behind_it_for_the_same_mod
     assert (held_first.rejections, held_first.queued_ms) == (1, 1000.0)
     assert (held_second.rejections, held_second.queued_ms) == (0, 1000.0)
     assert not held_first.exhausted and not held_second.exhausted
+
+
+# --- observed upstream usage on every inference route (proxy-stats-propagation 3.2)
+
+def _diagnostic_rows(capsys):
+    return [json.loads(line) for line in capsys.readouterr().out.strip().splitlines() if line.strip()]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('path, request_body, upstream_body, content_type, expected', [
+    ('chat/completions',
+     b'{"model":"mistral-large-latest","messages":[{"role":"user","content":"hi"}]}',
+     b'{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":11,"completion_tokens":5,"total_tokens":16}}',
+     'application/json', ('mistral-large-latest', 11, 5)),
+    ('chat/completions',
+     b'{"model":"mistral-large-latest","messages":[],"stream":true}',
+     b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+     b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
+     b'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n'
+     b'data: [DONE]\n\n',
+     'text/event-stream', ('mistral-large-latest', 3, 2)),
+    ('embeddings',
+     b'{"model":"mistral-embed","input":"vector me"}',
+     b'{"data":[{"embedding":[0.1,0.2],"index":0}],"usage":{"prompt_tokens":8,"total_tokens":8}}',
+     'application/json', ('mistral-embed', 8, 0)),
+])
+async def test_inference_routes_record_upstream_usage_without_altering_bytes(path, request_body, upstream_body, content_type, expected, capsys):
+    from mvibe_proxy import diagnostics
+    app, session, sent, _ = harness(upstream=lambda request: httpx2.Response(
+        200, content=upstream_body, headers={'content-type': content_type}))
+    diagnostics.configure_stdout()
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+                response = await client.post('/v1/' + path, content=request_body,
+                                             headers={'content-type': 'application/json'})
+        assert response.status_code == 200
+        assert response.content == upstream_body  # the tap never alters forwarded bytes
+        rows = _diagnostic_rows(capsys)
+    finally:
+        diagnostics.disable_stdout()
+    (row,) = [r for r in rows if r.get('event') == 'proxy_request' or 'outcome' in r]
+    model, prompt, completion = expected
+    assert row['model'] == model
+    assert (row['usage_prompt_tokens'], row['usage_completion_tokens']) == (prompt, completion)
+    assert len(sent) == 1
+
+
+@pytest.mark.anyio
+async def test_model_list_responses_are_not_observed_for_usage(capsys):
+    from mvibe_proxy import diagnostics
+    app, session, sent, _ = harness(upstream=lambda request: httpx2.Response(
+        200, content=b'{"object":"list","data":[{"id":"m"}],"usage":{"prompt_tokens":99,"completion_tokens":1}}',
+        headers={'content-type': 'application/json'}))
+    diagnostics.configure_stdout()
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+                response = await client.get('/v1/models')
+        assert response.status_code == 200
+        rows = _diagnostic_rows(capsys)
+    finally:
+        diagnostics.disable_stdout()
+    (row,) = [r for r in rows if 'outcome' in r]
+    assert 'usage_prompt_tokens' not in row and 'usage_completion_tokens' not in row
+
+
+@pytest.mark.anyio
+async def test_a_response_without_usage_records_nothing(capsys):
+    from mvibe_proxy import diagnostics
+    app, session, sent, _ = harness(upstream=lambda request: httpx2.Response(
+        200, content=b'{"choices":[{"message":{"content":"no usage here"}}]}', headers={'content-type': 'application/json'}))
+    diagnostics.configure_stdout()
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+                response = await client.post('/v1/chat/completions', content=b'{"model":"m","messages":[]}')
+        assert response.status_code == 200
+        rows = _diagnostic_rows(capsys)
+    finally:
+        diagnostics.disable_stdout()
+    (row,) = [r for r in rows if 'outcome' in r]
+    assert 'usage_prompt_tokens' not in row

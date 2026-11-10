@@ -657,3 +657,41 @@ async def test_a_non_429_adapter_error_carries_no_rate_limit_headers():
     assert response.json() == compat.adapter_error('ollama', 400, compat.upstream_error_hint(400))[1]
     assert 'retry-after' not in response.headers
     assert not [name for name in response.headers if name.lower().startswith('x-ratelimit-')]
+
+
+# --- adapter routes record the upstream usage, not the translation (proxy-stats-propagation 3.2)
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('route, request_body, upstream, expected', [
+    ('/api/chat',
+     json.dumps({'model': 'mistral-large-4', 'messages': [{'role': 'user', 'content': 'hi'}], 'stream': True}).encode(),
+     lambda request: httpx2.Response(200, stream=SSEStream([
+         b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+         b'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n',
+         b'data: [DONE]\n\n']), headers={'content-type': 'text/event-stream'}),
+     ('mistral-large-4', 3, 2)),
+    ('/v1/messages',
+     json.dumps({'model': 'mistral-large-4', 'max_tokens': 32, 'messages': [{'role': 'user', 'content': 'hi'}]}).encode(),
+     lambda request: httpx2.Response(200, content=json.dumps({
+         'id': 'c1', 'model': 'mistral-large-4',
+         'choices': [{'message': {'role': 'assistant', 'content': 'ok'}, 'finish_reason': 'stop'}],
+         'usage': {'prompt_tokens': 21, 'completion_tokens': 4, 'total_tokens': 25}}).encode(),
+         headers={'content-type': 'application/json'}),
+     ('mistral-large-4', 21, 4)),
+])
+async def test_adapter_routes_record_the_upstream_usage(route, request_body, upstream, expected, capsys):
+    from mvibe_proxy import diagnostics
+    app, requests = compat_app(upstream)
+    diagnostics.configure_stdout()
+    try:
+        async with app.router.lifespan_context(app):
+            response = await call(app, 'POST', route, body=request_body)
+        assert response.status_code == 200
+        rows = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines() if line.strip()]
+    finally:
+        diagnostics.disable_stdout()
+    (row,) = [r for r in rows if 'outcome' in r]
+    model, prompt, completion = expected
+    assert row['model'] == model
+    assert (row['usage_prompt_tokens'], row['usage_completion_tokens']) == (prompt, completion)
+    assert len(requests) == 1

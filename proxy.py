@@ -36,6 +36,7 @@ from mvibe_proxy.diagnostics import GateRecord, ProxyDiagnostics, RequestDiagnos
 from mvibe_proxy.econ import EconConfig, EconConfigError, EconShunt, McpError, StdioMcpClient
 from mvibe_proxy.observability import ObserveConfig, ObserveConfigError, OpenObserveExporter, start_telemetry, inject_traceparent
 from mvibe_proxy.ratelimit import RateLimitConfig, RateLimitConfigError, UpstreamGate
+from mvibe_proxy.stats import UsageObserver
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
 from mvibe_auth.existing_vibe import ExistingVibeSession
 from mvibe_auth.http import VibeAsyncHTTPClient
@@ -304,6 +305,21 @@ def create_app(
     async def health() -> dict[str, str]:
         return {'status': 'ok'}
 
+    def usage_factory(diagnostic: RequestDiagnostic, target: str):
+        """The owned response's observe_factory for inference targets (stats Req 1.1-1.3).
+
+        Built after acquisition, so the upstream content type and the model the
+        body parse recorded on the diagnostic are known; it taps the raw upstream
+        bytes before any adapter transform and never alters them. Model-list
+        targets carry no usage and get no observer."""
+        if target == 'models':
+            return None
+
+        def factory(upstream):
+            return UsageObserver(content_type=upstream.headers.get('content-type'),
+                                 model=diagnostic.model).as_callable(diagnostic)
+        return factory
+
     def make_acquire(request: Request, path: str, body: bytes | None = None, diagnostic=None):
         """Shared upstream acquisition for any /v1 target, through the rate-limit gate.
 
@@ -415,7 +431,8 @@ def create_app(
         if await _read_body(request, diagnostic) is None:
             return Response(status_code=204)
         return request.app.state.stream_owner.response(
-            make_acquire(request, path, diagnostic=diagnostic), diagnostic)
+            make_acquire(request, path, diagnostic=diagnostic), diagnostic,
+            observe_factory=usage_factory(diagnostic, path))
 
     def adapter_post(dialect: str, *, target: str, translate_request, make_transform, inspect=None):
         """POST route translating an adapter dialect body to the upstream /v1 target."""
@@ -484,7 +501,8 @@ def create_app(
 
             async def replay():
                 return upstream
-            return request.app.state.stream_owner.response(replay, diagnostic, transform)
+            return request.app.state.stream_owner.response(
+                replay, diagnostic, transform, observe_factory=usage_factory(diagnostic, target))
         return handler
 
     @app.api_route('/api/{path:path}', methods=['GET', 'POST'], response_model=None, include_in_schema=False)
