@@ -394,8 +394,8 @@ def create_app(
                                   'usage totals overall and per model, economics and rate-limit '
                                   'aggregates, last usage report) and the mmhmem statistics as '
                                   '`mmhmem stats --json` produces them, or `available: false` with a '
-                                  'short reason (not_configured, timeout, exit_<code>, no_stats_yet, '
-                                  'invalid_json).')
+                                  'short reason (not_configured, spawn_failed, timeout, exit_<code>, '
+                                  'no_stats_yet, invalid_json).')
     async def stats_view(request: Request) -> JSONResponse:
         """Served locally (stats Req 3.5): no upstream, gate, economics or auth."""
         _local(request)

@@ -1276,3 +1276,46 @@ def test_cli_warns_once_when_the_data_dir_is_not_writable(monkeypatch, capsys, d
                'before starting (mkdir -p) or fix ownership (uid 1000 in Docker)')
     assert (warning in err) is warns and err.count('AGENT_MEM_DATA_DIR') == (1 if warns else 0)
     assert checked == (['/data/mmhmem'] if data_dir else [])
+
+
+@pytest.mark.anyio
+async def test_the_default_runner_reports_not_configured_for_the_inert_config():
+    app, _, sent, _ = harness()
+    async with app.router.lifespan_context(app):
+        async with local_client(app) as client:
+            body = (await client.get('/stats')).json()
+    assert body['mmhmem'] == {'available': False, 'reason': 'not_configured'}
+    assert body['proxy']['requests']['total'] == 0 and sent == []
+
+
+@pytest.mark.anyio
+async def test_the_default_reporter_reports_the_counters_ledger_over_the_shared_child():
+    from mvibe_proxy import stats
+    child = FakeChild()
+    counters = stats.ProxyCounters()
+    config = proxy.StatsConfig(usage=True, mmhmem_bin=python_bin(), report_interval_s=5.0,
+                               mmhmem_timeout_s=2.5, project='demo')
+    reporter = proxy._default_reporter(child, counters, config)
+    assert isinstance(reporter, stats.UsageReporter)
+    counters.usage.add(stats.Usage(3, 2, 'mistral-large-latest'))
+    assert await reporter.report() is True
+    ((name, arguments, timeout_ms),) = child.calls
+    assert name == 'session_resume_or_handoff' and timeout_ms == 2500
+    assert arguments['project'] == 'demo' and arguments['agent_harness'] == 'mvibe-proxy'
+    assert arguments['client_usage'] == {
+        'prompt_tokens': 3, 'completion_tokens': 2, 'source': 'mvibe-proxy mistral-large-latest'}
+    assert counters.last_report_at is not None
+    assert counters.snapshot()['usage']['last_report_at'] is not None
+
+
+@pytest.mark.anyio
+async def test_the_lifespan_runs_a_real_usage_reporter_over_the_injected_child_by_default():
+    from mvibe_proxy import stats
+    child = FakeChild()
+    app, _, sent, _ = harness(stats_config=proxy.StatsConfig(usage=True, mmhmem_bin=python_bin()),
+                              econ_client=child)
+    async with app.router.lifespan_context(app):
+        assert isinstance(app.state.reporter, stats.UsageReporter)
+        assert child.log == ['child.start']
+    assert child.log == ['child.start', 'child.shutdown'] and child.calls == []
+    assert app.state.reporter is None and sent == []

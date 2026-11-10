@@ -291,7 +291,7 @@ Call shape per source: `tools/call session_resume_or_handoff` with `{"project": 
 ```python
 async def mmhmem_stats(bin_path: str | None, *, env: Mapping[str, str], timeout_s: float) -> dict[str, object]
 # → {"available": True, "days": [...], "totals": {...}} parsed from `mmhmem stats --json` (its top-level keys are `days` and `totals`)
-# → {"available": False, "reason": "not_configured" | "timeout" | "exit_<code>" | "no_stats_yet" | "invalid_json"}
+# → {"available": False, "reason": "not_configured" | "spawn_failed" | "timeout" | "exit_<code>" | "no_stats_yet" | "invalid_json"}
 ```
 Runs `[bin_path, "stats", "--json"]` with the proxy's environment (so `AGENT_MEM_DATA_DIR`/`AGENT_MEM_LOG_FILE` apply), stdout capped at 8 MiB, kills on timeout. Non-JSON output starting with mmhmem's "No token-savings statistics" notice → `no_stats_yet`.
 
