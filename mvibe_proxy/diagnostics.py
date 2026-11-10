@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import sys
 import time
@@ -77,6 +78,27 @@ def _econ_fields(econ) -> dict:
     }
 
 
+@dataclass
+class GateRecord:
+    """What the upstream rate-limit gate did for one request (Req 1.4, 5.1, 5.2).
+
+    The request diagnostic defines and owns this record; `ratelimit.UpstreamGate`
+    only fills the one its caller supplies, so this module never imports
+    `ratelimit`. `queued_ms` is the total time the request waited inside the
+    gate, holds included, and `rejections` the number of upstream 429s it met.
+    `headers` holds the upstream `x-ratelimit-*` headers (lower-cased names,
+    values cut to 64 characters), merged across rejections, latest value per
+    name wins. `exhausted` tells whether the gate gave up and answered 429
+    itself. Nothing else is copied, so the record never holds credentials or
+    body content (Req 1.6).
+    """
+
+    queued_ms: float = 0.0
+    rejections: int = 0
+    headers: dict[str, str] = field(default_factory=dict)
+    exhausted: bool = False
+
+
 class RequestDiagnostic:
     def __init__(self):
         self.request_id = uuid.uuid4().hex
@@ -92,6 +114,9 @@ class RequestDiagnostic:
         # Econ counters (EconCounters) or an allowlisted econ_* mapping; set
         # only when economics acted on this request — absent otherwise.
         self.econ = None
+        # The gate's GateRecord, attached by the route that sends through the
+        # gate; while it is None the rate-limit fields are absent, not null.
+        self.rate_limit: GateRecord | None = None
 
     def failure(self, code: str) -> None:
         # Only fixed codes chosen by owned call sites reach the log renderer.
@@ -103,9 +128,14 @@ class RequestDiagnostic:
             'interrupted': ('stream', 'stream_interrupted', 'Stream interrupted; inspect agent state before any explicit retry.'),
             'cancelled': ('stream', 'cancelled', 'Request cancelled; inspect agent state before any explicit retry.'),
             'cleanup': ('cleanup', 'cleanup_failed', 'Upstream cleanup failed; restart the proxy before sending another request.'),
+            'rate_limited': ('upstream', 'rate_limited', 'Upstream rate limit persisted beyond MVIBE_RATE_LIMIT_MAX_WAIT_S or MVIBE_RATE_LIMIT_MAX_QUEUE; lower client concurrency, configure MVIBE_RATE_LIMIT_RPS, or raise the workspace limit.'),
         }[code]
 
     def upstream(self, status: int) -> None:
+        if status == 429 and self.rate_limit is not None and self.rate_limit.exhausted:
+            # The gate gave up and answered this 429 itself (Req 5.2).
+            self.failure('rate_limited')
+            return
         if status >= 400:
             self.phase, self.outcome = 'upstream', 'upstream_error'
             self.hint = {
@@ -119,11 +149,18 @@ class RequestDiagnostic:
     def emit(self) -> None:
         try:
             econ = _econ_fields(self.econ) if self.econ is not None else {}
+            # The gate's numbers go to both channels (Req 5.1, 5.4); its x-ratelimit-*
+            # snapshot is stdout-only and never offered to the exporter (Req 1.4, 1.6).
+            record = self.rate_limit
+            limits = {} if record is None else {
+                'queued_ms': round(record.queued_ms, 2),
+                'rate_limit_rejections': record.rejections}
+            snapshot = {} if record is None else {'rate_limit_headers': dict(record.headers)}
             if _logger is not None:
                 _logger.info('proxy_request', request_id=self.request_id,
                              phase=self.phase, outcome=self.outcome, status=self.status,
                              elapsed_ms=round((time.monotonic() - self.started) * 1000, 2),
-                             model=self.model, hint=self.hint, **econ)
+                             model=self.model, hint=self.hint, **econ, **limits, **snapshot)
             if _exporter is not None:
                 # The exporter allowlists by construction; None fields are dropped.
                 _exporter.enqueue({
@@ -139,6 +176,7 @@ class RequestDiagnostic:
                     'model': self.model,
                     'hint': self.hint,
                     **econ,
+                    **limits,
                 })
         except Exception:
             # A closed stdout, faulty processor or failing exporter must never break inference.

@@ -21,10 +21,43 @@ def test_openapi_describes_supported_operations_without_validation():
     assert '401' in chat['responses'] and '502' in chat['responses']
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize(('status', 'hint'), [(400, 'tool_schema'), (401, 'login'), (403, 'tenant'), (422, 'reasoning'), (429, 'rate_limit')])
-async def test_correlated_safe_stdout_upstream_errors(status, hint, capsys):
+RATE_LIMIT_SETTINGS = ('MVIBE_RATE_LIMIT_MAX_WAIT_S', 'MVIBE_RATE_LIMIT_MAX_QUEUE', 'MVIBE_RATE_LIMIT_RPS')
+RATE_LIMITED_HINT = ('Upstream rate limit persisted beyond MVIBE_RATE_LIMIT_MAX_WAIT_S or '
+                     'MVIBE_RATE_LIMIT_MAX_QUEUE; lower client concurrency, configure '
+                     'MVIBE_RATE_LIMIT_RPS, or raise the workspace limit.')
+UNRETRIED_429_HINT = 'Respect upstream rate_limit guidance before an explicit retry.'
+RATE_LIMIT_FIELDS = ('queued_ms', 'rate_limit_rejections', 'rate_limit_headers')
+
+
+def _attach_rate_limit(monkeypatch, record):
+    """Give every request diagnostic `record`, as the gate wiring in make_acquire does."""
     from mvibe_proxy import diagnostics
+
+    class Recorded(diagnostics.RequestDiagnostic):
+        def __init__(self):
+            super().__init__()
+            self.rate_limit = record
+
+    monkeypatch.setattr(diagnostics, 'RequestDiagnostic', Recorded)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('status', 'exhausted', 'outcome', 'hints'), [
+    (400, False, 'upstream_error', ('tool_schema',)),
+    (401, False, 'upstream_error', ('login',)),
+    (403, False, 'upstream_error', ('tenant',)),
+    (422, False, 'upstream_error', ('reasoning',)),
+    # A 429 the gate did not retry keeps the upstream rate_limit hint; a 429 the
+    # gate answered after giving up is the rate_limited outcome naming the settings.
+    (429, False, 'upstream_error', ('rate_limit',)),
+    (429, True, 'rate_limited', RATE_LIMIT_SETTINGS),
+])
+async def test_correlated_safe_stdout_upstream_errors(status, exhausted, outcome, hints, capsys, monkeypatch):
+    from mvibe_proxy import diagnostics
+    if exhausted:
+        _attach_rate_limit(monkeypatch, diagnostics.GateRecord(
+            queued_ms=1500.0, rejections=2, exhausted=True,
+            headers={'x-ratelimit-remaining-req-minute': '0'}))
     diagnostics.configure_stdout()
     try:
         app, _, sent, _ = harness(response_status=status)
@@ -35,8 +68,15 @@ async def test_correlated_safe_stdout_upstream_errors(status, hint, capsys):
         assert len(sent) == 1 and sent[0].content == b'not-json-secret-prompt'
         assert result.content == b'{"result":"synthetic"}'
         assert rows[-1]['request_id'] == result.headers['x-request-id']
-        assert hint in rows[-1]['hint']
-        assert rows[-1]['status'] == status and rows[-1]['outcome'] == 'upstream_error'
+        assert all(hint in rows[-1]['hint'] for hint in hints)
+        assert rows[-1]['status'] == status and rows[-1]['outcome'] == outcome
+        assert rows[-1]['phase'] == 'upstream'
+        if exhausted:
+            assert rows[-1]['hint'] == RATE_LIMITED_HINT
+            assert (rows[-1]['queued_ms'], rows[-1]['rate_limit_rejections']) == (1500.0, 2)
+            assert rows[-1]['rate_limit_headers'] == {'x-ratelimit-remaining-req-minute': '0'}
+        else:
+            assert 'MVIBE_RATE_LIMIT' not in rows[-1]['hint']
         assert 'secret' not in json.dumps(rows)
     finally:
         diagnostics.disable_stdout()
@@ -197,3 +237,156 @@ def test_cli_logging_is_explicit_and_clears_stale_configuration(enabled, monkeyp
             assert json.loads(output)['event'] == 'proxy_request'
     finally:
         diagnostics.disable_stdout()
+
+
+# --- rate-limit diagnostics (upstream-rate-limit-queue task 2.2) --------------
+# Requirements 1.4, 1.6, 5.1, 5.2, 5.4: the gate's GateRecord reaches the
+# proxy_request event as queued_ms and rate_limit_rejections on both channels
+# and rate_limit_headers on stdout only; giving up is the rate_limited outcome.
+
+
+class CapturingExporter:
+    """Keeps every payload the diagnostic hands the export sink, before allowlisting."""
+
+    def __init__(self):
+        self.records = []
+
+    def enqueue(self, record):
+        self.records.append(dict(record))
+
+
+def _emit(diagnostic, capsys):
+    """Emit `diagnostic` once to stdout and to a capturing exporter; return both events."""
+    from mvibe_proxy import diagnostics
+    exporter = CapturingExporter()
+    diagnostics.configure_stdout()
+    diagnostics.configure_exporter(exporter)
+    try:
+        diagnostic.emit()
+    finally:
+        diagnostics.disable_stdout()
+        diagnostics.clear_exporter()
+    (line,) = capsys.readouterr().out.splitlines()
+    (exported,) = exporter.records
+    return json.loads(line), exported
+
+
+def test_gate_record_is_defined_by_diagnostics_and_shared_with_the_gate():
+    import ast
+    import dataclasses
+    import inspect
+    from mvibe_proxy import diagnostics, ratelimit
+    assert diagnostics.GateRecord.__module__ == 'mvibe_proxy.diagnostics'
+    assert ratelimit.GateRecord is diagnostics.GateRecord
+    assert [field.name for field in dataclasses.fields(diagnostics.GateRecord)] == [
+        'queued_ms', 'rejections', 'headers', 'exhausted']
+    record = diagnostics.GateRecord()
+    assert (record.queued_ms, record.rejections, record.headers, record.exhausted) == (
+        0.0, 0, {}, False)
+    # Dependency direction: ratelimit imports diagnostics, never the reverse.
+    imported = set()
+    for node in ast.walk(ast.parse(inspect.getsource(diagnostics))):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            imported |= {f'{node.module}.{alias.name}' for alias in node.names}
+    assert not any('ratelimit' in name for name in imported)
+
+
+def test_a_request_without_a_gate_record_emits_no_rate_limit_fields(capsys):
+    from mvibe_proxy.diagnostics import RequestDiagnostic
+    diagnostic = RequestDiagnostic()
+    assert diagnostic.rate_limit is None
+    row, exported = _emit(diagnostic, capsys)
+    assert not set(RATE_LIMIT_FIELDS) & (set(row) | set(exported))
+
+
+@pytest.mark.parametrize(('queued_ms', 'rejections', 'rounded'), [
+    (0.0, 0, 0.0), (1234.5678, 2, 1234.57), (0.004, 1, 0.0)])
+def test_rate_limit_fields_are_present_and_numeric(queued_ms, rejections, rounded, capsys):
+    from mvibe_proxy.diagnostics import GateRecord, RequestDiagnostic
+    diagnostic = RequestDiagnostic()
+    diagnostic.rate_limit = GateRecord(queued_ms=queued_ms, rejections=rejections,
+                                       headers={'x-ratelimit-remaining-req-minute': '0'})
+    row, exported = _emit(diagnostic, capsys)
+    for event in (row, exported):
+        assert type(event['queued_ms']) is float and event['queued_ms'] == rounded
+        assert type(event['rate_limit_rejections']) is int
+        assert event['rate_limit_rejections'] == rejections
+    assert row['rate_limit_headers'] == {'x-ratelimit-remaining-req-minute': '0'}
+    assert 'rate_limit_headers' not in exported
+    assert row['outcome'] == exported['outcome'] == 'completed'
+
+
+def test_failure_rate_limited_names_the_settings_to_adjust():
+    from mvibe_proxy.diagnostics import RequestDiagnostic
+    diagnostic = RequestDiagnostic()
+    diagnostic.failure('rate_limited')
+    assert (diagnostic.phase, diagnostic.outcome, diagnostic.hint) == (
+        'upstream', 'rate_limited', RATE_LIMITED_HINT)
+    assert all(name in diagnostic.hint for name in RATE_LIMIT_SETTINGS)
+
+
+@pytest.mark.parametrize(('record', 'status', 'outcome'), [
+    (None, 429, 'upstream_error'),
+    ({'rejections': 1}, 429, 'upstream_error'),
+    ({'rejections': 3, 'exhausted': True}, 429, 'rate_limited'),
+    # Queue full: the gate refused the request before any upstream attempt.
+    ({'exhausted': True}, 429, 'rate_limited'),
+    ({'exhausted': True}, 503, 'upstream_error'),
+    ({'exhausted': True}, 200, 'completed'),
+])
+def test_upstream_429_is_rate_limited_only_when_the_gate_gave_up(record, status, outcome):
+    from mvibe_proxy.diagnostics import GateRecord, RequestDiagnostic
+    diagnostic = RequestDiagnostic()
+    if record is not None:
+        diagnostic.rate_limit = GateRecord(**record)
+    diagnostic.upstream(status)
+    assert diagnostic.outcome == outcome
+    if outcome == 'rate_limited':
+        assert (diagnostic.phase, diagnostic.hint) == ('upstream', RATE_LIMITED_HINT)
+    elif status == 429:
+        assert (diagnostic.phase, diagnostic.hint) == ('upstream', UNRETRIED_429_HINT)
+
+
+@pytest.mark.anyio
+async def test_rate_limit_headers_never_carry_body_text_or_credentials(clock, capsys):
+    import asyncio
+    import httpx2
+    from mvibe_proxy.diagnostics import GateRecord, RequestDiagnostic
+    from mvibe_proxy.ratelimit import RateLimitConfig, UpstreamGate
+    body = b'{"message":"secret-body-text: Requests rate limit exceeded"}'
+    snapshots = iter([
+        {'x-ratelimit-remaining-req-minute': '0', 'x-ratelimit-limit-req-minute': '30'},
+        {'x-ratelimit-remaining-req-minute': '1'},
+    ])
+    sent = []
+
+    async def attempt():
+        sent.append(clock.time())
+        await asyncio.sleep(0)
+        return httpx2.Response(429, content=body, headers={
+            'content-type': 'application/json', 'retry-after': '5',
+            'authorization': 'Bearer secret-credential', 'set-cookie': 'session=secret-cookie',
+            'x-error-detail': 'secret-body-text', **next(snapshots)})
+
+    # Retry-After 5 s against a 1 s maximum wait: one re-send, then the gate gives up.
+    gate = UpstreamGate(RateLimitConfig(max_wait_s=1.0), clock=clock.time, sleep=clock.sleep,
+                        wall_clock=clock.time)
+    diagnostic = RequestDiagnostic()
+    diagnostic.rate_limit = record = GateRecord()
+    t0 = clock.time()
+    response = await asyncio.wait_for(
+        gate.run('mistral-large-latest', attempt, arrived=t0, record=record), 5)
+    diagnostic.status = response.status_code
+    diagnostic.upstream(response.status_code)
+    row, exported = _emit(diagnostic, capsys)
+    assert response.status_code == 429 and sent == [t0, t0 + 1]
+    assert (row['outcome'], row['status'], row['rate_limit_rejections']) == ('rate_limited', 429, 2)
+    assert row['queued_ms'] == 1000.0
+    # Merged across rejections, the latest value per name winning.
+    assert row['rate_limit_headers'] == {'x-ratelimit-remaining-req-minute': '1',
+                                         'x-ratelimit-limit-req-minute': '30'}
+    assert all(name.startswith('x-ratelimit-') for name in row['rate_limit_headers'])
+    assert 'secret' not in json.dumps(row) and 'secret' not in json.dumps(exported)
+    assert 'rate_limit_headers' not in exported

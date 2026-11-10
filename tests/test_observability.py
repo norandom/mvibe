@@ -62,6 +62,15 @@ def test_allowlist_drops_unknown_and_null_fields():
                       'request_id': 'abc', 'model': 'mistral-large-4'}
 
 
+def test_allowlist_keeps_rate_limit_numbers_and_drops_rate_limit_headers():
+    assert {'queued_ms', 'rate_limit_rejections'} <= observability._ALLOWED_FIELDS
+    assert 'rate_limit_headers' not in observability._ALLOWED_FIELDS
+    record = allowlisted({'event': 'proxy_request', 'queued_ms': 0.0, 'rate_limit_rejections': 0,
+                          'rate_limit_headers': {'x-ratelimit-remaining-req-minute': '0'}})
+    assert record == {'service': 'mvibe-proxy', 'event': 'proxy_request',
+                      'queued_ms': 0.0, 'rate_limit_rejections': 0}
+
+
 def test_observe_config_defaults_and_url_shape(monkeypatch):
     for key in ('MVIBE_OBSERVE_URL', 'MVIBE_OBSERVE_ORG', 'MVIBE_OBSERVE_STREAM',
                 'MVIBE_OBSERVE_USER', 'MVIBE_OBSERVE_TOKEN'):
@@ -137,6 +146,29 @@ async def test_exporter_shutdown_flushes_pending_without_start():
     exporter.enqueue({'event': 'proxy_request', 'request_id': 'pending'})
     await exporter.shutdown()
     assert len(posts) == 1 and exporter.exported_events == 1
+
+
+@pytest.mark.anyio
+async def test_exported_record_carries_rate_limit_numbers_but_never_headers():
+    posts = []
+    exporter = OpenObserveExporter(config(), client=mock_client(posts))
+    diagnostic = diagnostics.RequestDiagnostic()
+    diagnostic.rate_limit = diagnostics.GateRecord(
+        queued_ms=2500.126, rejections=3, exhausted=True,
+        headers={'x-ratelimit-remaining-req-minute': '0', 'x-ratelimit-limit-req-minute': '30'})
+    diagnostic.status = 429
+    diagnostic.upstream(429)
+    diagnostics.configure_exporter(exporter)
+    try:
+        diagnostic.emit()
+    finally:
+        diagnostics.clear_exporter()
+    await exporter.shutdown()
+    (row,) = json.loads(posts[0].content)
+    assert (row['queued_ms'], row['rate_limit_rejections']) == (2500.13, 3)
+    assert (row['outcome'], row['status']) == ('rate_limited', 429)
+    assert 'rate_limit_headers' not in row
+    assert 'x-ratelimit' not in posts[0].content.decode()
 
 
 def test_cli_observe_requires_env_config(monkeypatch, capsys):
@@ -216,11 +248,14 @@ def _client_factory(sent):
     return factory
 
 
-otel = pytest.importorskip('opentelemetry.sdk', reason='optional otel extra not installed; inert path covered by default runs')
+# Only the tests that build an OpenTelemetry SDK need the optional otel extra; the
+# export, allowlist and inert-path tests above and below run in every environment.
+OTEL_MISSING = 'optional otel extra not installed; inert path covered by default runs'
 
 
 @pytest.mark.anyio
 async def test_otel_spans_and_traceparent_when_enabled(monkeypatch):
+    pytest.importorskip('opentelemetry.sdk', reason=OTEL_MISSING)
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import InMemoryMetricReader
     from opentelemetry.sdk.trace import TracerProvider
@@ -285,6 +320,7 @@ def test_start_telemetry_inert_when_otel_extra_missing(monkeypatch):
 
 
 def test_bridge_call_span_recorded_when_otel_enabled(monkeypatch):
+    pytest.importorskip('opentelemetry.sdk', reason=OTEL_MISSING)
     from opentelemetry import trace as ottrace
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor

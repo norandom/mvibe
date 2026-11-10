@@ -38,6 +38,8 @@ from types import MappingProxyType
 
 import httpx2
 
+from mvibe_proxy.diagnostics import GateRecord
+
 __all__ = [
     'DEFAULT_BACKOFF_CAP_S',
     'DEFAULT_MAX_QUEUE',
@@ -282,23 +284,6 @@ _REJECTION_BODY_LIMIT = 64 * 1024
 # The backoff stops doubling here. Any cap is reached long before, and without a
 # bound 2.0 ** n raises OverflowError after about a thousand rejections.
 _MAX_DOUBLINGS = 64
-
-
-@dataclass
-class GateRecord:
-    """What the gate did for one request. The caller supplies it and reads it after.
-
-    `queued_ms` is the total time the request waited inside the gate,
-    `rejections` the number of upstream 429s it met, `headers` the latest
-    `x-ratelimit-*` snapshot, and `exhausted` tells whether the gate gave up and
-    answered 429 itself. The fields are the contract with the request
-    diagnostic, which takes ownership of this type.
-    """
-
-    queued_ms: float = 0.0
-    rejections: int = 0
-    headers: dict[str, str] = field(default_factory=dict)
-    exhausted: bool = False
 
 
 @dataclass(slots=True)

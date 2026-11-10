@@ -23,12 +23,15 @@ SERVICE_NAME = 'mvibe-proxy'
 # The only fields that may ever leave the process. Anything else is dropped.
 # The econ_* names are the design's Data Models econ event table: ints and the
 # outcome enum only — content, hints, paths and hashes are never allowlisted.
+# queued_ms and rate_limit_rejections are the rate-limit gate's numbers; its
+# x-ratelimit-* header snapshot (rate_limit_headers) stays on stdout only.
 _ALLOWED_FIELDS = frozenset({
     'event', 'timestamp', 'request_id', 'trace_id', 'span_id', 'phase',
     'outcome', 'status', 'elapsed_ms', 'model', 'hint',
     'econ_eligible', 'econ_replaced', 'econ_bypassed', 'econ_pending',
     'econ_in_bytes', 'econ_out_bytes', 'econ_est_saved_tokens',
     'econ_outcome', 'econ_latency_ms',
+    'queued_ms', 'rate_limit_rejections',
 })
 
 
