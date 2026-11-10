@@ -189,8 +189,11 @@ _RATE_LIMIT_LOG = logging.getLogger('mvibe.proxy')
 
 
 def _warn_rate_limit_hold(key: str, wait_s: float) -> None:
-    """One warning as each rate-limit hold starts: the gate key and the wait, nothing else."""
-    _RATE_LIMIT_LOG.warning('proxy_rate_limit_hold model=%s wait_s=%.1f', key, wait_s)
+    """One warning as each rate-limit hold starts: the gate key and the wait, nothing else.
+
+    The key is rendered quoted (`%r`), so a space or `=` in a client-supplied
+    model name stays inside one token and cannot forge a `key=value` pair."""
+    _RATE_LIMIT_LOG.warning('proxy_rate_limit_hold model=%r wait_s=%.1f', key, wait_s)
 
 
 def _default_gate(config: RateLimitConfig) -> UpstreamGate:

@@ -10,8 +10,8 @@ the x-ratelimit-* headers that is safe to record. UpstreamGate schedules the
 upstream attempts: one FIFO line per key with a single attempt in flight,
 optional pacing per key, and a bound on the runs held across all keys. A 429
 holds its key for the Retry-After or a jittered backoff, and the rejected
-request is sent again first. When the hold would outlast the request's maximum
-wait, the gate answers with that last 429 instead.
+request is sent again first. When the wait the 429 asks for would end past the
+request's deadline, the gate answers with that last 429 at once instead.
 
 Pacing is off by default. While MVIBE_RATE_LIMIT_RPS and MVIBE_RATE_LIMIT_MODEL_RPS
 are unset, no key has a rate and the proxy only reacts to rejections. No
@@ -276,8 +276,12 @@ def classify(status: int, headers: Mapping[str, str], *, fallback_wait_s: float,
 
 # --- scheduling (Requirements 1.3, 2.1, 2.2, 2.5, 3.1, 3.2, 3.3, 3.5, 5.1, 5.3, 6.3) ---
 
-_JSON = 'application/json'
-_CONTENT_TYPE = 'content-type'
+# The gate's own 429s are built from raw header bytes, so an upstream value that
+# is not ASCII reaches the client exactly as it was received.
+_RAW_JSON = b'application/json'
+_RAW_CONTENT_TYPE = b'content-type'
+_RAW_RETRY_AFTER = _RETRY_AFTER.encode('ascii')
+_RAW_SNAPSHOT_PREFIX = _SNAPSHOT_PREFIX.encode('ascii')
 _EXHAUSTED_MESSAGE = 'Upstream rate limit persisted; retry after {} seconds'
 # A rejected attempt's body is kept for the client only up to this size (Req 6.3).
 _REJECTION_BODY_LIMIT = 64 * 1024
@@ -309,13 +313,14 @@ class _KeyState:
 class _Rejection:
     """An upstream 429 read into memory, so its stream is closed while the run waits.
 
-    `headers` keeps only what may reach the client again: `content-type`, every
-    `x-ratelimit-*` header as received, and `retry-after` when the upstream sent
-    a usable one of at least one second.
+    `headers` keeps only what may reach the client again, as raw byte pairs with
+    lower-cased names and the values exactly as received: `content-type`, every
+    `x-ratelimit-*` header, and after them `retry-after` when the upstream sent a
+    usable one of at least one second.
     """
 
     body: bytes
-    headers: Mapping[str, str]
+    headers: tuple[tuple[bytes, bytes], ...]
 
 
 async def _read_rejection(response: httpx2.Response,
@@ -323,6 +328,7 @@ async def _read_rejection(response: httpx2.Response,
     """Read at most 64 KiB of the 429's decoded body; the stream is closed in any case.
 
     The body is decoded, so `content-encoding` and `content-length` are not kept.
+    The kept headers are taken from the raw bytes, never decoded and re-encoded.
     """
     body = bytearray()
     try:
@@ -333,14 +339,16 @@ async def _read_rejection(response: httpx2.Response,
                     break
     finally:
         await response.aclose()
-    headers: dict[str, str] = {}
-    for name, value in response.headers.items():
+    keep_retry_after = signal.retry_after_present and signal.wait_s >= 1
+    kept: list[tuple[bytes, bytes]] = []
+    retry_after: list[tuple[bytes, bytes]] = []
+    for name, value in response.headers.raw:
         lowered = name.lower()
-        if lowered == _CONTENT_TYPE or lowered.startswith(_SNAPSHOT_PREFIX):
-            headers[lowered] = value
-    if signal.retry_after_present and signal.wait_s >= 1:
-        headers[_RETRY_AFTER] = response.headers[_RETRY_AFTER]
-    return _Rejection(bytes(body), MappingProxyType(headers))
+        if lowered == _RAW_CONTENT_TYPE or lowered.startswith(_RAW_SNAPSHOT_PREFIX):
+            kept.append((lowered, value))
+        elif lowered == _RAW_RETRY_AFTER and keep_retry_after:
+            retry_after.append((lowered, value))
+    return _Rejection(bytes(body), (*kept, *retry_after))
 
 
 def _exhausted(record: GateRecord, wait_s: float,
@@ -348,22 +356,25 @@ def _exhausted(record: GateRecord, wait_s: float,
     """The 429 the gate answers when it gives up, with a Retry-After of at least 1 second.
 
     After an upstream 429 the answer is that rejection as read: its body and kept
-    headers, plus a `retry-after` of `wait_s` rounded up when the upstream sent
-    none that is usable. Without a rejection the body is fixed text plus the
+    header bytes, plus a `retry-after` of `wait_s` rounded up when the upstream
+    sent none that is usable. Without a rejection the body is fixed text plus the
     number of seconds; nothing from the request, the environment or an upstream
-    response goes into it.
+    response goes into it. Headers are passed as raw bytes in both cases, so a
+    value that is not ASCII cannot fail to encode.
     """
     record.exhausted = True
     retry_after = str(max(1, math.ceil(wait_s)))
+    raw_retry_after = (_RAW_RETRY_AFTER, retry_after.encode('ascii'))
     if rejection is not None:
-        headers = dict(rejection.headers)
-        headers.setdefault(_RETRY_AFTER, retry_after)
+        headers = list(rejection.headers)
+        if not any(name == _RAW_RETRY_AFTER for name, _ in headers):
+            headers.append(raw_retry_after)
         return httpx2.Response(_RATE_LIMIT_STATUS, content=rejection.body, headers=headers)
     body = {'error': {'message': _EXHAUSTED_MESSAGE.format(retry_after),
                       'type': 'rate_limit_error', 'code': 'rate_limited'}}
     return httpx2.Response(
         _RATE_LIMIT_STATUS, content=json.dumps(body).encode(),
-        headers={'content-type': _JSON, _RETRY_AFTER: retry_after})
+        headers=[(_RAW_CONTENT_TYPE, _RAW_JSON), raw_retry_after])
 
 
 class UpstreamGate:
@@ -378,26 +389,33 @@ class UpstreamGate:
     finished. Keys never wait for one another.
 
     An upstream 429 holds its key: no run on it is sent before the hold ends.
-    The hold lasts as long as `Retry-After` asks, but at least the pacing
-    interval (1 s when unpaced). Without a usable `Retry-After` it is a jittered
-    backoff that starts at that interval, doubles with each rejection of the run
-    and never exceeds `config.backoff_cap_s`. No hold is longer than
-    `config.max_wait_s`. `warn(key, wait)` is called as each hold starts. The
-    rejected run keeps the head of the line and is sent again when the hold ends.
+    The 429 asks for a wait: as long as `Retry-After` says, but at least the
+    pacing interval (1 s when unpaced). Without a usable `Retry-After` it is a
+    jittered backoff that starts at that interval, doubles with each rejection
+    of the run and never exceeds `config.backoff_cap_s`. The key is held for that
+    wait, but never longer than `config.max_wait_s`. `warn(key, hold)` is called
+    as each hold starts. The rejected run keeps the head of the line and is sent
+    again when the hold ends, unless the wait it was asked for ends past its
+    deadline (`arrived + config.max_wait_s`): then it gets that 429 at once. A
+    wait that ends exactly at the deadline is not longer than the maximum wait,
+    so the run is sent again there.
 
     At most `config.max_queue` runs are inside the gate at once, waiting or in
     flight, counted across all keys. A run beyond that bound, a run that reaches
-    the head after its deadline (`arrived + config.max_wait_s`), and a run whose
-    next slot or hold ends past that deadline get a 429 at once, without a
-    further attempt.
+    the head after its deadline, and a run whose next slot or hold ends past that
+    deadline get a 429 at once, without a further attempt.
 
-    `clock` and `sleep` share one time base in seconds (monotonic by default);
-    tests inject a fake clock. `wall_clock` is the POSIX time (`time.time` by
-    default) and only turns an HTTP-date `Retry-After` into a delay. `random`
-    draws the backoff jitter from [0, 1).
+    `clock` is a monotonic time in seconds. It defaults to `time.perf_counter`,
+    because on Windows `time.monotonic` advances only every 15.6 ms and would
+    read a quick upstream answer as taking no time at all. `sleep` waits a
+    number of seconds of that clock; tests inject a fake clock and its sleep.
+    `wall_clock` is the POSIX time (`time.time` by default) and only turns an
+    HTTP-date `Retry-After` into a delay. `random` draws the backoff jitter from
+    [0, 1).
     """
 
-    def __init__(self, config: RateLimitConfig, *, clock: Callable[[], float] = time.monotonic,
+    def __init__(self, config: RateLimitConfig, *,
+                 clock: Callable[[], float] = time.perf_counter,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
                  random: Callable[[], float] = random.random,
                  warn: Callable[[str, float], None] | None = None,
@@ -429,14 +447,14 @@ class UpstreamGate:
         returned unchanged and unread. A 429 is read (64 KiB at most) and closed,
         counted in `record` with its `x-ratelimit-*` headers, and holds the key;
         the run then waits at the head of its line and calls `attempt` again.
-        When the hold would end past the deadline, the run returns that last 429
-        instead: its body, `content-type` and `x-ratelimit-*` headers, with a
-        `retry-after` of at least 1. When the gate is full, the run reaches the
-        head too late, or the key's slot lies past the deadline before any
-        attempt, the gate returns a synthesized 429 (JSON body, `retry-after` of
-        at least 1) without calling `attempt`. Every such answer sets
-        `record.exhausted`. Time spent waiting, holds included, is added to
-        `record.queued_ms`.
+        When the wait the 429 asks for would end past the deadline, the run
+        returns that last 429 at once instead: its body, `content-type` and
+        `x-ratelimit-*` header bytes, with a `retry-after` of at least 1. When
+        the gate is full, the run reaches the head too late, or the key's slot
+        lies past the deadline before any attempt, the gate returns a
+        synthesized 429 (JSON body, `retry-after` of at least 1) without calling
+        `attempt`. Every such answer sets `record.exhausted`. Time spent
+        waiting, holds included, is added to `record.queued_ms`.
 
         A run cancelled while it waits leaves the line without sending and
         promotes the next run; the key's hold stays. An exception from `attempt`
@@ -465,7 +483,11 @@ class UpstreamGate:
         """Wait for the head position, then send until the upstream takes the request.
 
         Each 429 holds the key and sends again from the head, until the run is
-        out of time.
+        out of time. The run is out of time as soon as a 429 asks for a wait that
+        ends past `deadline`. That is decided on the wait as asked, before the
+        key's hold is clamped to `max_wait_s`. Otherwise a clamped hold that ends
+        exactly on the deadline would buy one more send the upstream already
+        refused (an answer that takes no clock time makes this exact).
         """
         waited_from = self._clock()
         if state.waiters[0] is not waiter:
@@ -494,30 +516,37 @@ class UpstreamGate:
             rejections += 1
             record.rejections += 1
             record.headers.update(signal.headers)
-            self._hold(key, state, signal, shortest)
-            waited_from = self._clock()
+            now = self._clock()
+            wait = self._hold(key, state, signal, shortest, now)
+            if now + wait > deadline:
+                return _exhausted(record, max(state.ready_at() - now, interval), rejection)
+            waited_from = now
 
     def _hold(self, key: str, state: _KeyState, signal: RateLimitSignal,
-              shortest: float) -> None:
-        """Hold `key` after a 429 and warn once as the hold starts.
+              shortest: float, now: float) -> float:
+        """Hold `key` after a 429, warn once as the hold starts, and return the wait.
 
-        `Retry-After` sets the hold, floored at `shortest` (the pacing interval,
+        `Retry-After` sets the wait, floored at `shortest` (the pacing interval,
         1 s when unpaced) so that a zero or past value never makes the re-send
         follow at once. Without one, the backoff from `classify` (already capped)
         is jittered between half and one and a half times itself, then kept
-        within `shortest` and the cap. No hold is longer than `max_wait_s`.
+        within `shortest` and the cap. The key is held from `now` for that wait,
+        but for no longer than `max_wait_s`; the hold only ever moves forward.
+        The returned wait is the unclamped one, which decides whether the run
+        can still be sent within its deadline.
         """
         if signal.retry_after_present:
             wait = max(signal.wait_s, shortest)
         else:
             jittered = signal.wait_s * (0.5 + self._random())
             wait = min(max(jittered, shortest), self._config.backoff_cap_s)
-        wait = min(wait, self._config.max_wait_s)
-        hold_until = self._clock() + wait
+        hold = min(wait, self._config.max_wait_s)
+        hold_until = now + hold
         if hold_until > state.hold_until:
             state.hold_until = hold_until
             if self._warn is not None:
-                self._warn(key, wait)
+                self._warn(key, hold)
+        return wait
 
     async def _wait_for_slot(self, state: _KeyState, deadline: float) -> bool:
         """Sleep until the key may send and return True, or return False to give up.

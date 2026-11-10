@@ -9,7 +9,7 @@ import pytest
 
 import proxy
 from fakes import Clock
-from test_proxy import SHORT_WAIT, UPSTREAM_LATENCY, Session, clocked_gate
+from test_proxy import SHORT_WAIT, Session, clocked_gate
 
 
 class Stream(httpx2.AsyncByteStream):
@@ -39,14 +39,11 @@ class Stream(httpx2.AsyncByteStream):
 
 
 def app_for(streams, *, status=200, headers=None, clock=None):
-    """With `clock` (a fakes.Clock) the app's gate runs on it, waits at most
-    SHORT_WAIT and each upstream answer takes UPSTREAM_LATENCY of it, so an
-    upstream 429 is answered by the gate after a single send."""
+    """With `clock` (a fakes.Clock) the app's gate runs on it and waits at most
+    SHORT_WAIT, so an upstream 429 is answered by the gate after a single send."""
     requests = []
     async def upstream(request):
         requests.append(request)
-        if clock is not None:
-            clock.advance(UPSTREAM_LATENCY)
         return httpx2.Response(status, stream=streams[len(requests)-1], headers=headers)
     client = httpx2.AsyncClient(transport=httpx2.MockTransport(upstream), follow_redirects=False)
     options = {} if clock is None else {'rate_limit_config': SHORT_WAIT,

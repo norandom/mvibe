@@ -379,11 +379,12 @@ async def test_rate_limit_headers_never_carry_body_text_or_credentials(clock, ca
         sent.append(clock.time())
         await asyncio.sleep(0)
         return httpx2.Response(429, content=body, headers={
-            'content-type': 'application/json', 'retry-after': '5',
+            'content-type': 'application/json', 'retry-after': '1',
             'authorization': 'Bearer secret-credential', 'set-cookie': 'session=secret-cookie',
             'x-error-detail': 'secret-body-text', **next(snapshots)})
 
-    # Retry-After 5 s against a 1 s maximum wait: one re-send, then the gate gives up.
+    # Retry-After 1 s against a 1 s maximum wait: the hold ends on the deadline, so
+    # one re-send; the next hold would end past it, so the gate gives up.
     gate = UpstreamGate(RateLimitConfig(max_wait_s=1.0), clock=clock.time, sleep=clock.sleep,
                         wall_clock=clock.time)
     diagnostic = RequestDiagnostic()

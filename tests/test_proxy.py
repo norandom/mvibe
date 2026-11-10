@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import shlex
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -94,11 +95,10 @@ def answers(clock, *script, latency=0.0, sent_at=None):
     return upstream
 
 
-# One second of maximum wait against answers that take 50 ms: the first hold
-# (at least 1 s) already ends past the deadline, so the gate answers the
-# upstream 429 itself after exactly one send.
-SHORT_WAIT = RateLimitConfig(max_wait_s=1.0)
-UPSTREAM_LATENCY = 0.05
+# Half a second of maximum wait: the first hold an upstream 429 asks for (at
+# least 1 s) ends past the deadline even when the answer takes no clock time,
+# so the gate answers the upstream 429 itself after exactly one send.
+SHORT_WAIT = RateLimitConfig(max_wait_s=0.5)
 
 
 def resolves(session):
@@ -196,7 +196,7 @@ async def test_upstream_application_status_is_preserved_without_replay(status):
     # passes the gate unchanged.
     clock = Clock()
     app, _, sent, _ = harness(
-        upstream=answers(clock, (status, {}, b'{"result":"synthetic"}'), latency=UPSTREAM_LATENCY),
+        upstream=answers(clock, (status, {}, b'{"result":"synthetic"}')),
         rate_limit_config=SHORT_WAIT, gate_factory=clocked_gate(clock))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
@@ -314,8 +314,16 @@ def test_default_gate_warns_once_per_hold_naming_the_model_and_wait(monkeypatch,
     assert seen is config and set(options) == {'warn'}
     with caplog.at_level(logging.WARNING, logger='mvibe.proxy'):
         options['warn']('mistral-large-4', 2.0)
-    assert [(record.name, record.levelno, record.getMessage()) for record in caplog.records] == [
-        ('mvibe.proxy', logging.WARNING, 'proxy_rate_limit_hold model=mistral-large-4 wait_s=2.0')]
+        options['warn']('my model=forged wait_s=0.0', 1.0)
+    # The key is quoted, so a space or '=' in a model name cannot add a token.
+    messages = [record.getMessage() for record in caplog.records]
+    assert [(record.name, record.levelno) for record in caplog.records] == [
+        ('mvibe.proxy', logging.WARNING)] * 2
+    assert messages == ["proxy_rate_limit_hold model='mistral-large-4' wait_s=2.0",
+                        "proxy_rate_limit_hold model='my model=forged wait_s=0.0' wait_s=1.0"]
+    assert [shlex.split(message) for message in messages] == [
+        ['proxy_rate_limit_hold', 'model=mistral-large-4', 'wait_s=2.0'],
+        ['proxy_rate_limit_hold', 'model=my model=forged wait_s=0.0', 'wait_s=1.0']]
 
 
 @pytest.mark.parametrize(('name', 'value'), [
@@ -635,8 +643,7 @@ async def test_a_429_beyond_the_maximum_wait_reaches_the_client_with_its_body_an
     rejection = b'{"message":"Requests rate limit exceeded","detail":"caf\xc3\xa9"}'
     app, _, sent, _ = harness(
         upstream=answers(clock, (429, {'content-type': 'application/json', 'retry-after': '5',
-                                       'x-ratelimit-limit-req-minute': '5'}, rejection),
-                         latency=UPSTREAM_LATENCY),
+                                       'x-ratelimit-limit-req-minute': '5'}, rejection)),
         rate_limit_config=RateLimitConfig(max_wait_s=1.0), gate_factory=clocked_gate(clock))
     diagnostics.configure_stdout()
     try:
@@ -810,5 +817,71 @@ async def test_a_hold_warning_names_the_sanitized_model_on_one_line(caplog):
                 response = await asyncio.wait_for(client.post(
                     '/v1/chat/completions', content=json.dumps({'model': model}).encode()), 5)
     assert response.status_code == 200 and len(sent) == 2
-    assert [record.getMessage() for record in caplog.records if record.name == 'mvibe.proxy'] == [
-        'proxy_rate_limit_hold model=evilproxy_rate_limit_hold model=forged wait_s=0.0 wait_s=1.0']
+    messages = [record.getMessage() for record in caplog.records if record.name == 'mvibe.proxy']
+    assert messages == [
+        "proxy_rate_limit_hold model='evilproxy_rate_limit_hold model=forged wait_s=0.0' wait_s=1.0"]
+    # One line and three tokens: the forged text stays inside the quoted model.
+    assert shlex.split(messages[0]) == [
+        'proxy_rate_limit_hold', 'model=evilproxy_rate_limit_hold model=forged wait_s=0.0',
+        'wait_s=1.0']
+
+
+@pytest.mark.anyio
+async def test_a_request_arriving_during_a_hold_waits_behind_it_for_the_same_model():
+    # Req 2.2: while a 429 holds a model, a later request for that model is not
+    # sent before the hold ends, and then only after the held request's re-send.
+    clock = Clock()
+    holding, release = asyncio.Event(), asyncio.Event()
+
+    async def held_sleep(seconds):
+        holding.set()
+        await release.wait()
+        clock.advance(seconds)
+
+    sent_at = []
+    app, session, sent, _ = harness(
+        upstream=answers(clock, (429, {}, b'{"message":"rate limited"}'),
+                         (200, {}, b'{"result":"synthetic"}'), sent_at=sent_at),
+        gate_factory=clocked_gate(clock, sleep=held_sleep))
+    first, second = (json.dumps({'model': 'mistral-large-4', 'messages': [
+        {'role': 'user', 'content': text}]}).encode() for text in ('first', 'second'))
+    messages, scopes = ([], []), []
+    t0 = clock.time()
+    async with app.router.lifespan_context(app):
+        gate = app.state.rate_gate
+        a = asyncio.create_task(raw_asgi(app, 'POST', '/v1/chat/completions', body=first,
+                                         events=session.events, scopes=scopes,
+                                         messages=messages[0]))
+        try:
+            await asyncio.wait_for(holding.wait(), 5)      # the first was rejected: held
+            b = asyncio.create_task(raw_asgi(app, 'POST', '/v1/chat/completions', body=second,
+                                             events=session.events, scopes=scopes,
+                                             messages=messages[1]))
+            try:
+                async def second_is_queued():
+                    while gate.held < 2 and len(sent) < 2:
+                        await asyncio.sleep(0)
+                await asyncio.wait_for(second_is_queued(), 5)
+                for _ in range(10):
+                    await asyncio.sleep(0)
+                # Both wait in the gate; the upstream has seen only the first send.
+                assert len(sent) == 1 and messages == ([], []) and not b.done()
+                release.set()
+                await asyncio.wait_for(asyncio.gather(a, b), 5)
+            finally:
+                b.cancel()
+        finally:
+            a.cancel()
+        assert gate.held == 0
+    # The held request is re-sent first, identical, and the later one after it.
+    assert [json.loads(request.content)['messages'][0]['content'] for request in sent] == [
+        'first', 'first', 'second']
+    assert sent[0].content == sent[1].content
+    assert sent_at == [t0, t0 + 1, t0 + 1]
+    for answered in messages:
+        assert answered[0]['type'] == 'http.response.start' and answered[0]['status'] == 200
+        assert body_of(answered) == b'{"result":"synthetic"}'
+    held_first, held_second = (scope['mvibe.diagnostic'].rate_limit for scope in scopes)
+    assert (held_first.rejections, held_first.queued_ms) == (1, 1000.0)
+    assert (held_second.rejections, held_second.queued_ms) == (0, 1000.0)
+    assert not held_first.exhausted and not held_second.exhausted

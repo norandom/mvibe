@@ -10,8 +10,8 @@ import proxy
 from fakes import Clock
 from mvibe_auth.api import AuthError, AuthFailure
 from mvibe_proxy import compat, diagnostics
-from test_proxy import (SHORT_WAIT, UPSTREAM_LATENCY, Session, answers, body_of, clocked_gate,
-                        harness, raw_asgi)
+from test_proxy import (SHORT_WAIT, Session, answers, body_of, clocked_gate, harness,
+                        raw_asgi)
 
 
 class SSEStream(httpx2.AsyncByteStream):
@@ -463,7 +463,7 @@ async def test_adapter_exhaustion_keeps_the_dialect_error_and_carries_rate_limit
         capsys, path, dialect, body, headers):
     clock = Clock()
     app, _, sent, _ = harness(
-        upstream=answers(clock, (429, RATE_LIMITED_HEADERS, RATE_LIMITED_BODY), latency=UPSTREAM_LATENCY),
+        upstream=answers(clock, (429, RATE_LIMITED_HEADERS, RATE_LIMITED_BODY)),
         rate_limit_config=SHORT_WAIT, gate_factory=clocked_gate(clock))
     diagnostics.configure_stdout()
     try:
@@ -472,7 +472,7 @@ async def test_adapter_exhaustion_keeps_the_dialect_error_and_carries_rate_limit
         rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     finally:
         diagnostics.disable_stdout()
-    # Retry-After 30 s cannot be honoured within the 1 s maximum wait: one send,
+    # Retry-After 30 s cannot be honoured within the 0.5 s maximum wait: one send,
     # then the gate's materialized 429, translated into the route's dialect.
     assert len(sent) == 1
     assert response.status_code == 429
@@ -487,6 +487,33 @@ async def test_adapter_exhaustion_keeps_the_dialect_error_and_carries_rate_limit
     assert (row['outcome'], row['status']) == ('rate_limited', 429)
     assert row['request_id'] == response.headers['x-request-id']
     assert 'Rate limit exceeded' not in json.dumps(rows)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('path', 'body', 'headers'), [
+    ('/v1/chat/completions', OLLAMA_CHAT, {}),
+    ('/api/chat', OLLAMA_CHAT, {}),
+    ('/v1/messages', ANTHROPIC_MESSAGES, {'anthropic-version': '2023-06-01'}),
+])
+async def test_an_exhausted_429_with_non_ascii_guidance_reaches_the_client_byte_exact(
+        path, body, headers):
+    # A latin-1 x-ratelimit-* value and mixed-case names: the exhausted 429 is
+    # still a 429 (not a 502), carrying the upstream bytes unchanged.
+    clock = Clock()
+
+    def upstream(request):
+        return httpx2.Response(429, content=RATE_LIMITED_BODY, headers=[
+            (b'Content-Type', b'application/json'), (b'Retry-After', b'30'),
+            (b'X-RateLimit-Reset', b'caf\xe9')])
+
+    app, _, sent, _ = harness(upstream=upstream, rate_limit_config=SHORT_WAIT,
+                              gate_factory=clocked_gate(clock))
+    async with app.router.lifespan_context(app):
+        response = await asyncio.wait_for(call(app, 'POST', path, body=body, headers=headers), 5)
+    assert len(sent) == 1
+    assert response.status_code == 429
+    raw = dict(response.headers.raw)
+    assert (raw[b'retry-after'], raw[b'x-ratelimit-reset']) == (b'30', b'caf\xe9')
 
 
 @pytest.mark.anyio
@@ -621,8 +648,7 @@ async def test_adapter_pre_response_failures_keep_their_safe_answers(failure):
 async def test_a_non_429_adapter_error_carries_no_rate_limit_headers():
     clock = Clock()
     app, _, sent, _ = harness(
-        upstream=answers(clock, (400, RATE_LIMITED_HEADERS, b'{"message":"bad request"}'),
-                         latency=UPSTREAM_LATENCY),
+        upstream=answers(clock, (400, RATE_LIMITED_HEADERS, b'{"message":"bad request"}')),
         rate_limit_config=SHORT_WAIT, gate_factory=clocked_gate(clock))
     async with app.router.lifespan_context(app):
         response = await asyncio.wait_for(call(app, 'POST', '/api/chat', body=OLLAMA_CHAT), 5)

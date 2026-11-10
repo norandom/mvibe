@@ -170,7 +170,7 @@ sequenceDiagram
     end
 ```
 
-Flow decisions: the deadline is `arrival + max_wait`; a `Retry-After` value is clamped to `max_wait` and floored at the key's pacing interval (1 s when unpaced) so a zero or past `Retry-After` never produces back-to-back re-sends; if the resulting `hold_until` lies beyond the deadline the gate stops waiting and returns the last 429 (materialized in the proxy, unread in the plugin) with `Retry-After` set to the remaining hold. Client disconnect or `AbortSignal` cancels the wait, removes the waiter, and never sends. Pacing advances `next_slot` only for paced keys; the `models` key is never paced. Attribution and econ run inside the first attempt because they need that attempt's credential snapshot; later attempts re-send the cached bytes with a fresh snapshot's headers.
+Flow decisions: the deadline is `arrival + max_wait`; a `Retry-After` value is floored at the key's pacing interval (1 s when unpaced) so a zero or past `Retry-After` never produces back-to-back re-sends; the exhaustion decision uses the unclamped wait (`now + wait > deadline`, decided before any clamping, so a `Retry-After` longer than the remaining wait never yields an extra re-send exactly at the deadline); if the resulting `hold_until` lies beyond the deadline the gate stops waiting and returns the last 429 (materialized in the proxy, unread in the plugin) with `Retry-After` ensured: the upstream value when it parses and is at least 1 s, otherwise the remaining hold rounded up (minimum 1). Client disconnect or `AbortSignal` cancels the wait, removes the waiter, and never sends. Pacing advances `next_slot` only for paced keys; the `models` key is never paced. Attribution and econ run inside the first attempt because they need that attempt's credential snapshot; later attempts re-send the cached bytes with a fresh snapshot's headers.
 
 ### Gate key state
 
@@ -309,7 +309,7 @@ Preconditions: `fallback_wait_s > 0`. Postconditions: returns `None` unless `sta
 **Responsibilities & Constraints**
 - Per-key state: `next_slot` (monotonic), `hold_until` (monotonic), `waiters: deque[asyncio.Future]`; `attempt_index` per run for backoff growth.
 - Total held count across keys is bounded by `max_queue`; a run that would exceed it returns a synthesized 429 immediately (`Retry-After` = remaining hold or pacing interval, rounded up, minimum 1).
-- `run` loop: enqueue → wait for head position → wait until `max(next_slot, hold_until)` or stop at `deadline` → advance `next_slot` for paced keys → `response = await attempt()` → if `classify` is `None` return response; else read body up to 64 KiB, close response, record rejection, set `hold_until = now + min(wait, max_wait_s)`, call `warn(key, wait)` once per hold start, re-enter at head; if `hold_until > deadline` return the materialized 429 with `Retry-After` ensured.
+- `run` loop: enqueue → wait for head position → wait until `max(next_slot, hold_until)` or stop at `deadline` → advance `next_slot` for paced keys → `response = await attempt()` → if `classify` is `None` return response; else read body up to 64 KiB, close response, record rejection, compute the unclamped `wait`; always set the key's `hold_until = max(hold_until, now + min(wait, max_wait_s))` and call `warn(key, hold)` once per hold start, so later runs on that key stay held even when this run gives up (Req 2.2); then, if `now + wait > deadline` return the materialized 429 with `Retry-After` ensured, else re-enter at head. The materialized and synthesized 429s carry their headers as raw bytes so non-ASCII upstream values round-trip.
 - Cancellation (`asyncio.CancelledError`) removes the waiter, wakes the next, and re-raises; nothing is sent.
 - Exceptions from `attempt()` (for example `AuthError`) propagate unchanged after releasing the position.
 - Injectable `clock` (any `() -> float`, monotonic by default), `sleep`, `random`, `warn` for tests and logging.
@@ -333,7 +333,7 @@ class GateRecord:
 
 # mvibe_proxy/ratelimit.py
 class UpstreamGate:
-    def __init__(self, config: RateLimitConfig, *, clock: Callable[[], float] = time.monotonic,
+    def __init__(self, config: RateLimitConfig, *, clock: Callable[[], float] = time.perf_counter,  # monotonic; perf_counter avoids the 15.6 ms Windows tick
                  wall_clock: Callable[[], float] = time.time,          # POSIX seconds, only for HTTP-date Retry-After
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
                  random: Callable[[], float] = random.random,
