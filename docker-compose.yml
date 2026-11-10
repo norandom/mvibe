@@ -34,9 +34,9 @@ services:
       context: .
       args:
         # mmhmem release tag (no leading v) whose CI-built binary is embedded
-        # as the economics child (/usr/local/bin/mmhmem), downloaded from the
-        # published release and checksum-verified at build time. The binary
-        # is inert while economics stays off below.
+        # as the stdio child (/usr/local/bin/mmhmem), downloaded from the
+        # published release and checksum-verified at build time. It serves the
+        # stats propagation below and, when enabled, token economics.
         MMHMEM_VERSION: ${MMHMEM_VERSION:-0.5.2}
     image: mvibe-proxy:local
     init: true
@@ -46,17 +46,34 @@ services:
     volumes:
       - "${MVIBE_AUTH_DATA:-${HOME}/.local/share/mvibe-auth}:/data/mvibe-auth:ro"
       - "${MVIBE_KEYRING_DATA:-${HOME}/.local/share/python_keyring}:/data/python_keyring:ro"
-      # This workstation (Docker in WSL Debian), for example:
-      #   MVIBE_AUTH_DATA=/mnt/c/Users/mariu/AppData/Local/mvibe-auth
-      #   MVIBE_KEYRING_DATA=/mnt/c/Users/mariu/AppData/Local/Python Keyring
-      # mmhmem state when economics is enabled (uncomment together with the
-      # named volume at the bottom and AGENT_MEM_DATA_DIR below):
-      # - mmhmem-data:/data/mmhmem
+      # On Windows (Podman) ${HOME} is empty: set both explicitly, for example
+      #   MVIBE_AUTH_DATA=C:\Users\mariu\AppData\Local\mvibe-auth
+      #   MVIBE_KEYRING_DATA=C:\Users\mariu\AppData\Local\Python Keyring
+      # mmhmem state (statistics, caches, audit log) persists next to this
+      # file in ./mmhmem-data (bind mount, resolved against the compose file's
+      # directory). The checkout ships the directory with a .gitkeep so it is
+      # owned by you, not created root-owned by the engine on first start; the
+      # proxy warns at startup when AGENT_MEM_DATA_DIR is not writable by its
+      # uid 1000. Read the statistics with `docker compose exec proxy mmhmem
+      # stats` or GET /stats on the proxy.
+      - "./mmhmem-data:/data/mmhmem"
     environment:
       XDG_DATA_HOME: /data
       # keyring core has no file backend in a container; the docker extra
       # (keyrings.alt) reads the mounted keyring_pass.cfg instead.
       PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+      # mmhmem state lives on the ./mmhmem-data bind mount above; the stdio
+      # child inherits these two keys (durable store + hash-only audit log).
+      AGENT_MEM_DATA_DIR: /data/mmhmem
+      AGENT_MEM_LOG_FILE: /data/mmhmem/audit/mmhmem.log
+      # Stats propagation (on by default): the proxy reports its measured
+      # token usage to the embedded mmhmem child so `mmhmem stats` shows real
+      # spend next to the estimated savings, and GET /stats returns both. The
+      # stats key names the same embedded binary without turning economics on;
+      # MVIBE_STATS_MMHMEM_BIN falls back to MVIBE_ECON_MMHMEM_BIN when only
+      # the economics key is set. Set MVIBE_STATS_USAGE to 0 to opt out.
+      MVIBE_STATS_USAGE: "1"
+      MVIBE_STATS_MMHMEM_BIN: /usr/local/bin/mmhmem
       # Token economics (off by default; Req 1.1): uncomment
       # MVIBE_ECON_MMHMEM_BIN to enable, and add "--econ" to command below for
       # fail-fast startup on incomplete configuration. Tool-result contents
@@ -79,8 +96,6 @@ services:
       # WORKER_API_URL: https://your-worker-endpoint
       # WORKER_MODEL: your-provider/your-model
       # WORKER_API_KEY: change-me
-      # AGENT_MEM_DATA_DIR: /data/mmhmem
-      # AGENT_MEM_LOG_FILE: /data/mmhmem/audit/mmhmem.log
     # Same default auth flow as the tested OpenCode provider: existing-vibe.
     # When economics is enabled above, append "--econ" for fail-fast startup:
     # command: ["--host", "0.0.0.0", "--port", "8765", "--econ"]
@@ -91,7 +106,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-
-# Uncomment together with the mmhmem-data mount above (economics enabled):
-# volumes:
-#   mmhmem-data:

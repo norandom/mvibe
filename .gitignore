@@ -13,3 +13,7 @@ node_modules/
 coverage/
 reports/
 .tmp/
+
+# mmhmem state bind-mounted by docker-compose.yml (statistics, caches, audit); keep only the placeholder
+mmhmem-data/*
+!mmhmem-data/.gitkeep

@@ -76,3 +76,22 @@ def test_docker_mmhmem_release_pin_and_single_ci_pipeline():
     assert "\n  docker:\n" not in workflow, (
         "Container checks belong in .dagger/ci.py, not a separate release.yml docker job"
     )
+
+
+def test_compose_persists_mmhmem_state_next_to_the_compose_file():
+    """proxy-stats-propagation Req 4.1/4.4/4.6: the bind mount, data-dir keys and
+    the stats keys are active (not commented), and the placeholder keeps the
+    directory in the checkout so it is never created root-owned on first start."""
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    active = [line for line in compose.splitlines() if not line.lstrip().startswith("#")]
+    rendered = "\n".join(active)
+    assert '"./mmhmem-data:/data/mmhmem"' in rendered
+    assert "AGENT_MEM_DATA_DIR: /data/mmhmem" in rendered
+    assert "AGENT_MEM_LOG_FILE: /data/mmhmem/audit/mmhmem.log" in rendered
+    assert 'MVIBE_STATS_USAGE: "1"' in rendered
+    assert "MVIBE_STATS_MMHMEM_BIN: /usr/local/bin/mmhmem" in rendered
+    # Economics stays opt-in: its binary key must not be active by default.
+    assert not re.search(r"^\s*MVIBE_ECON_MMHMEM_BIN:", rendered, re.M)
+    assert (ROOT / "mmhmem-data" / ".gitkeep").is_file()
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "mmhmem-data/*" in gitignore and "!mmhmem-data/.gitkeep" in gitignore
