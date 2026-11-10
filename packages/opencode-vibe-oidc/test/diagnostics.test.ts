@@ -2,6 +2,7 @@ import { test, expect, spyOn } from "bun:test";
 import { createProviderFetch } from "../src/provider.js";
 import { BridgeError } from "../src/bridge.js";
 import type { StdioBridge } from "../src/bridge.js";
+import { parseRateLimitOptions, UpstreamGate } from "../src/rate-limit.js";
 
 const audience = "https://private-audience.example.test/private-prefix";
 const url = audience + "/v1/chat/completions?secret=query";
@@ -105,4 +106,27 @@ test.each(["resolve", "transport", "policy", "cancelled"])("safe failure diagnos
     expect(JSON.stringify(row)).not.toContain("secret"); expect(row.status).toBe(null);
     expect(sends).toBe(failure === "transport" ? 1 : 0);
   } finally { stderr.mockRestore(); }
+});
+
+test.each([false, true])("gate fields reach only the opt-in diagnostics line (enabled: %p): held time and rejections, never headers or bodies", async enabled => {
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  const stdout = spyOn(console, "log").mockImplementation(() => {});
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  let time = 0, sends = 0;
+  const gate = new UpstreamGate(parseRateLimitOptions(undefined), { now: () => time, wallNow: () => time, sleep: async ms => { time += ms; }, random: () => 0.5 });
+  const answers = [new Response("secret-rate-limit-body", { status: 429, headers: { "x-ratelimit-remaining-req-minute": "secret-remaining" } }), new Response(null, { status: 200 })];
+  const fetch = createProviderFetch(bridge, audience, async () => { sends++; return answers.shift()!; }, { gate, ...(enabled ? { diagnostics: true } : {}) });
+  try {
+    const result = await fetch(url, { method: "POST", body: '{"model":"mistral-large-4","messages":"secret-prompt"}' });
+    expect(result.status).toBe(200); expect(sends).toBe(2);
+    expect(stdout).not.toHaveBeenCalled(); expect(warn).not.toHaveBeenCalled(); expect(stderr.mock.calls).toHaveLength(enabled ? 1 : 0);
+    if (enabled) {
+      const row = JSON.parse(stderr.mock.calls[0]![0]);
+      expect(row).toMatchObject({ event: "provider_request", phase: "response_headers", outcome: "headers_received", status: 200, model: "mistral-large-4" });
+      expect(typeof row.queued_ms).toBe("number"); expect(typeof row.rate_limit_rejections).toBe("number");
+      expect(row.queued_ms).toBe(1000); expect(row.rate_limit_rejections).toBe(1);
+      expect(Object.keys(row).sort()).toEqual(["elapsed_ms", "endpoint", "event", "hint", "model", "outcome", "phase", "queued_ms", "rate_limit_rejections", "request_id", "status"]);
+      expect(JSON.stringify(row)).not.toMatch(/secret|private|example|x-ratelimit/);
+    }
+  } finally { stderr.mockRestore(); stdout.mockRestore(); warn.mockRestore(); }
 });
