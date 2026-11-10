@@ -52,7 +52,8 @@ def app_for(streams, *, status=200, headers=None, clock=None):
     return app, requests, client
 
 
-async def call(app, *, send_hook=None, query=b'', body=b'', method='GET', disconnect=None, scopes=None):
+async def call(app, *, send_hook=None, query=b'', body=b'', method='GET', disconnect=None, scopes=None,
+               path=None):
     messages = []
     read = False
     async def receive():
@@ -70,7 +71,7 @@ async def call(app, *, send_hook=None, query=b'', body=b'', method='GET', discon
             await send_hook(message)
     scope = {'type': 'http', 'asgi': {'version': '3.0', 'spec_version': '2.4'},
              'http_version': '1.1', 'method': method, 'scheme': 'http',
-             'path': '/v1/models' if method == 'GET' else '/v1/chat/completions',
+             'path': path or ('/v1/models' if method == 'GET' else '/v1/chat/completions'),
              'raw_path': b'/v1/models', 'query_string': query, 'root_path': '',
              'headers': [], 'client': ('local', 1), 'server': ('local', 80)}
     if scopes is not None:
@@ -607,3 +608,328 @@ async def test_acquire_watching_respects_retirement():
     finally:
         task.cancel()
     assert stopped.is_set() and not owner._active
+
+
+# ---- Read-only observer tap (proxy-stats-propagation 1.1) ----
+
+class Tap:
+    """An observe_factory and its observer, recording what each was handed.
+
+    `raise_on` is the index of the observe() call that raises; `factory_error`
+    makes the factory itself raise."""
+    def __init__(self, *, raise_on=None, factory_error=False):
+        self.upstreams = []
+        self.seen = []
+        self.raise_on = raise_on
+        self.factory_error = factory_error
+
+    def factory(self, upstream):
+        self.upstreams.append(upstream)
+        if self.factory_error:
+            raise RuntimeError('synthetic-secret-factory-error')
+        return self.observe
+
+    def observe(self, chunk):
+        self.seen.append(chunk)
+        if self.raise_on == len(self.seen) - 1:
+            raise RuntimeError('synthetic-secret-observer-error')
+
+    @property
+    def chunks(self):
+        return [chunk for chunk in self.seen if chunk is not None]
+
+
+class Upper:
+    """A stand-in adapter transform: feed() rewrites each chunk, finish() adds a tail."""
+    def feed(self, chunk):
+        return chunk.upper()
+
+    def finish(self):
+        return b'<tail>'
+
+
+TERMINAL = {'type': 'http.response.body', 'body': b'', 'more_body': False}
+
+
+def tapped(app, factory):
+    """Make every response the app's routes build pass `factory` as observe_factory.
+
+    The routes call response(acquire, diagnostic[, transform]) positionally."""
+    owner = app.state.stream_owner
+    plain = owner.response
+    owner.response = lambda acquire, diagnostic=None, transform=None: plain(
+        acquire, diagnostic, transform, observe_factory=factory)
+
+
+def wire(messages):
+    """The response as the client saw it, minus the per-request id."""
+    return [{**m, 'headers': [h for h in m['headers'] if h[0] != b'x-request-id']}
+            if m['type'] == 'http.response.start' else m for m in messages]
+
+
+async def tapped_run(tap, chunks=(b'first', b'last'), *, headers=None, path=None, body=b'{"model":"m"}'):
+    """One POST through a route; `tap=None` is the no-observer reference run."""
+    app, _, _ = app_for([Stream(chunks)], headers=headers)
+    scopes = []
+    async with app.router.lifespan_context(app):
+        if tap is not None:
+            tapped(app, tap.factory)
+        messages = await asyncio.wait_for(
+            call(app, method='POST', body=body, path=path, scopes=scopes), 5)
+    return wire(messages), scopes[0]['mvibe.diagnostic'].outcome
+
+
+async def owned_run(upstream, *, factory=None, transform=None):
+    """Serve one acquired upstream response straight from a ProxyStreamOwner."""
+    owner, diagnostic = watching_owner()
+    async def receive():
+        await asyncio.Event().wait()
+    async def acquire():
+        await asyncio.sleep(0)
+        return upstream
+    messages = []
+    async def send(message):
+        messages.append(message.copy())
+    if factory is None:
+        # Positional, as every route that predates the observer calls it.
+        response = owner.response(acquire, diagnostic, transform)
+    else:
+        response = owner.response(acquire, diagnostic, transform, observe_factory=factory)
+    await asyncio.wait_for(response({'type': 'http'}, receive, send), 1)
+    assert not owner._active
+    return messages, diagnostic
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('encoding', [None, 'gzip'])
+async def test_observer_sees_every_upstream_chunk_then_completion_and_the_response_is_unchanged(encoding):
+    chunks = (b'data: {"id":"c-1"}\n\n', b'data: {"usage":{"prompt_tokens":5,"completion_tokens":7}}\n\n',
+              b'data: [DONE]\n\n')
+    body = b''.join(chunks)
+    headers = {'content-type': 'text/event-stream'}
+    upstream_chunks = chunks
+    if encoding:
+        # The observer sees what the client is sent: the decoded body.
+        headers['content-encoding'] = encoding
+        upstream_chunks = (gzip.compress(body),)
+    plain, plain_outcome = await tapped_run(None, upstream_chunks, headers=headers)
+    tap = Tap()
+    observed, outcome = await tapped_run(tap, upstream_chunks, headers=headers)
+    assert observed == plain and outcome == plain_outcome == 'completed'
+    assert b''.join(m.get('body', b'') for m in observed) == body and observed[-1] == TERMINAL
+    # One factory call, with the acquired upstream response: status and headers readable.
+    assert len(tap.upstreams) == 1 and isinstance(tap.upstreams[0], httpx2.Response)
+    assert tap.upstreams[0].status_code == 200
+    assert tap.upstreams[0].headers['content-type'] == 'text/event-stream'
+    # Every chunk in order, then exactly one terminal None.
+    assert tap.seen[-1] is None and tap.seen.count(None) == 1
+    assert b''.join(tap.chunks) == body
+    if encoding is None:
+        assert tap.chunks == list(chunks)
+
+
+@pytest.mark.anyio
+async def test_adapter_replay_acquire_hands_the_factory_the_raw_upstream_before_the_transform():
+    owner, diagnostic = watching_owner()
+    stream = Stream((b'raw-one', b'raw-two'))
+    upstream = httpx2.Response(200, headers={'content-type': 'text/event-stream'}, stream=stream)
+    async def receive():
+        await asyncio.Event().wait()
+    async def acquire():
+        await asyncio.sleep(0)
+        return upstream
+    # As adapter_post: acquire while watching, inspect, then replay that response.
+    acquired = await asyncio.wait_for(owner.acquire_watching(receive, acquire, diagnostic), 1)
+    async def replay():
+        return acquired
+    log = []
+    def factory(response):
+        log.append(('factory', response))
+        return lambda chunk: log.append(('observe', chunk))
+    async def send(message):
+        log.append((message['type'].rsplit('.', 1)[1], message.get('body')))
+    response = owner.response(replay, diagnostic, Upper(), observe_factory=factory)
+    await asyncio.wait_for(response({'type': 'http'}, receive, send), 1)
+    # Made once, before the response starts; each raw chunk is observed before
+    # its transformed form is sent; completion is observed once the body is read.
+    assert log == [('factory', upstream), ('start', None),
+                   ('observe', b'raw-one'), ('body', b'RAW-ONE'),
+                   ('observe', b'raw-two'), ('body', b'RAW-TWO'),
+                   ('observe', None), ('body', b'<tail>'), ('body', b'')]
+    assert log[0][1] is upstream and stream.closed.is_set()
+    assert diagnostic.outcome == 'completed' and not owner._active
+
+
+ANTHROPIC_STREAM = (
+    b'data: {"id":"chat-1","choices":[{"delta":{"role":"assistant","content":""}}]}\n\n',
+    b'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n',
+    b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}\n\n',
+    b'data: [DONE]\n\n')
+OLLAMA_JSON = (b'{"id":"chat-1","model":"m","choices":[{"index":0,"finish_reason":"stop",',
+               b'"message":{"role":"assistant","content":"OK"}}],"usage":{"prompt_tokens":8,"completion_tokens":2}}')
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('path,body,chunks,content_type', [
+    ('/v1/messages', b'{"model":"m","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}',
+     ANTHROPIC_STREAM, 'text/event-stream'),
+    ('/api/chat', b'{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}]}',
+     OLLAMA_JSON, 'application/json'),
+], ids=['anthropic-stream', 'ollama-json'])
+async def test_adapter_routes_observe_the_upstream_bytes_not_the_translation(path, body, chunks, content_type,
+                                                                             monkeypatch):
+    from mvibe_proxy import compat
+    # Ollama bodies carry a wall-clock created_at; fix it so the two runs compare.
+    monkeypatch.setattr(compat, '_now', lambda: '2026-01-01T00:00:00+00:00')
+    headers = {'content-type': content_type}
+    plain, _ = await tapped_run(None, chunks, headers=headers, path=path, body=body)
+    tap = Tap()
+    observed, outcome = await tapped_run(tap, chunks, headers=headers, path=path, body=body)
+    assert observed == plain and outcome == 'completed' and observed[-1] == TERMINAL
+    translated = b''.join(m.get('body', b'') for m in observed)
+    assert translated and translated != b''.join(chunks)
+    assert len(tap.upstreams) == 1 and tap.seen == [*chunks, None]
+
+
+@pytest.mark.anyio
+async def test_a_raising_observe_factory_leaves_the_response_unchanged():
+    plain, _ = await tapped_run(None)
+    tap = Tap(factory_error=True)
+    observed, outcome = await tapped_run(tap)
+    assert observed == plain and observed[-1] == TERMINAL and outcome == 'completed'
+    assert len(tap.upstreams) == 1 and not tap.seen
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('raise_on,seen', [
+    (0, [b'one']), (1, [b'one', b'two']), (3, [b'one', b'two', b'three', None])],
+    ids=['first-chunk', 'second-chunk', 'completion'])
+async def test_an_observer_that_raises_is_dropped_and_the_response_is_unchanged(raise_on, seen):
+    chunks = (b'one', b'two', b'three')
+    plain, _ = await tapped_run(None, chunks)
+    tap = Tap(raise_on=raise_on)
+    observed, outcome = await tapped_run(tap, chunks)
+    assert observed == plain and observed[-1] == TERMINAL and outcome == 'completed'
+    # Never called again after the call that raised.
+    assert tap.seen == seen
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('stage', ['body', 'send', 'disconnect', 'cancel'])
+async def test_an_interrupted_stream_never_reports_completion_to_the_observer(stage):
+    from mvibe_proxy.streaming import StreamAborted
+    gone = asyncio.Event()
+    stream = Stream(error=stage == 'body', gate=asyncio.Event() if stage == 'disconnect' else None)
+    app, _, _ = app_for([stream])
+    tap = Tap()
+    async def interrupt(message):
+        if message.get('body') == b'first':
+            if stage == 'send':
+                raise OSError('synthetic-secret-send-error')
+            if stage == 'cancel':
+                raise asyncio.CancelledError
+            if stage == 'disconnect':
+                gone.set()
+    async with app.router.lifespan_context(app):
+        tapped(app, tap.factory)
+        if stage == 'disconnect':
+            # The upstream's second chunk stays blocked while the client leaves.
+            await asyncio.wait_for(call(app, send_hook=interrupt, disconnect=gone), 1)
+        elif stage == 'cancel':
+            with pytest.raises(asyncio.CancelledError):
+                await call(app, send_hook=interrupt)
+        else:
+            with pytest.raises(StreamAborted):
+                await asyncio.wait_for(call(app, send_hook=interrupt), 1)
+        assert stream.closed.is_set()
+    assert len(tap.upstreams) == 1 and None not in tap.seen
+    # A body error after the last chunk was read still is not a completion.
+    assert tap.seen == ([b'first', b'last'] if stage == 'body' else [b'first'])
+
+
+@pytest.mark.anyio
+async def test_no_observer_is_made_when_the_client_left_before_the_response_started():
+    owner, diagnostic = watching_owner()
+    stream = Stream()
+    upstream = httpx2.Response(200, stream=stream)
+    async def receive():
+        return {'type': 'http.disconnect'}
+    async def acquire():
+        # Finish acquiring even though the watcher saw the disconnect meanwhile.
+        with anyio.CancelScope(shield=True):
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        return upstream
+    tap = Tap()
+    messages = []
+    async def send(message):
+        messages.append(message)
+    response = owner.response(acquire, diagnostic, observe_factory=tap.factory)
+    await asyncio.wait_for(response({'type': 'http'}, receive, send), 1)
+    assert not messages and stream.closed.is_set() and diagnostic.outcome == 'cancelled'
+    assert not tap.upstreams and not tap.seen
+
+
+@pytest.mark.anyio
+async def test_completion_follows_the_upstream_body_even_when_its_close_then_fails():
+    # The whole upstream body was read (its tokens were spent) before the close
+    # failed and retired the client: the observer is told; the client is not.
+    from mvibe_proxy.streaming import StreamAborted
+    stream = Stream()
+    async def broken():
+        raise OSError('synthetic-secret-close-error')
+    stream.aclose = broken
+    app, _, _ = app_for([stream])
+    tap = Tap()
+    messages = []
+    async def record(message):
+        messages.append(message)
+    async with app.router.lifespan_context(app):
+        tapped(app, tap.factory)
+        with pytest.raises(StreamAborted):
+            await asyncio.wait_for(call(app, send_hook=record), 1)
+        assert app.state.stream_owner.retired
+    assert tap.seen == [b'first', b'last', None]
+    assert not any(m.get('more_body') is False for m in messages)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('status', [204, 205, 304])
+async def test_a_bodyless_status_gets_an_observer_that_sees_no_chunks_and_no_completion(status):
+    tap = Tap()
+    stream = Stream()
+    upstream = httpx2.Response(status, stream=stream)
+    messages, diagnostic = await owned_run(upstream, factory=tap.factory)
+    assert messages[0]['status'] == status and messages[1:] == [TERMINAL]
+    assert len(tap.upstreams) == 1 and tap.upstreams[0] is upstream
+    assert tap.seen == [] and not stream.iterated and stream.closed.is_set()
+    assert diagnostic.outcome == 'completed'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('status', [429, 500])
+async def test_an_error_status_body_is_observed_like_any_other(status):
+    payload = (b'{"error":', b'{"message":"busy"}}')
+    tap = Tap()
+    upstream = httpx2.Response(status, headers={'content-type': 'application/json'}, stream=Stream(payload))
+    messages, _ = await owned_run(upstream, factory=tap.factory)
+    assert messages[0]['status'] == status and messages[-1] == TERMINAL
+    assert b''.join(m.get('body', b'') for m in messages) == b''.join(payload)
+    assert tap.upstreams[0] is upstream and tap.seen == [*payload, None]
+
+
+@pytest.mark.anyio
+async def test_without_a_factory_the_stream_never_enters_the_observer_path(monkeypatch):
+    from mvibe_proxy import streaming
+    tapped_chunks = []
+    def recording(observe, chunk):
+        tapped_chunks.append(chunk)
+        return True
+    monkeypatch.setattr(streaming, '_observe', recording)
+    messages, diagnostic = await owned_run(httpx2.Response(200, stream=Stream()), transform=Upper())
+    assert b''.join(m.get('body', b'') for m in messages) == b'FIRSTLAST<tail>'
+    assert messages[-1] == TERMINAL and diagnostic.outcome == 'completed'
+    assert tapped_chunks == []
+    # Control: the same path with a factory does go through the tap.
+    await owned_run(httpx2.Response(200, stream=Stream()), factory=Tap().factory, transform=Upper())
+    assert tapped_chunks == [b'first', b'last', None]

@@ -17,6 +17,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger('mvibe.proxy')
 
+# A read-only tap on one upstream response: called with each raw upstream
+# chunk, then once with None when the body has been read to its end.
+Observer = Callable[[bytes | None], None]
+# Builds the tap for an acquired upstream response (status and headers set,
+# body unread); None means nothing is observed.
+ObserverFactory = Callable[[httpx2.Response], Observer | None]
+
 
 class StreamAborted(RuntimeError):
     """A started response cannot be completed after transport retirement."""
@@ -35,6 +42,18 @@ async def _watch_disconnect(receive: Callable[[], Awaitable[dict]],
         if message['type'] == 'http.disconnect':
             on_disconnect()
             return
+
+
+def _observe(observe: Observer, chunk: bytes | None) -> bool:
+    """Hand one chunk, or the terminal None, to an observer; never raises.
+
+    False means the observer failed: the caller drops it for the rest of the
+    response, so forwarded bytes and completion never depend on it."""
+    try:
+        observe(chunk)
+    except Exception:
+        return False
+    return True
 
 
 def _start_headers(upstream) -> list[tuple[bytes, bytes]]:
@@ -120,8 +139,9 @@ class ProxyStreamOwner:
             scope.cancel()
         await self._protected(self._close_client())
 
-    def response(self, acquire: Callable[[], Awaitable], diagnostic=None, transform=None):
-        return _OwnedResponse(self, acquire, diagnostic, transform)
+    def response(self, acquire: Callable[[], Awaitable], diagnostic=None, transform=None,
+                 observe_factory: ObserverFactory | None = None):
+        return _OwnedResponse(self, acquire, diagnostic, transform, observe_factory)
 
     async def _discard(self, upstream, diagnostic=None) -> None:
         # Bounded close of an acquired response that no client will read.
@@ -198,7 +218,8 @@ class _OwnedByteStream(httpx2.AsyncByteStream):
 
 
 class _OwnedResponse(Response):
-    def __init__(self, owner: ProxyStreamOwner, acquire: Callable[[], Awaitable], diagnostic=None, transform=None):
+    def __init__(self, owner: ProxyStreamOwner, acquire: Callable[[], Awaitable], diagnostic=None, transform=None,
+                 observe_factory: ObserverFactory | None = None):
         super().__init__(content=b'')
         self.owner = owner
         self.acquire = acquire
@@ -206,17 +227,42 @@ class _OwnedResponse(Response):
         # Optional adapter transform: feed(chunk)->bytes, finish()->bytes tail.
         # None keeps the raw passthrough byte-exact.
         self.transform = transform
+        # Optional read-only tap, built once per acquired upstream response.
+        self.observe_factory = observe_factory
+
+    def _observer(self, upstream) -> Observer | None:
+        if self.observe_factory is None:
+            return None
+        try:
+            return self.observe_factory(upstream)
+        except Exception:
+            # A failing factory only means this response is not observed.
+            return None
 
     @staticmethod
-    async def _stream_body(upstream, send, transform=None) -> None:
+    async def _stream_body(upstream, send, transform=None, observe: Observer | None = None) -> None:
+        """Forward the upstream body, through `transform` when one is set.
+
+        `observe` sees each raw upstream chunk before the transform and the
+        send, then None once, only after the upstream body was read to its end
+        (a later failing tail or close does not take that back). An interrupted
+        read (cancellation, disconnect, send or upstream body failure) never
+        reports completion, and a bodyless status (1xx, 204, 205, 304) is not
+        read, so its observer sees nothing. The first observer exception drops
+        the observer for the rest of the response.
+        """
         if upstream.status_code not in (204, 205, 304) and upstream.status_code >= 200:
             async for chunk in upstream.aiter_bytes():
+                if observe is not None and not _observe(observe, chunk):
+                    observe = None
                 if transform is not None:
                     out = transform.feed(chunk)
                     if out:
                         await send({'type': 'http.response.body', 'body': out, 'more_body': True})
                 else:
                     await send({'type': 'http.response.body', 'body': chunk, 'more_body': True})
+            if observe is not None:
+                _observe(observe, None)
             if transform is not None:
                 tail = transform.finish()
                 if tail:
@@ -265,6 +311,8 @@ class _OwnedResponse(Response):
                             self.diagnostic.failure('connection')
                         error = JSONResponse({'error': {'message': 'Upstream connection failed'}}, status_code=502)
                     if error is None and not disconnected:
+                        # Only a response that will be streamed gets an observer.
+                        observe = self._observer(upstream)
                         # Treat even an interrupted start send as committed: never
                         # attempt replacement headers/JSON after invoking send.
                         await send({'type': 'http.response.start', 'status': upstream.status_code,
@@ -274,9 +322,9 @@ class _OwnedResponse(Response):
                         telemetry = getattr(scope['app'].state, 'telemetry', None) if 'app' in scope else None
                         if telemetry is not None:
                             with telemetry.tracer.start_as_current_span('proxy.stream'):
-                                await self._stream_body(upstream, send, self.transform)
+                                await self._stream_body(upstream, send, self.transform, observe)
                         else:
-                            await self._stream_body(upstream, send, self.transform)
+                            await self._stream_body(upstream, send, self.transform, observe)
                         # Bodyless/cached responses may bypass iterator auto-close.
                         # Finish ownership before declaring downstream completion.
                         await upstream.aclose()
