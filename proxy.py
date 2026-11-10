@@ -31,7 +31,7 @@ from starlette.requests import ClientDisconnect
 import json
 from urllib.parse import urlencode
 from mvibe_proxy import compat
-from mvibe_proxy.streaming import ProxyStreamOwner
+from mvibe_proxy.streaming import ClientDisconnected, ProxyStreamOwner
 from mvibe_proxy.diagnostics import GateRecord, ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout, configure_exporter, clear_exporter, emit_econ_warm
 from mvibe_proxy.econ import EconConfig, EconConfigError, EconShunt, McpError, StdioMcpClient
 from mvibe_proxy.observability import ObserveConfig, ObserveConfigError, OpenObserveExporter, start_telemetry, inject_traceparent
@@ -439,11 +439,23 @@ def create_app(
                 return JSONResponse(payload, status_code=status)
             acquire = make_acquire(request, target, json.dumps(upstream_body).encode(), diagnostic)
             try:
-                upstream = await acquire()
-            except AuthError:
-                diagnostic.failure('auth')
-                return JSONResponse({'error': {'message': 'Vibe authentication failed; run proxy.py --login'}}, status_code=401)
-            except Exception:
+                # The body is read, so the owner watches receive() while the
+                # request is acquired, held included: a client leaving cancels
+                # it before anything more reaches the upstream (Req 2.4).
+                upstream = await request.app.state.stream_owner.acquire_watching(
+                    request.receive, acquire, diagnostic)
+            except ClientDisconnected:
+                # Recorded as `cancelled`; the client is gone, so nothing to say.
+                return Response(status_code=204)
+            except Exception as error:
+                # A failing receive() arrives wrapped by the watcher's task group;
+                # such a group is an auth failure only when every member is one.
+                auth = (error.split(AuthError)[1] is None if isinstance(error, ExceptionGroup)
+                        else isinstance(error, AuthError))
+                if auth:
+                    diagnostic.failure('auth')
+                    return JSONResponse({'error': {'message': 'Vibe authentication failed; run proxy.py --login'}}, status_code=401)
+                # Transport failures, StreamAborted on retirement, a failing receive().
                 diagnostic.failure('connection')
                 return JSONResponse({'error': {'message': 'Upstream connection failed'}}, status_code=502)
             if upstream.status_code >= 400:
@@ -451,7 +463,15 @@ def create_app(
                 diagnostic.upstream(upstream.status_code)
                 status, payload = compat.adapter_error(dialect, upstream.status_code,
                                                        compat.upstream_error_hint(upstream.status_code))
-                return JSONResponse(payload, status_code=status)
+                # The dialect body stays curated (Req 2.6); only a 429 carries
+                # the upstream's rate-limit guidance headers (Req 6.4).
+                guidance = None
+                if upstream.status_code == 429:
+                    guidance = {name.decode('latin-1').lower(): value.decode('latin-1')
+                                for name, value in upstream.headers.raw
+                                if name.lower() == b'retry-after'
+                                or name.lower().startswith(b'x-ratelimit-')}
+                return JSONResponse(payload, status_code=status, headers=guidance)
             if inspect is not None:
                 early = await inspect(upstream, adapter_body)
                 if early is not None:

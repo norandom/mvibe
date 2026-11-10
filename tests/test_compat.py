@@ -1,4 +1,5 @@
 """Offline contract tests for the Ollama- and Anthropic-compatible adapter routes."""
+import asyncio
 import json
 
 import httpx
@@ -6,7 +7,11 @@ import httpx2
 import pytest
 
 import proxy
-from test_proxy import Session
+from fakes import Clock
+from mvibe_auth.api import AuthError, AuthFailure
+from mvibe_proxy import compat, diagnostics
+from test_proxy import (SHORT_WAIT, UPSTREAM_LATENCY, Session, answers, body_of, clocked_gate,
+                        harness, raw_asgi)
 
 
 class SSEStream(httpx2.AsyncByteStream):
@@ -387,3 +392,242 @@ async def test_openapi_documents_adapter_operations():
     paths = app.openapi()['paths']
     for path in ['/api/version', '/api/tags', '/api/chat', '/api/generate', '/api/show', '/api/embed', '/v1/messages']:
         assert path in paths, path
+
+
+# ---------- Rate-limit gate on the adapter routes (upstream-rate-limit-queue 2.5) ----------
+# Requirements 2.3, 2.4, 2.6, 6.4: adapter routes acquire through the stream
+# owner's disconnect watcher, and an exhausted upstream 429 keeps its dialect
+# error body while carrying the upstream rate-limit guidance headers.
+
+RATE_LIMITED_BODY = b'{"object":"error","message":"Rate limit exceeded","type":"rate_limited"}'
+RATE_LIMITED_HEADERS = {'content-type': 'application/json', 'retry-after': '30',
+                        'x-ratelimit-limit-req-minute': '5', 'x-ratelimit-remaining-req-minute': '0'}
+OLLAMA_CHAT = json.dumps({'model': 'mistral-large-4', 'stream': False,
+                          'messages': [{'role': 'user', 'content': 'hi'}]}).encode()
+ANTHROPIC_MESSAGES = json.dumps({'model': 'mistral-large-4', 'max_tokens': 32, 'stream': False,
+                                 'messages': [{'role': 'user', 'content': 'hi'}]}).encode()
+
+
+def holding_sleep(clock):
+    """A gate sleep that blocks until `release` is set; `holding` is set as each wait starts."""
+    holding, release = asyncio.Event(), asyncio.Event()
+
+    async def sleep(seconds):
+        holding.set()
+        await release.wait()
+        clock.advance(seconds)
+    return sleep, holding, release
+
+
+def client_after_body(body, then, events):
+    """receive() delivering `body` once, then answering every later call with `then()`."""
+    delivered = False
+
+    async def receive():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            events.append('body')
+            return {'type': 'http.request', 'body': body, 'more_body': False}
+        events.append('watching')
+        return await then()
+    return receive
+
+
+def leaves_when(gone):
+    async def disconnect():
+        await gone.wait()
+        return {'type': 'http.disconnect'}
+    return disconnect
+
+
+async def eventually(condition):
+    async def poll():
+        while not condition():
+            await asyncio.sleep(0)
+    await asyncio.wait_for(poll(), 5)
+
+
+def held_then_accepted(clock):
+    """An upstream rejecting the first send with Retry-After 2, accepting every later one."""
+    return answers(clock, (429, {'retry-after': '2'}, b'{"message":"rate limited"}'),
+                   (200, {}, json.dumps(CHAT_UPSTREAM).encode()))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('path', 'dialect', 'body', 'headers'), [
+    ('/api/chat', 'ollama', OLLAMA_CHAT, {}),
+    ('/v1/messages', 'anthropic', ANTHROPIC_MESSAGES, {'anthropic-version': '2023-06-01'}),
+])
+async def test_adapter_exhaustion_keeps_the_dialect_error_and_carries_rate_limit_headers(
+        capsys, path, dialect, body, headers):
+    clock = Clock()
+    app, _, sent, _ = harness(
+        upstream=answers(clock, (429, RATE_LIMITED_HEADERS, RATE_LIMITED_BODY), latency=UPSTREAM_LATENCY),
+        rate_limit_config=SHORT_WAIT, gate_factory=clocked_gate(clock))
+    diagnostics.configure_stdout()
+    try:
+        async with app.router.lifespan_context(app):
+            response = await asyncio.wait_for(call(app, 'POST', path, body=body, headers=headers), 5)
+        rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    finally:
+        diagnostics.disable_stdout()
+    # Retry-After 30 s cannot be honoured within the 1 s maximum wait: one send,
+    # then the gate's materialized 429, translated into the route's dialect.
+    assert len(sent) == 1
+    assert response.status_code == 429
+    assert response.json() == compat.adapter_error(dialect, 429, compat.upstream_error_hint(429))[1]
+    assert 'Rate limit exceeded' not in response.text
+    if dialect == 'anthropic':
+        assert response.json()['error']['type'] == 'rate_limit_error'
+    assert response.headers['retry-after'] == '30'
+    assert response.headers['x-ratelimit-limit-req-minute'] == '5'
+    assert response.headers['x-ratelimit-remaining-req-minute'] == '0'
+    row = rows[-1]
+    assert (row['outcome'], row['status']) == ('rate_limited', 429)
+    assert row['request_id'] == response.headers['x-request-id']
+    assert 'Rate limit exceeded' not in json.dumps(rows)
+
+
+@pytest.mark.anyio
+async def test_an_adapter_client_leaving_during_its_hold_is_cancelled_and_never_resent():
+    clock = Clock()
+    sleep, holding, release = holding_sleep(clock)
+    gone = asyncio.Event()
+    app, session, sent, _ = harness(upstream=held_then_accepted(clock),
+                                    gate_factory=clocked_gate(clock, sleep=sleep))
+    messages, scopes = [], []
+    async with app.router.lifespan_context(app):
+        gate = app.state.rate_gate
+        task = asyncio.create_task(raw_asgi(
+            app, 'POST', '/api/chat', events=session.events, messages=messages, scopes=scopes,
+            receive=client_after_body(OLLAMA_CHAT, leaves_when(gone), session.events)))
+        try:
+            await asyncio.wait_for(holding.wait(), 5)
+            # Held after the 429: one send, nothing toward the client.
+            assert len(sent) == 1 and messages == [] and not task.done()
+            gone.set()
+            # An ordinary disconnect: the app returns normally, within the bound.
+            await asyncio.wait_for(task, 5)
+            assert gate.held == 0
+            # Ending the hold now finds no waiter left to send.
+            release.set()
+            for _ in range(10):
+                await asyncio.sleep(0)
+        finally:
+            task.cancel()
+    assert len(sent) == 1
+    assert scopes[0]['mvibe.diagnostic'].outcome == 'cancelled'
+    starts = [m for m in messages if m['type'] == 'http.response.start']
+    assert not starts or [m['status'] for m in starts] == [204]
+    assert body_of(messages) == b''
+
+
+@pytest.mark.anyio
+async def test_an_adapter_request_waiting_behind_a_hold_and_abandoned_is_never_sent():
+    clock = Clock()
+    sleep, holding, release = holding_sleep(clock)
+    gone = asyncio.Event()
+    second = json.dumps({'model': 'mistral-large-4', 'stream': False,
+                         'messages': [{'role': 'user', 'content': 'second-request'}]}).encode()
+    app, session, sent, _ = harness(upstream=held_then_accepted(clock),
+                                    gate_factory=clocked_gate(clock, sleep=sleep))
+    first_messages, messages, scopes, events = [], [], [], []
+    async with app.router.lifespan_context(app):
+        gate = app.state.rate_gate
+        first = asyncio.create_task(raw_asgi(
+            app, 'POST', '/api/chat', body=OLLAMA_CHAT, events=session.events,
+            messages=first_messages))
+        task = None
+        try:
+            await asyncio.wait_for(holding.wait(), 5)
+            # The model is now held: the next request for it waits behind the hold.
+            task = asyncio.create_task(raw_asgi(
+                app, 'POST', '/api/chat', events=events, messages=messages, scopes=scopes,
+                receive=client_after_body(second, leaves_when(gone), events)))
+            await eventually(lambda: gate.held == 2 and 'watching' in events)
+            gone.set()
+            await asyncio.wait_for(task, 5)
+            assert gate.held == 1
+            release.set()
+            await asyncio.wait_for(first, 5)
+        finally:
+            first.cancel()
+            if task is not None:
+                task.cancel()
+    # The abandoned request produced zero upstream sends; the first was re-sent once.
+    assert not [request for request in sent if b'second-request' in request.content]
+    assert len(sent) == 2
+    assert scopes[0]['mvibe.diagnostic'].outcome == 'cancelled'
+    starts = [m for m in messages if m['type'] == 'http.response.start']
+    assert not starts or [m['status'] for m in starts] == [204]
+    assert body_of(messages) == b''
+    assert first_messages[0]['status'] == 200
+    assert json.loads(body_of(first_messages))['message'] == {'role': 'assistant', 'content': 'OK'}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('failure', 'status', 'outcome', 'message'), [
+    (lambda: RuntimeError('receive failed'), 502, 'connection_failed', 'Upstream connection failed'),
+    (lambda: AuthError(AuthFailure('rejected')), 401, 'auth_failed',
+     'Vibe authentication failed; run proxy.py --login'),
+], ids=['runtime-error', 'auth-error'])
+async def test_a_failing_receive_during_an_adapter_hold_is_answered_safely(failure, status, outcome, message):
+    clock = Clock()
+    sleep, holding, release = holding_sleep(clock)
+
+    async def broken():
+        await holding.wait()
+        raise failure()
+
+    app, session, sent, _ = harness(upstream=held_then_accepted(clock),
+                                    gate_factory=clocked_gate(clock, sleep=sleep))
+    messages, scopes = [], []
+    async with app.router.lifespan_context(app):
+        gate = app.state.rate_gate
+        # Returns normally: the failure becomes the 502 answer, not an escaping error.
+        await asyncio.wait_for(raw_asgi(
+            app, 'POST', '/api/chat', events=session.events, messages=messages, scopes=scopes,
+            receive=client_after_body(OLLAMA_CHAT, broken, session.events)), 5)
+        assert gate.held == 0
+        release.set()
+        for _ in range(10):
+            await asyncio.sleep(0)
+    assert len(sent) == 1
+    # The watcher's task group wraps the failure: a group of auth failures is
+    # the 401 answer, anything else the 502 connection failure.
+    assert messages[0]['type'] == 'http.response.start' and messages[0]['status'] == status
+    assert json.loads(body_of(messages)) == {'error': {'message': message}}
+    assert scopes[0]['mvibe.diagnostic'].outcome == outcome
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('failure', ['auth', 'connection'])
+async def test_adapter_pre_response_failures_keep_their_safe_answers(failure):
+    app, session, sent, _ = harness(fail_send=failure == 'connection')
+    if failure == 'auth':
+        session.failure = AuthFailure('rejected')
+    async with app.router.lifespan_context(app):
+        response = await asyncio.wait_for(call(app, 'POST', '/api/chat', body=OLLAMA_CHAT), 5)
+    assert 'secret' not in response.text
+    if failure == 'auth':
+        assert response.status_code == 401 and '--login' in response.text and not sent
+    else:
+        assert response.status_code == 502
+        assert response.json() == {'error': {'message': 'Upstream connection failed'}}
+
+
+@pytest.mark.anyio
+async def test_a_non_429_adapter_error_carries_no_rate_limit_headers():
+    clock = Clock()
+    app, _, sent, _ = harness(
+        upstream=answers(clock, (400, RATE_LIMITED_HEADERS, b'{"message":"bad request"}'),
+                         latency=UPSTREAM_LATENCY),
+        rate_limit_config=SHORT_WAIT, gate_factory=clocked_gate(clock))
+    async with app.router.lifespan_context(app):
+        response = await asyncio.wait_for(call(app, 'POST', '/api/chat', body=OLLAMA_CHAT), 5)
+    assert len(sent) == 1
+    assert response.status_code == 400
+    assert response.json() == compat.adapter_error('ollama', 400, compat.upstream_error_hint(400))[1]
+    assert 'retry-after' not in response.headers
+    assert not [name for name in response.headers if name.lower().startswith('x-ratelimit-')]
