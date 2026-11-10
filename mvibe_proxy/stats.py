@@ -465,6 +465,10 @@ def _iso(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
 
+#: Queue time from which a request counts as held by pacing or a 429 hold.
+HELD_MIN_QUEUED_MS = 1.0
+
+
 class ProxyCounters:
     """In-process aggregates for GET /stats, fed by the diagnostics sink.
 
@@ -534,7 +538,8 @@ class ProxyCounters:
             rejections = _count(record.rejections) or 0
             self._queued_ms_total += queued_ms
             self._rejections += rejections
-            if queued_ms > 0 or rejections > 0:
+            # Sub-millisecond queue time is event-loop scheduling, not a hold.
+            if queued_ms >= HELD_MIN_QUEUED_MS or rejections > 0:
                 self._held_requests += 1
             if record.exhausted is True:
                 self._exhausted += 1

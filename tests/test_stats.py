@@ -830,10 +830,13 @@ def test_sink_aggregates_a_sequence_of_diagnostics():
 @pytest.mark.parametrize(('record', 'held'), [
     (GateRecord(queued_ms=0.0, rejections=0), 0),
     (GateRecord(queued_ms=0.0, rejections=1), 1),
-    (GateRecord(queued_ms=0.01, rejections=0), 1),
+    (GateRecord(queued_ms=0.01, rejections=0), 0),
+    (GateRecord(queued_ms=0.99, rejections=0), 0),
+    (GateRecord(queued_ms=1.0, rejections=0), 1),
+    (GateRecord(queued_ms=2000.0, rejections=0), 1),
     (GateRecord(queued_ms=0.0, rejections=0, exhausted=True), 0),
 ])
-def test_held_requests_count_any_queueing_or_rejection(record, held):
+def test_held_requests_count_real_waits_and_rejections_not_scheduling_jitter(record, held):
     counters = ProxyCounters(clock=Clock().time)
     counters.observe(_diagnostic(record=record))
     rate_limit = counters.snapshot()['rate_limit']
