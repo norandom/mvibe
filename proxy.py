@@ -32,11 +32,12 @@ import json
 from urllib.parse import urlencode
 from mvibe_proxy import compat
 from mvibe_proxy.streaming import ClientDisconnected, ProxyStreamOwner
-from mvibe_proxy.diagnostics import GateRecord, ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout, configure_exporter, clear_exporter, emit_econ_warm
+from mvibe_proxy.diagnostics import GateRecord, ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout, configure_exporter, clear_exporter, emit_econ_warm, set_counters_sink
 from mvibe_proxy.econ import EconConfig, EconConfigError, EconShunt, McpError, StdioMcpClient
 from mvibe_proxy.observability import ObserveConfig, ObserveConfigError, OpenObserveExporter, start_telemetry, inject_traceparent
 from mvibe_proxy.ratelimit import RateLimitConfig, RateLimitConfigError, UpstreamGate
-from mvibe_proxy.stats import UsageObserver
+from mvibe_proxy import stats as _stats
+from mvibe_proxy.stats import ProxyCounters, StatsConfig, StatsConfigError, UsageObserver
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
 from mvibe_auth.existing_vibe import ExistingVibeSession
 from mvibe_auth.http import VibeAsyncHTTPClient
@@ -197,6 +198,21 @@ def _warn_rate_limit_hold(key: str, wait_s: float) -> None:
     _RATE_LIMIT_LOG.warning('proxy_rate_limit_hold model=%r wait_s=%.1f', key, wait_s)
 
 
+_STATS_LOG = logging.getLogger('mvibe-proxy.stats')
+
+
+def _default_reporter(client, counters: ProxyCounters, config: StatsConfig):
+    """The production usage reporter over the shared stdio child (stats Req 2.1)."""
+    return _stats.UsageReporter(client, counters.usage, project=config.project,
+                                interval_s=config.report_interval_s, counters=counters,
+                                timeout_ms=int(config.mmhmem_timeout_s * 1000))
+
+
+async def _default_stats_runner(bin_path: str | None, *, env, timeout_s: float):
+    """The production `mmhmem stats --json` view for GET /stats (stats Req 3.2)."""
+    return await _stats.mmhmem_stats(bin_path, env=env, timeout_s=timeout_s)
+
+
 def _default_gate(config: RateLimitConfig) -> UpstreamGate:
     """The serving gate: real clocks and jitter, warning as each hold starts."""
     return UpstreamGate(config, warn=_warn_rate_limit_hold)
@@ -212,6 +228,9 @@ def create_app(
     econ_client: StdioMcpClient | None = None,
     rate_limit_config: RateLimitConfig | None = None,
     gate_factory: Callable[[RateLimitConfig], UpstreamGate] = _default_gate,
+    stats_config: StatsConfig | None = None,
+    stats_runner: Callable[..., object] = _default_stats_runner,
+    reporter_factory: Callable[..., object] = _default_reporter,
 ) -> FastAPI:
     """Construct an inert app; lifespan owns the public session and HTTP client.
 
@@ -219,6 +238,13 @@ def create_app(
     supervised ``mmhmem stdio`` child (started at startup, stopped on
     shutdown); ``econ_client`` replaces the spawned child for injected-stream
     tests. Without it nothing economics-related is ever created.
+
+    ``stats_config`` (defaults: inert) enables usage propagation: the lifespan
+    then starts the same stdio child even without economics, shares one child
+    when both are on, and runs ``reporter_factory(client, counters, config)``
+    between the child handshake and its shutdown. ``ProxyCounters`` are always
+    built and registered as the diagnostics sink for the app's lifetime; GET
+    /stats serves their snapshot next to ``stats_runner(bin, env=, timeout_s=)``.
 
     The lifespan builds the upstream rate-limit gate as ``app.state.rate_gate``
     with ``gate_factory(rate_limit_config)``. Without ``rate_limit_config`` the
@@ -247,13 +273,31 @@ def create_app(
                                else RateLimitConfig.from_env({}))
                 app.state.rate_limit_config = gate_config
                 app.state.rate_gate = gate_factory(gate_config)
-                if econ_config is not None:
-                    # Economics on: spawn and supervise the mmhmem stdio child
-                    # at startup (Amendment 1); econ_client (injected streams)
-                    # replaces the spawn in tests. A spawn or handshake failure
-                    # fails fast with a sanitized, actionable message.
+                stats = stats_config if stats_config is not None else StatsConfig()
+                counters = ProxyCounters()
+                app.state.stats_config = stats
+                app.state.counters = counters
+                # Every emitted inference diagnostic feeds the counters for the
+                # app's lifetime (stats Req 3.1); cleared again on shutdown.
+                def counters_sink(diagnostic: RequestDiagnostic) -> None:
+                    if not getattr(diagnostic, 'local', False):
+                        counters.observe(diagnostic)
+                set_counters_sink(counters_sink)
+                if econ_config is not None or stats.usage:
+                    # One supervised mmhmem stdio child serves economics and
+                    # usage propagation (stats Req 2.6): spawned from the
+                    # economics binary when economics is on, else from the
+                    # stats binary; econ_client (injected streams) replaces
+                    # the spawn in tests. Economics owns the child through
+                    # its shunt and fails fast on a spawn or handshake error
+                    # (Amendment 1); a stats-only child is owned by the
+                    # lifespan and best effort, so inference keeps serving.
+                    child_key, child_bin = (
+                        ('MVIBE_ECON_MMHMEM_BIN', econ_config.mmhmem_bin)
+                        if econ_config is not None
+                        else ('MVIBE_STATS_MMHMEM_BIN', stats.mmhmem_bin))
                     mcp_client = (econ_client if econ_client is not None
-                                  else StdioMcpClient(econ_config.mmhmem_bin))
+                                  else StdioMcpClient(child_bin))
                     try:
                         await mcp_client.start()
                     except Exception as error:
@@ -263,24 +307,53 @@ def create_app(
                             pass
                         detail = (str(error) if isinstance(error, McpError)
                                   else type(error).__name__)
-                        raise RuntimeError(
-                            'economics startup failed: the mmhmem stdio child from '
-                            f'MVIBE_ECON_MMHMEM_BIN={econ_config.mmhmem_bin} could not '
-                            f'be started ({detail}); check the binary and its stdio '
-                            'subcommand, or unset MVIBE_ECON_MMHMEM_BIN to disable '
-                            'economics') from error
-                    app.state.econ = EconShunt(econ_config, mcp_client,
-                                               emit_warm=emit_econ_warm)
+                        if econ_config is not None:
+                            raise RuntimeError(
+                                'economics startup failed: the mmhmem stdio child from '
+                                f'{child_key}={child_bin} could not '
+                                f'be started ({detail}); check the binary and its stdio '
+                                'subcommand, or unset MVIBE_ECON_MMHMEM_BIN to disable '
+                                'economics') from error
+                        _STATS_LOG.warning(
+                            'usage propagation disabled: the mmhmem stdio child from '
+                            '%s=%s could not be started (%s); check the binary and its '
+                            'stdio subcommand, or set MVIBE_STATS_USAGE=0',
+                            child_key, child_bin, detail)
+                    else:
+                        if econ_config is not None:
+                            app.state.econ = EconShunt(econ_config, mcp_client,
+                                                       emit_warm=emit_econ_warm)
+                        else:
+                            app.state.stats_child = mcp_client
+                        if stats.usage:
+                            reporter = reporter_factory(mcp_client, counters, stats)
+                            await reporter.start()
+                            app.state.reporter = reporter
                 if exporter is not None:
                     await exporter.start()
                     configure_exporter(exporter)
                 yield
             finally:
+                reporter, app.state.reporter = app.state.reporter, None
+                if reporter is not None:
+                    # The final cumulative report is bounded inside stop()
+                    # (stats Req 2.2) and runs before the child goes away.
+                    try:
+                        await reporter.stop()
+                    except Exception:
+                        pass
                 if app.state.econ is not None:
                     # Bounded: the warm queue drains (<= 2 s), then the child
                     # closes stdin, waits <= 2 s and is terminated.
                     shunt, app.state.econ = app.state.econ, None
                     await shunt.shutdown()
+                child, app.state.stats_child = app.state.stats_child, None
+                if child is not None:
+                    try:
+                        await child.shutdown()
+                    except Exception:
+                        pass
+                set_counters_sink(None)
                 await app.state.stream_owner.shutdown()
                 if exporter is not None:
                     clear_exporter()
@@ -300,10 +373,37 @@ def create_app(
     app.state.econ = None
     app.state.rate_limit_config = None
     app.state.rate_gate = None
+    app.state.stats_config = None
+    app.state.counters = None
+    app.state.reporter = None
+    app.state.stats_child = None
+
+    def _local(request: Request) -> None:
+        """Mark a locally served request; the counters ignore it (stats Req 3.5)."""
+        diagnostic = request.scope.get('mvibe.diagnostic')
+        if diagnostic is not None:
+            diagnostic.local = True
 
     @app.get('/health')
-    async def health() -> dict[str, str]:
+    async def health(request: Request) -> dict[str, str]:
+        _local(request)
         return {'status': 'ok'}
+
+    @app.get('/stats', summary='Proxy counters and mmhmem statistics',
+             response_description='The proxy counters since start (requests by outcome and status, '
+                                  'usage totals overall and per model, economics and rate-limit '
+                                  'aggregates, last usage report) and the mmhmem statistics as '
+                                  '`mmhmem stats --json` produces them, or `available: false` with a '
+                                  'short reason (not_configured, timeout, exit_<code>, no_stats_yet, '
+                                  'invalid_json).')
+    async def stats_view(request: Request) -> JSONResponse:
+        """Served locally (stats Req 3.5): no upstream, gate, economics or auth."""
+        _local(request)
+        counters = app.state.counters if app.state.counters is not None else ProxyCounters()
+        config = app.state.stats_config if app.state.stats_config is not None else StatsConfig()
+        mmhmem = await stats_runner(config.mmhmem_bin, env=os.environ,
+                                    timeout_s=config.mmhmem_timeout_s)
+        return JSONResponse({'proxy': counters.snapshot(), 'mmhmem': mmhmem})
 
     def usage_factory(diagnostic: RequestDiagnostic, target: str):
         """The owned response's observe_factory for inference targets (stats Req 1.1-1.3).
@@ -645,6 +745,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument('--log', action='store_true', help='Emit safe structured request diagnostics to stdout (default: off)')
     parser.add_argument('--observe', action='store_true', help='Export allowlisted diagnostics to an OpenObserve-style backend configured by MVIBE_OBSERVE_* env vars (default: off)')
     parser.add_argument('--econ', action='store_true', help='Replace historical file-read tool results with deterministic mmhmem summaries; configured by MVIBE_ECON_* env vars (requires MVIBE_ECON_MMHMEM_BIN; validated at startup)')
+    parser.add_argument('--stats', action='store_true', help='Fail fast unless usage propagation to mmhmem is configured (MVIBE_STATS_USAGE=1 and MVIBE_STATS_MMHMEM_BIN or MVIBE_ECON_MMHMEM_BIN); GET /stats is always served')
     args = parser.parse_args(argv)
     if args.log:
         configure_stdout()
@@ -681,14 +782,42 @@ def main(argv: Sequence[str] | None = None) -> None:
         # Rate limiting is always on (reactive at least), so an invalid
         # MVIBE_RATE_LIMIT_* setting always fails fast (Req 3.4).
         parser.exit(2, f'error: {error}\n')
+    stats_config = None
+    stats_requested = args.stats or _stats_usage_requested(os.environ)
+    try:
+        stats_config = StatsConfig.from_env()
+    except StatsConfigError as error:
+        if stats_requested:
+            # Explicitly enabled usage propagation with invalid or incomplete
+            # configuration fails fast naming the settings (stats Req 2.5).
+            parser.exit(2, f'error: {error}\n')
+        print(f'WARNING: {error}', file=sys.stderr)
+    if args.stats and not (stats_config is not None and stats_config.usage):
+        parser.exit(2, 'error: --stats requires MVIBE_STATS_USAGE=1 and MVIBE_STATS_MMHMEM_BIN '
+                       '(or MVIBE_ECON_MMHMEM_BIN, the path to the mmhmem binary) to propagate usage\n')
+    data_dir = os.environ.get('AGENT_MEM_DATA_DIR', '').strip()
+    if data_dir and not os.access(data_dir, os.W_OK):
+        # The child's store lives there; inference keeps serving (stats Req 4.3).
+        print(f'WARNING: AGENT_MEM_DATA_DIR={data_dir} is not writable by this user; '
+              'create it before starting (mkdir -p) or fix ownership (uid 1000 in Docker)',
+              file=sys.stderr)
     if args.auth_source == 'oidc':
         selected_app = create_app(auth_factory=_oidc_auth_factory, force_login=args.login,
                                   observe_config=observe_config, econ_config=econ_config,
-                                  rate_limit_config=rate_limit_config)
+                                  rate_limit_config=rate_limit_config, stats_config=stats_config)
     else:
         selected_app = create_app(force_login=args.login, observe_config=observe_config,
-                                  econ_config=econ_config, rate_limit_config=rate_limit_config)
+                                  econ_config=econ_config, rate_limit_config=rate_limit_config,
+                                  stats_config=stats_config)
+    url_host = f'[{args.host}]' if ':' in args.host else args.host
+    print(f'Stats: http://{url_host}:{args.port}/stats', file=sys.stderr)
     uvicorn.run(selected_app, host=args.host, port=args.port, access_log=False)
+
+
+def _stats_usage_requested(env) -> bool:
+    """Whether MVIBE_STATS_USAGE asks for propagation (an opt-out value is not a request)."""
+    value = env.get(_stats.ENV_USAGE, '').strip().lower()
+    return value not in ('', '0', 'false', 'no', 'off')
 
 
 if __name__ == '__main__':

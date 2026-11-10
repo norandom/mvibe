@@ -968,3 +968,311 @@ async def test_a_response_without_usage_records_nothing(capsys):
         diagnostics.disable_stdout()
     (row,) = [r for r in rows if 'outcome' in r]
     assert 'usage_prompt_tokens' not in row
+
+
+# --- lifespan, configuration and GET /stats (proxy-stats-propagation 3.1, 3.3)
+
+class FakeChild:
+    """A stand-in for the stdio child that records its lifecycle into `log`."""
+
+    def __init__(self, log=None, *, fail_start=False):
+        self.log = [] if log is None else log
+        self.calls = []
+        self.fail_start = fail_start
+
+    async def start(self):
+        self.log.append('child.start')
+        if self.fail_start:
+            raise RuntimeError('spawn failed: /secret/path')
+
+    async def shutdown(self, timeout_s=2.0):
+        self.log.append('child.shutdown')
+
+    async def call_tool(self, name, arguments, *, timeout_ms):
+        self.calls.append((name, dict(arguments), timeout_ms))
+        return {}
+
+
+class FakeReporter:
+    def __init__(self, log=None):
+        self.log = [] if log is None else log
+
+    async def start(self):
+        self.log.append('reporter.start')
+
+    async def stop(self):
+        self.log.append('reporter.stop')
+
+
+def python_bin():
+    import sys
+    return sys.executable
+
+
+def econ_settings():
+    return proxy.EconConfig(mmhmem_bin=python_bin(), project='mvibe', tools=frozenset({'read'}),
+                            min_bytes=4096, timeout_ms=45000, memo_max=2000, retry_s=300, concurrency=2)
+
+
+def stats_harness(*, usage=True, econ=None, child=None, reporter=None, runner=None, upstream=None):
+    """harness() with stats wiring: an injected child and reporter recording into one log."""
+    log = []
+    child = child if child is not None else FakeChild(log)
+    reporter = reporter if reporter is not None else FakeReporter(log)
+    built = []
+
+    def reporter_factory(client, counters, config):
+        built.append((client, counters, config))
+        return reporter
+
+    config = proxy.StatsConfig(usage=usage, mmhmem_bin=python_bin() if usage else None)
+    options = dict(stats_config=config, econ_config=econ, econ_client=child,
+                   reporter_factory=reporter_factory)
+    if runner is not None:
+        options['stats_runner'] = runner
+    app, session, sent, _ = harness(upstream=upstream, **options)
+    return SimpleNamespace(app=app, session=session, sent=sent, child=child, reporter=reporter,
+                           built=built, log=log, config=config)
+
+
+def local_client(app):
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local')
+
+
+@pytest.mark.anyio
+async def test_stats_only_starts_the_injected_child_once_and_stops_the_reporter_before_it():
+    h = stats_harness(usage=True)
+    async with h.app.router.lifespan_context(h.app):
+        assert h.app.state.econ is None
+        assert h.app.state.reporter is h.reporter and h.app.state.stats_child is h.child
+        assert h.app.state.counters is not None
+        assert h.built == [(h.child, h.app.state.counters, h.config)]
+        assert h.log == ['child.start', 'reporter.start']
+    assert h.log == ['child.start', 'reporter.start', 'reporter.stop', 'child.shutdown']
+    assert h.app.state.reporter is None and h.app.state.stats_child is None
+    assert diagnostics._counters_sink is None
+
+
+@pytest.mark.anyio
+async def test_economics_and_stats_share_one_child_owned_by_the_shunt():
+    h = stats_harness(usage=True, econ=econ_settings())
+    async with h.app.router.lifespan_context(h.app):
+        assert h.app.state.econ is not None and h.app.state.econ.client is h.child
+        assert h.app.state.stats_child is None and h.app.state.reporter is h.reporter
+        assert h.log == ['child.start', 'reporter.start']
+    assert h.log == ['child.start', 'reporter.start', 'reporter.stop', 'child.shutdown']
+    assert h.app.state.econ is None
+
+
+@pytest.mark.anyio
+async def test_economics_alone_starts_the_child_without_a_reporter():
+    h = stats_harness(usage=False, econ=econ_settings())
+    async with h.app.router.lifespan_context(h.app):
+        assert h.app.state.econ is not None and h.app.state.reporter is None
+    assert h.log == ['child.start', 'child.shutdown'] and h.built == []
+
+
+@pytest.mark.anyio
+async def test_without_stats_or_economics_nothing_is_started_but_counters_exist():
+    h = stats_harness(usage=False)
+    async with h.app.router.lifespan_context(h.app):
+        assert h.app.state.counters is not None and h.app.state.reporter is None
+        assert h.app.state.stats_child is None and h.app.state.econ is None
+    assert h.log == [] and h.built == []
+
+
+@pytest.mark.anyio
+async def test_counters_see_the_inference_requests_of_one_lifespan_and_no_local_routes():
+    h = stats_harness(usage=False)
+    async with h.app.router.lifespan_context(h.app):
+        async with local_client(h.app) as client:
+            assert (await client.get('/health')).status_code == 200
+            assert (await client.get('/v1/models')).status_code == 200
+            first = (await client.get('/stats')).json()['proxy']
+            second = (await client.get('/stats')).json()['proxy']
+        counters = h.app.state.counters
+    assert first['requests'] == {'total': 1, 'by_outcome': {'completed': 1}, 'by_status': {'200': 1}}
+    assert second['requests']['total'] == 1
+    assert diagnostics._counters_sink is None
+    diagnostics.RequestDiagnostic().emit()
+    assert counters.snapshot()['requests']['total'] == 1
+
+
+@pytest.mark.anyio
+async def test_a_stats_only_child_that_fails_to_start_warns_and_keeps_serving(caplog):
+    child = FakeChild(fail_start=True)
+    h = stats_harness(usage=True, child=child)
+    with caplog.at_level(logging.WARNING, logger='mvibe-proxy.stats'):
+        async with h.app.router.lifespan_context(h.app):
+            assert h.app.state.reporter is None and h.app.state.stats_child is None
+            async with local_client(h.app) as client:
+                assert (await client.get('/v1/models')).status_code == 200
+    assert child.log == ['child.start', 'child.shutdown'] and h.built == []
+    (message,) = [r.getMessage() for r in caplog.records if r.name == 'mvibe-proxy.stats']
+    assert 'usage propagation disabled' in message and 'MVIBE_STATS_MMHMEM_BIN=' in message
+    assert 'RuntimeError' in message and 'secret' not in message
+
+
+@pytest.mark.anyio
+async def test_an_economics_child_that_fails_to_start_still_fails_fast_and_clears_the_sink():
+    h = stats_harness(usage=True, econ=econ_settings(), child=FakeChild(fail_start=True))
+    with pytest.raises(RuntimeError, match='economics startup failed'):
+        async with h.app.router.lifespan_context(h.app):
+            pass
+    assert h.built == [] and diagnostics._counters_sink is None
+
+
+def recording_runner(result):
+    calls = []
+
+    async def runner(bin_path, *, env, timeout_s):
+        calls.append((bin_path, dict(env), timeout_s))
+        return result
+    return runner, calls
+
+
+@pytest.mark.anyio
+async def test_stats_route_serves_counters_and_the_mmhmem_view_locally(monkeypatch):
+    monkeypatch.setenv('AGENT_MEM_DATA_DIR', '/data/mmhmem')
+    view = {'available': True, 'days': [{'day': '2026-11-10'}], 'totals': {'saved_tokens': 5}}
+    runner, calls = recording_runner(view)
+    h = stats_harness(usage=True, runner=runner)
+    async with h.app.router.lifespan_context(h.app):
+        async with local_client(h.app) as client:
+            response = await client.get('/stats')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['mmhmem'] == view
+    assert body['proxy']['requests'] == {'total': 0, 'by_outcome': {}, 'by_status': {}}
+    assert set(body['proxy']) == {'started_at', 'requests', 'usage', 'econ', 'rate_limit'}
+    ((bin_path, env, timeout_s),) = calls
+    assert bin_path == python_bin() and timeout_s == 10.0 and env['AGENT_MEM_DATA_DIR'] == '/data/mmhmem'
+    assert h.sent == [] and not any(isinstance(e, tuple) and e[0] == 'resolve' for e in h.session.events)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('reason', ['not_configured', 'timeout', 'exit_3', 'no_stats_yet', 'invalid_json'])
+async def test_stats_route_passes_an_unavailable_mmhmem_view_through(reason):
+    runner, _ = recording_runner({'available': False, 'reason': reason})
+    h = stats_harness(usage=False, runner=runner)
+    async with h.app.router.lifespan_context(h.app):
+        async with local_client(h.app) as client:
+            body = (await client.get('/stats')).json()
+    assert body['mmhmem'] == {'available': False, 'reason': reason}
+    assert body['proxy']['requests']['total'] == 0
+
+
+@pytest.mark.anyio
+async def test_stats_route_with_the_inert_default_config_asks_the_runner_for_no_binary():
+    runner, calls = recording_runner({'available': False, 'reason': 'not_configured'})
+    app, _, sent, _ = harness(stats_runner=runner)
+    async with app.router.lifespan_context(app):
+        async with local_client(app) as client:
+            body = (await client.get('/stats')).json()
+    assert calls[0][0] is None and calls[0][2] == 10.0
+    assert body['mmhmem']['reason'] == 'not_configured' and sent == []
+
+
+@pytest.mark.anyio
+async def test_openapi_documents_the_stats_route():
+    app, *_ = harness()
+    async with app.router.lifespan_context(app):
+        async with local_client(app) as client:
+            schema = (await client.get('/openapi.json')).json()
+    entry = schema['paths']['/stats']['get']
+    assert 'mmhmem' in entry['responses']['200']['description']
+
+
+def _stats_cli(monkeypatch):
+    selected = []
+    monkeypatch.setattr(proxy, 'create_app', lambda **kwargs: selected.append(kwargs) or 'app')
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *args, **kwargs: None)
+    return selected
+
+
+def test_cli_enabled_usage_without_a_binary_exits_2_naming_both_settings(monkeypatch, capsys):
+    monkeypatch.setenv('MVIBE_STATS_USAGE', '1')
+    selected = _stats_cli(monkeypatch)
+    with pytest.raises(SystemExit) as error:
+        proxy.main([])
+    assert error.value.code == 2 and selected == []
+    err = capsys.readouterr().err
+    assert err.startswith('error: ') and 'MVIBE_STATS_USAGE' in err and 'MVIBE_STATS_MMHMEM_BIN' in err
+
+
+def test_cli_stats_flag_without_configuration_exits_2(monkeypatch, capsys):
+    selected = _stats_cli(monkeypatch)
+    with pytest.raises(SystemExit) as error:
+        proxy.main(['--stats'])
+    assert error.value.code == 2 and selected == []
+    err = capsys.readouterr().err
+    assert 'MVIBE_STATS_USAGE' in err and 'MVIBE_STATS_MMHMEM_BIN' in err
+
+
+@pytest.mark.parametrize(('usage', 'exits'), [(None, False), ('0', False), ('1', True)])
+def test_cli_invalid_stats_binary_warns_unless_usage_is_requested(monkeypatch, capsys, tmp_path, usage, exits):
+    monkeypatch.setenv('MVIBE_STATS_MMHMEM_BIN', str(tmp_path / 'missing-mmhmem'))
+    if usage is not None:
+        monkeypatch.setenv('MVIBE_STATS_USAGE', usage)
+    selected = _stats_cli(monkeypatch)
+    if exits:
+        with pytest.raises(SystemExit) as error:
+            proxy.main([])
+        assert error.value.code == 2 and selected == []
+        assert 'error: ' in capsys.readouterr().err
+    else:
+        proxy.main([])
+        err = capsys.readouterr().err
+        assert 'WARNING: ' in err and 'MVIBE_STATS_MMHMEM_BIN' in err
+        assert selected[0]['stats_config'] is None
+
+
+def test_cli_passes_the_validated_stats_config_to_the_selected_app(monkeypatch):
+    monkeypatch.setenv('MVIBE_STATS_USAGE', '1')
+    monkeypatch.setenv('MVIBE_STATS_MMHMEM_BIN', python_bin())
+    monkeypatch.setenv('MVIBE_STATS_REPORT_INTERVAL_S', '5')
+    selected = _stats_cli(monkeypatch)
+    proxy.main(['--stats'])
+    config = selected[0]['stats_config']
+    assert config.usage is True and config.mmhmem_bin == python_bin() and config.report_interval_s == 5.0
+
+
+def test_cli_without_stats_settings_passes_the_inert_config(monkeypatch):
+    selected = _stats_cli(monkeypatch)
+    proxy.main([])
+    config = selected[0]['stats_config']
+    assert config.usage is False and config.mmhmem_bin is None
+
+
+@pytest.mark.parametrize(('argv', 'url'), [
+    ([], 'http://127.0.0.1:8765/stats'),
+    (['--port', '8799'], 'http://127.0.0.1:8799/stats'),
+    (['--host', '::1'], 'http://[::1]:8765/stats'),
+])
+def test_cli_prints_the_stats_url_for_the_bound_host_and_port(monkeypatch, capsys, argv, url):
+    _stats_cli(monkeypatch)
+    proxy.main(argv)
+    assert f'Stats: {url}\n' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(('data_dir', 'writable', 'warns'), [
+    (None, True, False), ('/data/mmhmem', True, False), ('/data/mmhmem', False, True)])
+def test_cli_warns_once_when_the_data_dir_is_not_writable(monkeypatch, capsys, data_dir, writable, warns):
+    if data_dir is not None:
+        monkeypatch.setenv('AGENT_MEM_DATA_DIR', data_dir)
+    checked = []
+    real_access = proxy.os.access
+
+    def access(path, mode, **kw):
+        if path == data_dir:
+            checked.append(path)
+            return writable
+        return real_access(path, mode, **kw)
+    monkeypatch.setattr(proxy.os, 'access', access)
+    _stats_cli(monkeypatch)
+    proxy.main([])
+    err = capsys.readouterr().err
+    warning = ('WARNING: AGENT_MEM_DATA_DIR=/data/mmhmem is not writable by this user; create it '
+               'before starting (mkdir -p) or fix ownership (uid 1000 in Docker)')
+    assert (warning in err) is warns and err.count('AGENT_MEM_DATA_DIR') == (1 if warns else 0)
+    assert checked == (['/data/mmhmem'] if data_dir else [])

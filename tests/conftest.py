@@ -80,7 +80,8 @@ _session_root = tempfile.TemporaryDirectory(prefix="vibe-offline-session-")
 def isolate_environment(root):
     from pathlib import Path
     for key in list(os.environ):
-        if key.startswith(("VIBE_", "MISTRAL_", "OPENAI_", "OPENCODE_", "MVIBE_RATE_LIMIT_")) or key.upper() in {
+        if key.startswith(("VIBE_", "MISTRAL_", "OPENAI_", "OPENCODE_", "MVIBE_RATE_LIMIT_",
+                           "MVIBE_STATS_", "MVIBE_ECON_", "AGENT_MEM_")) or key.upper() in {
             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
             "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
         }:
