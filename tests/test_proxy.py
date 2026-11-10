@@ -1,6 +1,7 @@
 """Offline public-factory route contract; every external boundary is injected."""
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -10,6 +11,8 @@ import pytest
 
 import proxy
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSnapshot, LoginCompleted
+from mvibe_proxy.ratelimit import (ENV_BACKOFF_CAP_S, ENV_MAX_QUEUE, ENV_MAX_WAIT_S,
+                                   ENV_MODEL_RPS, ENV_RPS, RateLimitConfig, UpstreamGate)
 
 
 class Session:
@@ -42,7 +45,8 @@ class Session:
         self.events.append('close')
 
 
-def harness(session=None, *, response_status=200, fail_send=False, force=False, content=b'{"result":"synthetic"}'):
+def harness(session=None, *, response_status=200, fail_send=False, force=False, content=b'{"result":"synthetic"}',
+            **app_options):
     session = session or Session()
     requests = []
     options = []
@@ -56,7 +60,7 @@ def harness(session=None, *, response_status=200, fail_send=False, force=False, 
             return httpx2.Response(response_status, content=content)
         return httpx2.AsyncClient(transport=httpx2.MockTransport(upstream), follow_redirects=False)
 
-    app = proxy.create_app(lambda: session, client_factory, force_login=force)
+    app = proxy.create_app(lambda: session, client_factory, force_login=force, **app_options)
     return app, session, requests, options
 
 
@@ -190,6 +194,126 @@ def test_cli_rejects_invalid_host(monkeypatch):
     monkeypatch.setattr(proxy.uvicorn, 'run', lambda *args, **kwargs: None)
     with pytest.raises(SystemExit):
         proxy.main(['--host', 'not a host'])
+
+
+_RATE_LIMIT_ENV = (ENV_RPS, ENV_MODEL_RPS, ENV_MAX_WAIT_S, ENV_MAX_QUEUE, ENV_BACKOFF_CAP_S)
+
+
+def clear_rate_limit_env(monkeypatch):
+    for name in _RATE_LIMIT_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+def recording_gate_factory():
+    built = []
+    def gate_factory(config):
+        gate = UpstreamGate(config)
+        built.append((config, gate))
+        return gate
+    return gate_factory, built
+
+
+@pytest.mark.anyio
+async def test_lifespan_builds_the_injected_gate_with_reactive_only_defaults(monkeypatch):
+    # create_app never reads the environment; main() owns MVIBE_RATE_LIMIT_*.
+    monkeypatch.setenv(ENV_RPS, '0.5')
+    monkeypatch.setenv(ENV_MAX_WAIT_S, '1')
+    gate_factory, built = recording_gate_factory()
+    app, _, _, _ = harness(gate_factory=gate_factory)
+    assert app.state.rate_gate is None and not built
+    async with app.router.lifespan_context(app):
+        (config, gate), = built
+        assert config.default_rps is None and not config.model_rps
+        assert (config.max_wait_s, config.max_queue, config.backoff_cap_s) == (120, 64, 30)
+        assert app.state.rate_gate is gate
+        assert app.state.rate_gate.held == 0
+        assert app.state.rate_limit_config is config
+
+
+@pytest.mark.anyio
+async def test_lifespan_hands_the_given_rate_limit_config_to_the_gate_factory():
+    given = RateLimitConfig(default_rps=0.5, model_rps={}, max_wait_s=5, max_queue=2, backoff_cap_s=30)
+    gate_factory, built = recording_gate_factory()
+    app, _, _, _ = harness(rate_limit_config=given, gate_factory=gate_factory)
+    async with app.router.lifespan_context(app):
+        (config, gate), = built
+        assert config is given
+        assert app.state.rate_gate is gate and app.state.rate_limit_config is given
+
+
+@pytest.mark.anyio
+async def test_default_gate_factory_builds_a_real_reactive_only_gate():
+    app, _, _, _ = harness()
+    async with app.router.lifespan_context(app):
+        assert isinstance(app.state.rate_gate, UpstreamGate)
+        assert app.state.rate_gate.held == 0
+        assert app.state.rate_limit_config.default_rps is None
+        assert not app.state.rate_limit_config.model_rps
+
+
+def test_default_gate_warns_once_per_hold_naming_the_model_and_wait(monkeypatch, caplog):
+    constructed = []
+    monkeypatch.setattr(proxy, 'UpstreamGate',
+                        lambda config, **options: constructed.append((config, options)) or 'gate')
+    config = RateLimitConfig()
+    assert proxy._default_gate(config) == 'gate'
+    (seen, options), = constructed
+    # Only the warning is supplied; clocks, sleep and jitter keep their defaults.
+    assert seen is config and set(options) == {'warn'}
+    with caplog.at_level(logging.WARNING, logger='mvibe.proxy'):
+        options['warn']('mistral-large-4', 2.0)
+    assert [(record.name, record.levelno, record.getMessage()) for record in caplog.records] == [
+        ('mvibe.proxy', logging.WARNING, 'proxy_rate_limit_hold model=mistral-large-4 wait_s=2.0')]
+
+
+@pytest.mark.parametrize(('name', 'value'), [
+    (ENV_RPS, 'abc'), (ENV_RPS, '0'), (ENV_MODEL_RPS, 'mistral-large-4'),
+    (ENV_MAX_WAIT_S, '-1'), (ENV_MAX_QUEUE, '1.5'), (ENV_BACKOFF_CAP_S, 'nan')])
+def test_cli_invalid_rate_limit_setting_refuses_to_start_naming_it(monkeypatch, capsys, name, value):
+    clear_rate_limit_env(monkeypatch)
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr(proxy, 'create_app', lambda **kwargs: pytest.fail('app built'))
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *args, **kwargs: pytest.fail('served'))
+    with pytest.raises(SystemExit) as error:
+        proxy.main([])
+    assert error.value.code == 2
+    assert f'error: {name} ' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('source', [None, 'oidc'])
+def test_cli_passes_the_validated_rate_limit_config_to_the_selected_app(monkeypatch, source):
+    clear_rate_limit_env(monkeypatch)
+    monkeypatch.setenv(ENV_RPS, '0.5')
+    monkeypatch.setenv(ENV_MODEL_RPS, 'codestral-latest=2')
+    monkeypatch.setenv(ENV_MAX_WAIT_S, '30')
+    monkeypatch.setenv(ENV_MAX_QUEUE, '8')
+    selected = []
+    served = []
+    monkeypatch.setattr(proxy, 'create_app', lambda **kwargs: selected.append(kwargs) or 'app')
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda *args, **kwargs: served.append(args))
+    proxy.main(['--auth-source', source] if source else [])
+    (options,) = selected
+    assert (options.get('auth_factory') is proxy._oidc_auth_factory) is (source == 'oidc')
+    config = options['rate_limit_config']
+    assert config.default_rps == 0.5 and dict(config.model_rps) == {'codestral-latest': 2.0}
+    assert (config.max_wait_s, config.max_queue, config.backoff_cap_s) == (30, 8, 30)
+    assert served == [('app',)]
+
+
+def test_cli_without_rate_limit_settings_serves_reactive_only(monkeypatch):
+    clear_rate_limit_env(monkeypatch)
+    real_create_app = proxy.create_app
+    selected = []
+    served = []
+    monkeypatch.setattr(proxy, 'create_app',
+                        lambda **kwargs: selected.append(kwargs) or real_create_app(**kwargs))
+    monkeypatch.setattr(proxy.uvicorn, 'run', lambda app, **kwargs: served.append(app))
+    proxy.main([])
+    config = selected[0]['rate_limit_config']
+    assert config.default_rps is None and not config.model_rps
+    assert (config.max_wait_s, config.max_queue, config.backoff_cap_s) == (120, 64, 30)
+    # The gate is built by the lifespan when uvicorn starts serving the app.
+    assert len(served) == 1 and served[0].state.rate_gate is None
 
 
 @pytest.mark.anyio

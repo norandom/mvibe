@@ -38,7 +38,7 @@
   - _Depends: 1.4_
   - _Boundary: RequestDiagnostic, exporter allowlist, ratelimit GateRecord import_
   - _Requirements: 1.4, 1.6, 5.1, 5.2, 5.4_
-- [ ] 2.3 Configuration wiring: add `rate_limit_config: RateLimitConfig | None` and `gate_factory: Callable[[RateLimitConfig], UpstreamGate]` parameters to `create_app`, build the gate in the lifespan (`None` config means reactive-only defaults) and store it as `app.state.rate_gate`; load `RateLimitConfig.from_env()` in `main()` and exit 2 with the error text on `RateLimitConfigError`; pass the config into both `create_app` calls in `main()`.
+- [x] 2.3 Configuration wiring: add `rate_limit_config: RateLimitConfig | None` and `gate_factory: Callable[[RateLimitConfig], UpstreamGate]` parameters to `create_app`, build the gate in the lifespan (`None` config means reactive-only defaults) and store it as `app.state.rate_gate`; load `RateLimitConfig.from_env()` in `main()` and exit 2 with the error text on `RateLimitConfigError`; pass the config into both `create_app` calls in `main()`.
   - `tests/test_proxy.py`: `create_app` with an injected `gate_factory` exposes the injected gate as `app.state.rate_gate` after lifespan start; `main()` with `MVIBE_RATE_LIMIT_RPS=abc` exits 2 and the message names the variable; `main()` with no rate-limit variables starts normally (uvicorn patched out as the existing startup tests do).
   - Observable: `app.state.rate_gate.held == 0` on a freshly started test app.
   - _Depends: 1.4, 2.2_
@@ -112,3 +112,4 @@
 - 2.1 review (non-blocking, for 2.5): if `receive()` itself raises inside the `acquire_watching` watcher, the caller sees a `BaseExceptionGroup`, not an unwrapped error; `adapter_post` should treat that as a connection failure.
 - Route handlers read the body through `proxy._read_body(request, diagnostic)`; `None` means the client disconnected (diagnostic `cancelled`, return `Response(status_code=204)`). New routes must use it before acquiring.
 - 2.2: `GateRecord` lives in `mvibe_proxy/diagnostics.py` (re-exported by `ratelimit`); the exhausted-429 stdout test attaches the record via a `RequestDiagnostic` subclass until 2.4 wires the gate. `tests/test_observability.py` now skips only the two OpenTelemetry-SDK tests, not the whole module.
+- 2.3: default `gate_factory` is `proxy._default_gate` (supplies the `proxy_rate_limit_hold` warn logger); tests inject their own factory. For 2.4: sanitize the gate key (client-supplied model string) before it reaches the warn log line (`repr` or strip control characters); add `MVIBE_RATE_LIMIT_` to `tests/conftest.py::isolate_environment` so a developer's shell cannot make `main()` tests exit 2.

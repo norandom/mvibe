@@ -358,7 +358,7 @@ Preconditions: `attempt` performs resolve + send and returns an unread streaming
 - Routes `proxy`, `models` (Anthropic dialect), `ollama_tags_route` and `adapter_post` call `await request.body()` before constructing the owned response or calling `acquire_watching`, so the disconnect watcher can start first.
 - `adapter_post` obtains the upstream response through `stream_owner.acquire_watching(request.receive, acquire, diagnostic)`; on client disconnect it returns without sending and the diagnostic records `cancelled`.
 - `adapter_post` copies `retry-after` and `x-ratelimit-*` from the upstream 429 onto the translated `JSONResponse`.
-- `create_app(..., rate_limit_config: RateLimitConfig | None = None, gate_factory: Callable[[RateLimitConfig], UpstreamGate] = UpstreamGate)`; lifespan stores `app.state.rate_gate`; `None` config means `RateLimitConfig.from_env({})` defaults (reactive only).
+- `create_app(..., rate_limit_config: RateLimitConfig | None = None, gate_factory: Callable[[RateLimitConfig], UpstreamGate] = _default_gate)` where `_default_gate(config)` builds `UpstreamGate(config, warn=...)` with the `proxy_rate_limit_hold` warning logger (Req 5.3); lifespan stores `app.state.rate_gate` and `app.state.rate_limit_config`; `None` config means `RateLimitConfig.from_env({})` defaults (reactive only).
 - `main()` loads `RateLimitConfig.from_env()` and exits with code 2 and the error text on `RateLimitConfigError`.
 
 **Contracts**: Service [x]

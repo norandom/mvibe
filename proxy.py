@@ -35,6 +35,7 @@ from mvibe_proxy.streaming import ProxyStreamOwner
 from mvibe_proxy.diagnostics import ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout, configure_exporter, clear_exporter, emit_econ_warm
 from mvibe_proxy.econ import EconConfig, EconConfigError, EconShunt, McpError, StdioMcpClient
 from mvibe_proxy.observability import ObserveConfig, ObserveConfigError, OpenObserveExporter, start_telemetry, inject_traceparent
+from mvibe_proxy.ratelimit import RateLimitConfig, RateLimitConfigError, UpstreamGate
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSession
 from mvibe_auth.existing_vibe import ExistingVibeSession
 from mvibe_auth.http import VibeAsyncHTTPClient
@@ -164,6 +165,17 @@ async def _read_body(request: Request, diagnostic: RequestDiagnostic) -> bytes |
 
 
 _ECON_HOOK_LOG = logging.getLogger('mvibe-proxy.econ')
+_RATE_LIMIT_LOG = logging.getLogger('mvibe.proxy')
+
+
+def _warn_rate_limit_hold(key: str, wait_s: float) -> None:
+    """One warning as each rate-limit hold starts: the gate key and the wait, nothing else."""
+    _RATE_LIMIT_LOG.warning('proxy_rate_limit_hold model=%s wait_s=%.1f', key, wait_s)
+
+
+def _default_gate(config: RateLimitConfig) -> UpstreamGate:
+    """The serving gate: real clocks and jitter, warning as each hold starts."""
+    return UpstreamGate(config, warn=_warn_rate_limit_hold)
 
 
 def create_app(
@@ -174,13 +186,20 @@ def create_app(
     observe_config: ObserveConfig | None = None,
     econ_config: EconConfig | None = None,
     econ_client: StdioMcpClient | None = None,
+    rate_limit_config: RateLimitConfig | None = None,
+    gate_factory: Callable[[RateLimitConfig], UpstreamGate] = _default_gate,
 ) -> FastAPI:
     """Construct an inert app; lifespan owns the public session and HTTP client.
 
     With ``econ_config`` the lifespan also owns the economics shunt and its
     supervised ``mmhmem stdio`` child (started at startup, stopped on
     shutdown); ``econ_client`` replaces the spawned child for injected-stream
-    tests. Without it nothing economics-related is ever created."""
+    tests. Without it nothing economics-related is ever created.
+
+    The lifespan builds the upstream rate-limit gate as ``app.state.rate_gate``
+    with ``gate_factory(rate_limit_config)``. Without ``rate_limit_config`` the
+    gate gets the defaults, which pace nothing and only hold and re-send on a
+    429; the environment is never read here (``main`` owns it)."""
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         session = auth_factory()
@@ -200,6 +219,10 @@ def create_app(
                 app.state.stream_owner = ProxyStreamOwner(client)
                 app.state.account_plan = account_plan
                 app.state.telemetry = telemetry
+                gate_config = (rate_limit_config if rate_limit_config is not None
+                               else RateLimitConfig.from_env({}))
+                app.state.rate_limit_config = gate_config
+                app.state.rate_gate = gate_factory(gate_config)
                 if econ_config is not None:
                     # Economics on: spawn and supervise the mmhmem stdio child
                     # at startup (Amendment 1); econ_client (injected streams)
@@ -251,6 +274,8 @@ def create_app(
     app.state.force_login = force_login
     app.state.telemetry = None
     app.state.econ = None
+    app.state.rate_limit_config = None
+    app.state.rate_gate = None
 
     @app.get('/health')
     async def health() -> dict[str, str]:
@@ -549,12 +574,20 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f'WARNING: {error}', file=sys.stderr)
     if args.econ and econ_config is None:
         parser.exit(2, 'error: --econ requires MVIBE_ECON_MMHMEM_BIN (path to the mmhmem binary) to enable token economics\n')
+    rate_limit_config = None
+    try:
+        rate_limit_config = RateLimitConfig.from_env()
+    except RateLimitConfigError as error:
+        # Rate limiting is always on (reactive at least), so an invalid
+        # MVIBE_RATE_LIMIT_* setting always fails fast (Req 3.4).
+        parser.exit(2, f'error: {error}\n')
     if args.auth_source == 'oidc':
         selected_app = create_app(auth_factory=_oidc_auth_factory, force_login=args.login,
-                                  observe_config=observe_config, econ_config=econ_config)
+                                  observe_config=observe_config, econ_config=econ_config,
+                                  rate_limit_config=rate_limit_config)
     else:
         selected_app = create_app(force_login=args.login, observe_config=observe_config,
-                                  econ_config=econ_config)
+                                  econ_config=econ_config, rate_limit_config=rate_limit_config)
     uvicorn.run(selected_app, host=args.host, port=args.port, access_log=False)
 
 
