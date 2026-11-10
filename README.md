@@ -113,6 +113,45 @@ This makes a live model request. The historical internal provider ID remains
 `vibe-oidc`; its display name and auth mode are separate. Use an exact model ID
 available to your account, then check the usage counter after the first request.
 
+## Stay under your rate limit
+
+From 3.1.1 the provider holds and re-sends a request when Mistral answers 429
+instead of failing; this needs no configuration. To avoid reaching the limit at
+all, tell the provider how many requests per second your account allows per
+model. Take the values from the limits page of your Mistral account; they are
+account-specific.
+
+Open the global OpenCode config (`~/.config/opencode/opencode.jsonc`, on Windows
+`%USERPROFILE%\.config\opencode\opencode.jsonc`) and add `rateLimit` to the
+`options` of the `opencode-vibe-oidc` plugin entry, next to `authSource`:
+
+```jsonc
+"options": {
+  "authSource": "existing-vibe",
+  "audience": "https://api.mistral.ai",
+  "rateLimit": {
+    // one entry per model name exactly as you select it; a model you list
+    // queues its requests and spaces them by 1 / rate seconds
+    "modelRequestsPerSecond": { "mistral-large-4": 0.5 },
+    // optional: a default for every model without an entry
+    // "requestsPerSecond": 1
+  },
+  "helperCommand": { "...": "unchanged" }
+}
+```
+
+Then run `opencode service restart` and fully quit and reopen Desktop. An
+invalid value stops the provider from loading with a message naming the
+`rateLimit` field. Models without a rate send concurrently and only wait after
+a 429. An alias and its dated model id are separate entries. `maxQueue`
+(default 64) and `backoffCapMs` (default 30000) are optional.
+
+The local proxy is configured separately with `MVIBE_RATE_LIMIT_MODEL_RPS`
+(for example `mistral-large-4=0.5`) and `MVIBE_RATE_LIMIT_RPS`; with Docker
+Compose put them in an untracked `.env` next to `docker-compose.yml`. The
+provider and the proxy do not share a budget, so if you use both against the
+same model, split the rate between them.
+
 ## If setup stops
 
 | Symptom | Next action |
