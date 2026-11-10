@@ -1,4 +1,4 @@
-# mvibe 3.0.2 — plugin registration resilience
+# mvibe 3.1.0 — upstream rate-limit queueing and proxy stats
 
 For students, researchers and educators only. This is untested, experimental
 software, not production software. Original mvibe contributions use the Beerware
@@ -11,7 +11,7 @@ API-key entry. Experimental direct ID-token OIDC remains a separate opt-in route
 it counted as API usage on the tested account. The existing-login route consumed
 the expected Vibe allowance in user-confirmed OpenCode tests.
 
-Download `mvibe-3.0.2.zip` and `SHA256SUMS`, verify the checksum, then extract to a
+Download `mvibe-3.1.0.zip` and `SHA256SUMS`, verify the checksum, then extract to a
 permanent directory outside a development checkout. Complete normal Vibe browser
 sign-in under the same native OS/user first. With uv, Bun 1.4.4 and OpenCode 2 installed:
 
@@ -31,6 +31,56 @@ The standalone wheel is also available for Python library consumers. The archive
 includes the optional proxy with `/openapi.json`, Swagger `/docs`, and opt-in
 `--log` diagnostics. Plugin diagnostics use `options.diagnostics: true`; the CLI
 also needs `--print-logs` for visible events.
+
+## New in 3.1.0
+
+- **No more rate-limit wall.** The proxy and the OpenCode provider plugin now
+  detect an upstream 429 by status, hold the request and re-send it before any
+  response byte reached the consumer, instead of failing. Each model has its
+  own FIFO queue. A hold lasts for `Retry-After` when present, otherwise an
+  exponential backoff with jitter (capped at 30 s); a request is given up after
+  120 s of waiting or when 64 requests are already queued, and only then is
+  the 429 passed on with `retry-after` and the `x-ratelimit-*` headers. This
+  is on by default and needs no configuration.
+- **Optional pacing per model.** To stay under a known limit ahead of time:
+  - Proxy: `MVIBE_RATE_LIMIT_MODEL_RPS=model=rate[,model=rate]` (for example a
+    large model at `0.5`) and `MVIBE_RATE_LIMIT_RPS` as the default for every
+    other model; also `MVIBE_RATE_LIMIT_MAX_WAIT_S`, `MVIBE_RATE_LIMIT_MAX_QUEUE`
+    and `MVIBE_RATE_LIMIT_BACKOFF_CAP_S`. Invalid values refuse to start. With
+    Docker Compose put the two rate keys in an untracked `.env` next to
+    `docker-compose.yml`; rates are account-specific and never hardcoded.
+  - Plugin: `options.rateLimit` with `requestsPerSecond`,
+    `modelRequestsPerSecond` (an object of model names to rates), `maxQueue`
+    and `backoffCapMs`. The plugin talks to Mistral directly, so its rates are
+    configured separately from the proxy's and the two do not share a budget.
+  - Queues are keyed by the model name the client sends; an alias and its
+    dated id are two queues. Requests per model are sent one at a time until
+    the previous response starts, also without a configured rate.
+- **Diagnostics.** Proxy and plugin events carry `queued_ms`,
+  `rate_limit_rejections` and the outcome `rate_limited`; the proxy logs one
+  warning per hold.
+- **Proxy stats.** `GET /stats` returns the proxy's counters since start
+  (requests by outcome and status, token usage overall and per model as
+  reported by the upstream, economics and queueing aggregates) next to
+  `mmhmem stats --json`. Startup prints the stats URL. Request diagnostics
+  carry `usage_prompt_tokens` and `usage_completion_tokens`.
+- **Persistent mmhmem state with Docker Compose.** `./mmhmem-data` next to the
+  compose file is bind-mounted as the child's data directory, so summaries,
+  caches and statistics survive container recreation.
+- **Known limitations.**
+  - The proxy's own token spend is not yet shown by `mmhmem stats`: mmhmem
+    0.5.2 stores client-reported usage only together with a checkpoint save,
+    which the proxy does not send. `GET /stats` shows the spend; savings and
+    worker usage appear in `mmhmem stats` as before. `MVIBE_STATS_USAGE=0`
+    turns the reports off.
+  - `mistral-large-4` cannot serve as the mmhmem worker model (it rejects the
+    worker's temperature 0 without `top_p` 1); use e.g. `mistral-small-latest`.
+    `WORKER_API_URL` must be the full chat-completions URL.
+  - Token-per-minute limits are not paced ahead of time; they are handled when
+    a 429 arrives.
+- Version metadata moved 3.0.2 → 3.1.0 in `pyproject.toml`,
+  `packages/opencode-vibe-oidc/package.json` and `uv.lock`. The helper API
+  major is unchanged (3); no protocol or installation-layout changes.
 
 ## New in 3.0.2
 
