@@ -456,7 +456,7 @@ export function classifyRateLimit(response: Response, fallbackWaitMs: number, ca
 **Responsibilities & Constraints**
 - Same key state and loop as the Python gate. Waiting uses an injectable `sleep(ms, signal)` that rejects on abort; abort removes the waiter and throws `BridgeError("cancelled")`.
 - On 429 that will be retried, the gate cancels the response body (`response.body?.cancel()`) and never reads it. On exhaustion the last 429 is returned unread so the host receives status, headers and body intact.
-- Queue-full or pacing-deadline exhaustion without an upstream attempt returns a synthesized `Response` (status 429, `content-type: application/json`, `retry-after`, body `{"object":"error","type":"rate_limit_error","message":"..."}`).
+- Queue-full or pacing-deadline exhaustion without an upstream attempt returns a synthesized `Response` (status 429, `content-type: application/json`, `retry-after` = max(1, ceil(max(readyAt - now, interval) / 1000)) seconds, body `{"error":{"message":"Upstream rate limit persisted; retry after <n> seconds","type":"rate_limit_error","code":"rate_limited"}}`, the same shape the proxy synthesizes).
 - Transport errors from `attempt` propagate after releasing the position.
 
 ##### Service Interface

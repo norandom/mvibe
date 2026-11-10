@@ -9,7 +9,9 @@
  * account-specific rate is built in. classifyRateLimit recognizes the rejection
  * by its status alone and turns it into a RateLimitSignal: the wait from
  * Retry-After (parseRetryAfter) or a capped fallback, plus a copy of the
- * x-ratelimit-* headers that is safe to record. */
+ * x-ratelimit-* headers that is safe to record. UpstreamGate schedules the
+ * outbound attempts per key: arrival order, optional pacing, and a bounded wait
+ * and depth, with an AbortSignal cancelling a waiting request. */
 import { BridgeError } from "./bridge.js";
 
 export interface RateLimitOptions {
@@ -27,8 +29,8 @@ export interface RateLimitOptions {
 const DEFAULT_MAX_WAIT_MS = 120_000;
 const DEFAULT_MAX_QUEUE = 64;
 const DEFAULT_BACKOFF_CAP_MS = 30_000;
-// Gate key for model-list discovery: never proactively paced (Requirement 3.5).
-const MODELS_KEY = "models";
+/** Gate key for model-list discovery: never proactively paced (Requirement 3.5). */
+export const MODELS_KEY = "models";
 // A model name is echoed in a setup error only when it is short and printable;
 // otherwise the entry is named by its position, as the proxy does.
 const NAMEABLE_MODEL = /^[A-Za-z0-9._:/@+-]{1,128}$/;
@@ -219,4 +221,283 @@ export function classifyRateLimit(response: Response, fallbackWaitMs: number, ca
   const parsed = parseRetryAfter(response.headers.get("retry-after"), nowMs);
   if (parsed === undefined) return Object.freeze({ waitMs: Math.min(fallbackWaitMs, capMs), retryAfterPresent: false, headers });
   return Object.freeze({ waitMs: parsed, retryAfterPresent: true, headers });
+}
+
+// --- scheduling (Requirements 3.1, 3.5, 4.1, 4.2, 6.3) ---------------------------
+
+/** What the gate did for one request, for the request diagnostic (Requirement 5.1).
+ * Numbers, a flag and `x-ratelimit-*` header values only: never a body, a prompt or
+ * a credential. UpstreamGate.run fills a record the caller supplies. */
+export interface GateRecord {
+  /** Milliseconds the request waited inside the gate before it was sent or refused. */
+  queuedMs: number;
+  /** Upstream 429s received for the request. */
+  rejections: number;
+  /** `x-ratelimit-*` names and values from the upstream 429s. */
+  headers: Record<string, string>;
+  /** Set when the gate answered with a 429 instead of waiting any longer. */
+  exhausted: boolean;
+}
+
+/** A fresh, empty GateRecord. */
+export function createGateRecord(): GateRecord {
+  return { queuedMs: 0, rejections: 0, headers: {}, exhausted: false };
+}
+
+/** What UpstreamGate takes from its environment; each field has a default. */
+export interface GateDeps {
+  /** Monotonic clock in milliseconds; `performance.now()` by default. */
+  now?: () => number;
+  /** Waits `ms` of that clock and rejects with BridgeError("cancelled") when `signal`
+   * aborts; a real timer by default. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** Draws the backoff jitter from [0, 1); `Math.random` by default. */
+  random?: () => number;
+  /** Told the key and the wait in milliseconds as a rate-limit hold starts. */
+  warn?: (key: string, waitMs: number) => void;
+}
+
+const EXHAUSTED_TYPE = "rate_limit_error";
+const EXHAUSTED_CODE = "rate_limited";
+
+function cancelled(): BridgeError {
+  return new BridgeError("cancelled");
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw cancelled();
+}
+
+/** The default sleep: a real timer that an abort clears, rejecting with BridgeError("cancelled").
+ * The abort listener is removed on either outcome. */
+function sleepFor(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(cancelled());
+      return;
+    }
+    const abort = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      reject(cancelled());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+/** Wait for `promise`, or throw BridgeError("cancelled") as soon as `signal` aborts.
+ * The abort listener is removed either way. */
+async function unlessAborted(promise: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) return promise;
+  throwIfAborted(signal);
+  let abort = (): void => undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    abort = () => reject(cancelled());
+  });
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
+/** One run's place in its key's line: `turn` settles when the run ahead promotes it. */
+class Waiter {
+  readonly turn: Promise<void>;
+  readonly promote: () => void;
+
+  constructor() {
+    let promote = (): void => undefined;
+    this.turn = new Promise<void>(resolve => {
+      promote = () => resolve();
+    });
+    this.promote = promote;
+  }
+}
+
+/** One gate key: its pacing slot, its rate-limit hold and its FIFO line.
+ *
+ * `waiters[0]` belongs to the run that owns the key. That run waits for the slot
+ * and then has the key's only attempt in flight; every later run waits for its
+ * turn until the run ahead of it leaves and promotes it. `holdUntil` is the end of
+ * the key's rate-limit hold, honoured by every run on the key. Times are on the
+ * gate's clock, in milliseconds. */
+class KeyState {
+  nextSlot = 0;
+  holdUntil = 0;
+  readonly waiters: Waiter[] = [];
+
+  /** The earliest time at which the head may send. */
+  readyAt(): number {
+    return Math.max(this.nextSlot, this.holdUntil);
+  }
+}
+
+/** The 429 the gate answers without an attempt, with a `retry-after` of `waitMs`
+ * rounded up to whole seconds, at least 1. The body is fixed text plus that number;
+ * nothing from the request, the environment or an upstream response goes into it. */
+function exhausted(record: GateRecord, waitMs: number): Response {
+  record.exhausted = true;
+  const retryAfter = String(Math.max(1, Math.ceil(waitMs / 1000)));
+  const body = { error: { message: `Upstream rate limit persisted; retry after ${retryAfter} seconds`, type: EXHAUSTED_TYPE, code: EXHAUSTED_CODE } };
+  return new Response(JSON.stringify(body), {
+    status: RATE_LIMIT_STATUS,
+    headers: { "content-type": "application/json", "retry-after": retryAfter },
+  });
+}
+
+/** Schedules upstream attempts per key: FIFO order, optional pacing, and a bounded
+ * wait and depth (the plugin's counterpart of the proxy's UpstreamGate).
+ *
+ * A key (`models`, a model id) is one line. Runs on a key are served in arrival
+ * order, and only the run at the head of the line has an attempt in flight. A paced
+ * key (`rateFor` returns a rate) starts its attempts at least `1000 / rate` ms
+ * apart. An unpaced key, `models` always among them, lets the head send as soon as
+ * the run ahead has finished. Keys never wait for one another.
+ *
+ * At most `maxQueue` runs are inside the gate at once, waiting or in flight,
+ * counted across all keys. A run beyond that bound, a run that reaches the head
+ * after its deadline (arrival + `maxWaitMs`), and a run whose next slot lies past
+ * that deadline get a synthesized 429 at once, without an attempt.
+ *
+ * A run whose AbortSignal aborts while it waits leaves its line without sending,
+ * promotes the run behind it, and throws BridgeError("cancelled"). */
+export class UpstreamGate {
+  readonly #options: RateLimitOptions;
+  readonly #deps: Readonly<Required<GateDeps>>;
+  readonly #keys = new Map<string, KeyState>();
+  #held = 0;
+
+  constructor(options: RateLimitOptions, deps: GateDeps = {}) {
+    this.#options = options;
+    this.#deps = {
+      now: deps.now ?? (() => performance.now()),
+      sleep: deps.sleep ?? sleepFor,
+      random: deps.random ?? Math.random,
+      warn: deps.warn ?? (() => undefined),
+    };
+  }
+
+  /** The runs inside the gate right now, waiting or in flight, on every key. */
+  get held(): number {
+    return this.#held;
+  }
+
+  /** A reading of the gate's clock, in milliseconds. */
+  now(): number {
+    return this.#deps.now();
+  }
+
+  /** Call `attempt` when `key` comes to this run and return its response unchanged and unread.
+   *
+   * The run arrives when `run` is called and gives up at arrival + `maxWaitMs`.
+   * When the gate is full, the run reaches the head too late, or the key's next
+   * slot lies past that deadline, the gate returns a synthesized 429 (JSON body,
+   * `retry-after` of at least 1 second) without calling `attempt` and sets
+   * `record.exhausted`. Time spent waiting is added to `record.queuedMs`.
+   *
+   * A `signal` that is aborted at entry, or aborts while the run waits, makes `run`
+   * throw BridgeError("cancelled") without calling `attempt`; a waiting run leaves
+   * its line and promotes the next. An error from `attempt` propagates unchanged
+   * once the key is released. */
+  async run(key: string, attempt: () => Promise<Response>, signal: AbortSignal | undefined, record: GateRecord): Promise<Response> {
+    throwIfAborted(signal);
+    const arrived = this.#deps.now();
+    if (this.#held >= this.#options.maxQueue) {
+      const readyAt = this.#keys.get(key)?.readyAt() ?? arrived;
+      return exhausted(record, Math.max(readyAt - arrived, this.#interval(key)));
+    }
+    const state = this.#state(key, arrived);
+    const waiter = new Waiter();
+    state.waiters.push(waiter);
+    this.#held += 1;
+    try {
+      return await this.#serve(key, state, waiter, attempt, signal, arrived, record);
+    } finally {
+      this.#held -= 1;
+      this.#leave(state, waiter);
+    }
+  }
+
+  /** Wait for the head position and the key's slot, then send once. */
+  async #serve(key: string, state: KeyState, waiter: Waiter, attempt: () => Promise<Response>,
+    signal: AbortSignal | undefined, arrived: number, record: GateRecord): Promise<Response> {
+    if (state.waiters[0] !== waiter) await unlessAborted(waiter.turn, signal);
+    const interval = this.#interval(key);
+    const onTime = await this.#waitForSlot(state, arrived + this.#options.maxWaitMs, signal);
+    // However late an abort lands, nothing is sent after it.
+    throwIfAborted(signal);
+    const now = this.#deps.now();
+    record.queuedMs += now - arrived;
+    if (!onTime) return exhausted(record, Math.max(state.readyAt() - now, interval));
+    if (interval > 0) state.nextSlot = now + interval;
+    // The head keeps the key while its attempt is in flight. The response is
+    // returned as it came; upstream 429 handling (hold and re-send) belongs here.
+    return await attempt();
+  }
+
+  /** Sleep until the key may send and return true, or return false to give up.
+   *
+   * The run gives up at once, without sleeping, when it is already past its
+   * deadline or when the key's next slot or hold ends past it. Each sleep covers
+   * exactly the remaining delta, and the slot is checked again after waking. Only
+   * the slot is held against the deadline after a sleep, so a late wake-up from a
+   * sleep that ended within it still sends. */
+  async #waitForSlot(state: KeyState, deadline: number, signal: AbortSignal | undefined): Promise<boolean> {
+    if (this.#deps.now() > deadline) return false;
+    for (;;) {
+      const now = this.#deps.now();
+      const readyAt = state.readyAt();
+      if (now >= readyAt) return true;
+      if (readyAt > deadline) return false;
+      await this.#pause(readyAt - now, signal);
+    }
+  }
+
+  /** The injected sleep; whatever it rejects with, an abort surfaces as BridgeError("cancelled"). */
+  async #pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+    try {
+      await this.#deps.sleep(ms, signal);
+    } catch (error) {
+      if (!signal?.aborted) throw error;
+    }
+    throwIfAborted(signal);
+  }
+
+  /** The pacing interval of `key` in milliseconds, or 0 when the key is not paced. */
+  #interval(key: string): number {
+    const rate = rateFor(this.#options, key);
+    return rate === undefined ? 0 : 1000 / rate;
+  }
+
+  /** The state for `key`, created on first use.
+   *
+   * Before creating one, the gate drops idle keys whose slot and hold have passed:
+   * no waiter and nothing left to enforce. A dropped key behaves exactly like a
+   * new one, so the key map holds only keys that still have something to enforce. */
+  #state(key: string, now: number): KeyState {
+    let state = this.#keys.get(key);
+    if (state === undefined) {
+      for (const [name, known] of this.#keys) {
+        if (known.waiters.length === 0 && known.readyAt() <= now) this.#keys.delete(name);
+      }
+      state = new KeyState();
+      this.#keys.set(key, state);
+    }
+    return state;
+  }
+
+  /** Take `waiter` out of its line; if it was the head, promote the next run.
+   * A next run that was aborted meanwhile leaves through here as the head in turn
+   * and promotes the run after it. */
+  #leave(state: KeyState, waiter: Waiter): void {
+    const wasHead = state.waiters[0] === waiter;
+    state.waiters.splice(state.waiters.indexOf(waiter), 1);
+    if (wasHead) state.waiters[0]?.promote();
+  }
 }

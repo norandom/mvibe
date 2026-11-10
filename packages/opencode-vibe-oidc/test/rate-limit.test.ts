@@ -1,10 +1,14 @@
 /** Offline unit contracts for the plugin rate-limit module (upstream-rate-limit-queue
- * task 3.1): `rateLimit` provider options (Requirements 3.4, 3.6, 4.7) and 429
- * classification with Retry-After parsing (Requirements 1.1 to 1.5), mirroring
+ * tasks 3.1 and 3.2): `rateLimit` provider options (Requirements 3.4, 3.6, 4.7), 429
+ * classification with Retry-After parsing (Requirements 1.1 to 1.5) and the
+ * UpstreamGate scheduling core (Requirements 3.1, 3.5, 4.1, 4.2, 6.3), mirroring
  * the proxy matrix in tests/test_ratelimit.py. */
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { BridgeError } from "../src/bridge.js";
-import { classifyRateLimit, parseRateLimitOptions, parseRetryAfter, rateFor } from "../src/rate-limit.js";
+import {
+  classifyRateLimit, createGateRecord, MODELS_KEY, parseRateLimitOptions, parseRetryAfter, rateFor, UpstreamGate,
+  type GateDeps, type GateRecord, type RateLimitOptions,
+} from "../src/rate-limit.js";
 
 const DEFAULTS = { modelRequestsPerSecond: {}, maxWaitMs: 120_000, maxQueue: 64, backoffCapMs: 30_000 };
 const FIELDS = ["requestsPerSecond", "modelRequestsPerSecond", "maxWaitMs", "maxQueue", "backoffCapMs"] as const;
@@ -403,3 +407,696 @@ test.each([429, 200].flatMap(status => [
   "status %p with fallback %p and cap %p is rejected before the status check", (status, fallbackWaitMs, capMs) => {
     expect(() => classify(upstream(status), { fallbackWaitMs, capMs })).toThrow(RangeError);
   });
+
+// --- gate scheduling (task 3.2; Requirements 3.1, 3.5, 4.1, 4.2, 6.3) ----------
+
+const T0 = 1_700_000_000_000;
+const LARGE = "mistral-large-latest";
+const PACED = parseRateLimitOptions({ requestsPerSecond: 0.5 }); // one start every 2000 ms per key
+const UNPACED = parseRateLimitOptions(undefined);
+
+type Sleep = NonNullable<GateDeps["sleep"]>;
+
+/** One macrotask turn: every pending microtask runs first, as with asyncio.sleep(0). */
+function tick(): Promise<void> {
+  return new Promise(resolve => setImmediate(() => resolve()));
+}
+
+async function settle(rounds = 5): Promise<void> {
+  for (let round = 0; round < rounds; round++) await tick();
+}
+
+/** Bound an await on wall-clock time, so a scheduling regression fails instead of hanging.
+ * The gate keeps running on the fake clock; the bound is protection only. */
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("the gate did not settle within 5 s")), 5000);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Mark a run as handled at once, so a run cancelled before the test awaits it is
+ * never reported as an unhandled rejection. */
+function handled<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => undefined);
+  return promise;
+}
+
+async function expectCancelled(run: Promise<Response>): Promise<void> {
+  const error = await bounded(run).then(() => undefined, (caught: unknown) => caught);
+  expect(error).toBeInstanceOf(BridgeError);
+  expect(error).toMatchObject({ code: "cancelled" });
+}
+
+async function expectSynthesized429(response: Response, retryAfter: number): Promise<void> {
+  expect(response.status).toBe(429);
+  expect([...response.headers.keys()].sort()).toEqual(["content-type", "retry-after"]);
+  expect(response.headers.get("content-type")).toBe("application/json");
+  expect(response.headers.get("retry-after")).toBe(String(retryAfter));
+  expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+  expect(await response.text()).toBe(JSON.stringify({ error: {
+    message: `Upstream rate limit persisted; retry after ${retryAfter} seconds`,
+    type: "rate_limit_error",
+    code: "rate_limited",
+  } }));
+}
+
+/** A promise the test opens by hand. */
+class Latch {
+  open: () => void = () => undefined;
+  readonly opened = new Promise<void>(resolve => { this.open = () => resolve(); });
+}
+
+/** A fake monotonic clock in milliseconds (mirrors tests/fakes.Clock). Its sleep
+ * advances the clock by exactly the delay asked for and records it, then yields a
+ * macrotask turn so the other runs proceed and bounded() can still fire. It never
+ * sees an abort; the cancellation tests use HeldSleep. */
+class Clock {
+  time = T0;
+  readonly sleeps: number[] = [];
+  readonly now = (): number => this.time;
+  readonly sleep: Sleep = async ms => {
+    this.sleeps.push(ms);
+    this.advance(ms);
+    await tick();
+  };
+
+  advance(ms: number): void {
+    if (!(ms >= 0)) throw new RangeError("time cannot move backwards");
+    this.time += ms;
+  }
+}
+
+/** A sleep that stays pending until the test wakes it, which advances the clock by
+ * its delay, or until its signal aborts, which rejects it with BridgeError("cancelled")
+ * as the gate's default sleep does. */
+class HeldSleep {
+  readonly calls: number[] = [];
+  readonly #pending: { ms: number; wake: () => void }[] = [];
+
+  constructor(private readonly clock: Clock) {}
+
+  readonly sleep: Sleep = (ms, signal) => {
+    this.calls.push(ms);
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) { reject(new BridgeError("cancelled")); return; }
+      const entry = { ms, wake: () => { signal?.removeEventListener("abort", abort); resolve(); } };
+      const abort = (): void => {
+        this.#pending.splice(this.#pending.indexOf(entry), 1);
+        reject(new BridgeError("cancelled"));
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      this.#pending.push(entry);
+    });
+  };
+
+  get pending(): number {
+    return this.#pending.length;
+  }
+
+  /** Wake the oldest pending sleep after advancing the clock by its delay. */
+  wake(): void {
+    const entry = this.#pending.shift();
+    if (entry === undefined) throw new Error("no sleep is pending");
+    this.clock.advance(entry.ms);
+    entry.wake();
+  }
+}
+
+function ok(status = 200): Response {
+  return new Response('{"ok":true}', { status, headers: { "content-type": "application/json" } });
+}
+
+/** Fake `attempt` factory: logs (label, clock time) as each attempt starts. Every
+ * attempt suspends at least one turn, like an upstream round trip. */
+class Upstream {
+  readonly sent: [label: string, at: number][] = [];
+
+  constructor(private readonly clock: Clock) {}
+
+  attempt(label: string, { response, release, error }: { response?: Response; release?: Latch; error?: Error } = {}): () => Promise<Response> {
+    return async () => {
+      this.sent.push([label, this.clock.now()]);
+      await (release?.opened ?? tick());
+      if (error !== undefined) throw error;
+      return response ?? ok();
+    };
+  }
+
+  labels(): string[] {
+    return this.sent.map(([label]) => label);
+  }
+
+  times(label?: string): number[] {
+    return this.sent.filter(([name]) => label === undefined || name === label).map(([, at]) => at);
+  }
+}
+
+/** An attempt that counts its calls, for runs that must not reach the upstream. */
+function counted(): { attempt: () => Promise<Response>; calls: () => number } {
+  let calls = 0;
+  return { attempt: async () => { calls += 1; return ok(); }, calls: () => calls };
+}
+
+function never(): never {
+  throw new Error("called outside rejection handling");
+}
+
+function gateOn(clock: Clock, options: RateLimitOptions = PACED, sleep: Sleep = clock.sleep): UpstreamGate {
+  return new UpstreamGate(options, { now: clock.now, sleep, random: never, warn: never });
+}
+
+function run(gate: UpstreamGate, key: string, attempt: () => Promise<Response>, { record = createGateRecord(), signal }: { record?: GateRecord; signal?: AbortSignal } = {}): Promise<Response> {
+  return gate.run(key, attempt, signal, record);
+}
+
+/** Spies on a signal's listener bookkeeping: `leaked()` counts the listeners that
+ * were added and never removed. */
+function watchListeners(signal: AbortSignal): { added: () => number; leaked: () => number } {
+  const added = spyOn(signal, "addEventListener");
+  const removed = spyOn(signal, "removeEventListener");
+  return {
+    added: () => added.mock.calls.length,
+    leaked: () => {
+      const gone = new Set(removed.mock.calls.map(call => call[1]));
+      return added.mock.calls.filter(call => !gone.has(call[1])).length;
+    },
+  };
+}
+
+test("observable: three runs on one key at 0.5 rps start exactly 2000 ms apart", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock);
+  const upstream = new Upstream(clock);
+  const responses = await bounded(Promise.all([0, 1, 2].map(() => run(gate, LARGE, upstream.attempt(LARGE)))));
+  const times = upstream.times();
+  expect(times).toEqual([T0, T0 + 2000, T0 + 4000]);
+  expect(times.slice(1).map((at, index) => at - times[index]!)).toEqual([2000, 2000]);
+  expect(clock.sleeps).toEqual([2000, 2000]); // the exact remaining delta, no polling
+  expect(responses.map(response => response.status)).toEqual([200, 200, 200]);
+  expect(gate.held).toBe(0);
+});
+
+test("waiting time is recorded as queuedMs", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock);
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const records = [createGateRecord(), createGateRecord(), createGateRecord()] as const;
+  const runs = [
+    run(gate, LARGE, upstream.attempt("a1", { release }), { record: records[0] }),
+    run(gate, LARGE, upstream.attempt("a2"), { record: records[1] }),
+    run(gate, LARGE, upstream.attempt("a3"), { record: records[2] }),
+  ];
+  await settle();
+  expect(upstream.labels()).toEqual(["a1"]);
+  release.open();
+  await bounded(Promise.all(runs));
+  expect(upstream.labels()).toEqual(["a1", "a2", "a3"]);
+  expect(records.map(record => record.queuedMs)).toEqual([0, 2000, 4000]);
+  for (const record of records) expect({ ...record, queuedMs: 0 }).toEqual(createGateRecord());
+});
+
+test("a per-model rate overrides the default rate", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, parseRateLimitOptions({ requestsPerSecond: 0.5, modelRequestsPerSecond: { "codestral-latest": 2 } }));
+  const upstream = new Upstream(clock);
+  await bounded(Promise.all([0, 1, 2].map(() => run(gate, "codestral-latest", upstream.attempt("c")))));
+  expect(upstream.times("c")).toEqual([T0, T0 + 500, T0 + 1000]);
+  const t1 = clock.now();
+  await bounded(Promise.all([0, 1, 2].map(() => run(gate, LARGE, upstream.attempt("m")))));
+  expect(upstream.times("m")).toEqual([t1, t1 + 2000, t1 + 4000]);
+});
+
+test("the models key is never paced, even with a default rate and an override for it", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, parseRateLimitOptions({ requestsPerSecond: 0.5, modelRequestsPerSecond: { models: 0.25 } }));
+  const upstream = new Upstream(clock);
+  const records = [createGateRecord(), createGateRecord(), createGateRecord()];
+  await bounded(Promise.all(records.map(record => run(gate, MODELS_KEY, upstream.attempt("models"), { record }))));
+  expect(MODELS_KEY).toBe("models");
+  expect(upstream.times()).toEqual([T0, T0, T0]);
+  expect(clock.sleeps).toEqual([]);
+  expect(records.map(record => record.queuedMs)).toEqual([0, 0, 0]);
+});
+
+// Each case is a one-element tuple: test.each spreads an array case into arguments.
+test.each([[UNPACED], [parseRateLimitOptions({ modelRequestsPerSecond: { "codestral-latest": 2 } })]] as const)(
+  "a key without a configured rate is not spaced (%#)", async options => {
+    const clock = new Clock();
+    const gate = gateOn(clock, options);
+    const upstream = new Upstream(clock);
+    await bounded(Promise.all([0, 1, 2].map(() => run(gate, LARGE, upstream.attempt(LARGE)))));
+    expect(upstream.times()).toEqual([T0, T0, T0]);
+    expect(clock.sleeps).toEqual([]);
+  });
+
+test("two keys do not block each other", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock);
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const a1 = run(gate, "a", upstream.attempt("a1", { release }));
+  const a2 = run(gate, "a", upstream.attempt("a2"));
+  await settle();
+  expect(gate.held).toBe(2);
+  // Key "a" has an attempt in flight, a waiter queued and its next slot at
+  // T0 + 2000; key "b" is served at once all the same.
+  const record = createGateRecord();
+  const response = await bounded(run(gate, "b", upstream.attempt("b1"), { record }));
+  expect(response.status).toBe(200);
+  expect(record.queuedMs).toBe(0);
+  expect(upstream.sent).toEqual([["a1", T0], ["b1", T0]]);
+  release.open();
+  await bounded(Promise.all([a1, a2]));
+  expect(upstream.sent).toEqual([["a1", T0], ["b1", T0], ["a2", T0 + 2000]]);
+  expect(gate.held).toBe(0);
+});
+
+test("one attempt is in flight per key and runs are served in arrival order", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, UNPACED);
+  const upstream = new Upstream(clock);
+  const latches = [new Latch(), new Latch(), new Latch(), new Latch()];
+  const labels = ["r0", "r1", "r2", "r3"];
+  const runs = latches.map((release, n) => run(gate, LARGE, upstream.attempt(labels[n]!, { release })));
+  await settle();
+  expect(upstream.labels()).toEqual(["r0"]);
+  for (const [n, release] of latches.entries()) {
+    release.open();
+    await settle();
+    expect(upstream.labels()).toEqual(labels.slice(0, Math.min(n + 2, 4)));
+  }
+  await bounded(Promise.all(runs));
+  expect(gate.held).toBe(0);
+});
+
+test("held counts waiting and in-flight runs across keys", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, UNPACED);
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  expect(gate.held).toBe(0);
+  const runs = ["a", "a", "b", MODELS_KEY].map(key => run(gate, key, upstream.attempt(key, { release })));
+  await settle();
+  expect(gate.held).toBe(4);
+  expect(upstream.labels()).toEqual(["a", "b", MODELS_KEY]); // the second "a" waits
+  release.open();
+  await bounded(Promise.all(runs));
+  expect(gate.held).toBe(0);
+});
+
+test("observable: the 65th concurrent run gets a synthesized 429 without an attempt", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, parseRateLimitOptions({ maxQueue: 64 }));
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const keys = ["a", "b", MODELS_KEY];
+  const runs = Array.from({ length: 64 }, (_, n) => run(gate, keys[n % 3]!, upstream.attempt(`r${n}`, { release })));
+  await settle();
+  expect(gate.held).toBe(64);
+  const record = createGateRecord();
+  const extra = counted();
+  const response = await bounded(run(gate, "c", extra.attempt, { record }));
+  expect(extra.calls()).toBe(0);
+  await expectSynthesized429(response, 1);
+  expect(record).toEqual({ queuedMs: 0, rejections: 0, headers: {}, exhausted: true });
+  expect(gate.held).toBe(64);
+  release.open();
+  const responses = await bounded(Promise.all(runs));
+  expect(responses.map(answer => answer.status)).toEqual(Array.from({ length: 64 }, () => 200));
+  expect(gate.held).toBe(0);
+  // Capacity is back once the held runs settle.
+  expect((await bounded(run(gate, "c", extra.attempt))).status).toBe(200);
+  expect(extra.calls()).toBe(1);
+});
+
+// [rate, ms the clock moves after the first send, expected retry-after seconds]
+test.each([[0.5, 0, 2], [0.4, 0, 3], [0.8, 0, 2], [4, 0, 1], [0.5, 1500, 2]] as const)(
+  "the queue bound counts every key and a refusal at %p rps (after %p ms) hints %p s", async (rate, advance, retryAfter) => {
+    const clock = new Clock();
+    const gate = gateOn(clock, parseRateLimitOptions({ requestsPerSecond: rate, maxQueue: 2 }));
+    const upstream = new Upstream(clock);
+    const release = new Latch();
+    const a1 = run(gate, "a", upstream.attempt("a1", { release }));
+    const b1 = run(gate, "b", upstream.attempt("b1", { release }));
+    await settle();
+    clock.advance(advance);
+    const record = createGateRecord();
+    const response = await bounded(run(gate, "a", upstream.attempt("a2"), { record }));
+    // Key "a" has its next slot one interval after its first send; the hint is
+    // at least that interval, rounded up.
+    await expectSynthesized429(response, retryAfter);
+    expect(record.exhausted).toBe(true);
+    expect(upstream.labels()).toEqual(["a1", "b1"]);
+    release.open();
+    await bounded(Promise.all([a1, b1]));
+    expect(gate.held).toBe(0);
+  });
+
+test("a next slot past the deadline yields a synthesized 429 without waiting", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, parseRateLimitOptions({ requestsPerSecond: 0.5, maxWaitMs: 1000 }));
+  const upstream = new Upstream(clock);
+  await bounded(run(gate, LARGE, upstream.attempt("a1")));
+  const record = createGateRecord();
+  const response = await bounded(run(gate, LARGE, upstream.attempt("a2"), { record }));
+  await expectSynthesized429(response, 2);
+  expect(record).toEqual({ queuedMs: 0, rejections: 0, headers: {}, exhausted: true });
+  expect(upstream.labels()).toEqual(["a1"]);
+  expect(clock.sleeps).toEqual([]); // gave up without waiting
+  expect(clock.now()).toBe(T0);
+  expect(gate.held).toBe(0);
+  // The refused run did not take the slot: the next run gets it at T0 + 2000.
+  clock.advance(2000);
+  await bounded(run(gate, LARGE, upstream.attempt("a3")));
+  expect(upstream.sent).toEqual([["a1", T0], ["a3", T0 + 2000]]);
+});
+
+test("a next slot exactly at the deadline is still waited for and sent", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, parseRateLimitOptions({ requestsPerSecond: 0.5, maxWaitMs: 2000 }));
+  const upstream = new Upstream(clock);
+  await bounded(run(gate, LARGE, upstream.attempt("a1")));
+  const record = createGateRecord();
+  expect((await bounded(run(gate, LARGE, upstream.attempt("a2"), { record }))).status).toBe(200);
+  expect(upstream.sent).toEqual([["a1", T0], ["a2", T0 + 2000]]);
+  expect(record).toEqual({ queuedMs: 2000, rejections: 0, headers: {}, exhausted: false });
+});
+
+test("a run reaching the head after its deadline is refused although its slot has come", async () => {
+  // Strict Requirement 2.5: a run that reaches the head late, behind a long
+  // attempt, is refused even though its slot (T0 + 2000) has already passed.
+  const clock = new Clock();
+  const gate = gateOn(clock, parseRateLimitOptions({ requestsPerSecond: 0.5, maxWaitMs: 1000 }));
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const a1 = run(gate, LARGE, upstream.attempt("a1", { release }));
+  const record = createGateRecord();
+  const a2 = run(gate, LARGE, upstream.attempt("a2"), { record });
+  await settle();
+  clock.advance(3000); // a1 is in flight for 3 s
+  release.open();
+  const response = await bounded(a2);
+  await bounded(a1);
+  await expectSynthesized429(response, 2); // still the 2 s pacing interval
+  expect(upstream.sent).toEqual([["a1", T0]]);
+  expect(record).toEqual({ queuedMs: 3000, rejections: 0, headers: {}, exhausted: true });
+  expect(gate.held).toBe(0);
+});
+
+test.each([[1000, true], [1001, false]] as const)(
+  "an unpaced run reaching the head %p ms after arrival with a 1000 ms maximum wait is sent: %p", async (inFlight, sent) => {
+    const clock = new Clock();
+    const gate = gateOn(clock, parseRateLimitOptions({ maxWaitMs: 1000 }));
+    const upstream = new Upstream(clock);
+    const release = new Latch();
+    const a1 = run(gate, LARGE, upstream.attempt("a1", { release }));
+    const record = createGateRecord();
+    const a2 = run(gate, LARGE, upstream.attempt("a2"), { record });
+    await settle();
+    clock.advance(inFlight);
+    release.open();
+    const response = await bounded(a2);
+    await bounded(a1);
+    expect(response.status).toBe(sent ? 200 : 429);
+    if (!sent) await expectSynthesized429(response, 1);
+    expect(record.exhausted).toBe(!sent);
+    expect(upstream.labels()).toEqual(sent ? ["a1", "a2"] : ["a1"]);
+    expect(gate.held).toBe(0);
+  });
+
+test("a signal aborted before entry throws cancelled without entering the gate", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock);
+  const controller = new AbortController();
+  controller.abort();
+  const refused = counted();
+  await expectCancelled(run(gate, LARGE, refused.attempt, { signal: controller.signal }));
+  expect(refused.calls()).toBe(0);
+  expect(gate.held).toBe(0);
+  // The cancelled run took no slot: the next run on the key is sent at once.
+  const upstream = new Upstream(clock);
+  await bounded(run(gate, LARGE, upstream.attempt("a1")));
+  expect(upstream.sent).toEqual([["a1", T0]]);
+});
+
+test("a signal aborted before entry is cancelled, not refused, when the gate is full", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, parseRateLimitOptions({ maxQueue: 1 }));
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const a1 = run(gate, LARGE, upstream.attempt("a1", { release }));
+  await settle();
+  expect(gate.held).toBe(1);
+  const controller = new AbortController();
+  controller.abort();
+  const record = createGateRecord();
+  const refused = counted();
+  await expectCancelled(run(gate, "b", refused.attempt, { record, signal: controller.signal }));
+  expect(refused.calls()).toBe(0);
+  expect(record).toEqual(createGateRecord());
+  expect(gate.held).toBe(1);
+  release.open();
+  await bounded(a1);
+  expect(gate.held).toBe(0);
+});
+
+test("aborting the head during its pacing wait sends nothing and the next run takes the slot", async () => {
+  const clock = new Clock();
+  const sleeps = new HeldSleep(clock);
+  const gate = gateOn(clock, PACED, sleeps.sleep);
+  const upstream = new Upstream(clock);
+  await bounded(run(gate, LARGE, upstream.attempt("a1")));
+  const controller = new AbortController();
+  const a2 = handled(run(gate, LARGE, upstream.attempt("a2"), { signal: controller.signal }));
+  const a3 = run(gate, LARGE, upstream.attempt("a3"));
+  await settle();
+  expect(sleeps.calls).toEqual([2000]); // a2 sleeps towards T0 + 2000, a3 queues
+  expect(gate.held).toBe(2);
+  controller.abort();
+  await expectCancelled(a2);
+  expect(gate.held).toBe(1);
+  await settle();
+  expect(sleeps.calls).toEqual([2000, 2000]); // a3 now waits for the slot a2 never used
+  expect(sleeps.pending).toBe(1);
+  sleeps.wake();
+  await bounded(a3);
+  expect(upstream.sent).toEqual([["a1", T0], ["a3", T0 + 2000]]);
+  expect(gate.held).toBe(0);
+});
+
+test("aborting a queued run removes it and the next run proceeds", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, UNPACED);
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const controller = new AbortController();
+  const a1 = run(gate, LARGE, upstream.attempt("a1", { release }));
+  const a2 = handled(run(gate, LARGE, upstream.attempt("a2"), { signal: controller.signal }));
+  const a3 = run(gate, LARGE, upstream.attempt("a3"));
+  await settle();
+  expect(gate.held).toBe(3);
+  controller.abort();
+  await expectCancelled(a2);
+  expect(gate.held).toBe(2);
+  release.open();
+  const responses = await bounded(Promise.all([a1, a3]));
+  expect(responses.map(response => response.status)).toEqual([200, 200]);
+  expect(upstream.labels()).toEqual(["a1", "a3"]);
+  expect(gate.held).toBe(0);
+});
+
+test("aborting a run just promoted to the head sends nothing and wakes the next", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, UNPACED);
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const controller = new AbortController();
+  const a1 = run(gate, LARGE, upstream.attempt("a1", { release }));
+  const a2 = handled(run(gate, LARGE, upstream.attempt("a2"), { signal: controller.signal }));
+  const a3 = run(gate, LARGE, upstream.attempt("a3"));
+  await settle();
+  // a1 leaves and promotes a2; the abort lands before a2 runs on.
+  const aborted = a1.then(() => controller.abort());
+  release.open();
+  await bounded(aborted);
+  await expectCancelled(a2);
+  await bounded(a3);
+  expect(upstream.labels()).toEqual(["a1", "a3"]);
+  expect(gate.held).toBe(0);
+});
+
+test("the head finishing while the next run is aborted returns normally", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, UNPACED);
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const controller = new AbortController();
+  const a1 = run(gate, LARGE, upstream.attempt("a1", { release }));
+  const a2 = handled(run(gate, LARGE, upstream.attempt("a2"), { signal: controller.signal }));
+  const a3 = run(gate, LARGE, upstream.attempt("a3"));
+  await settle();
+  release.open(); // a1 resumes and leaves ...
+  controller.abort(); // ... while a2 is aborted, not yet cleaned up
+  expect((await bounded(a1)).status).toBe(200);
+  await expectCancelled(a2);
+  expect((await bounded(a3)).status).toBe(200);
+  expect(upstream.labels()).toEqual(["a1", "a3"]);
+  expect(gate.held).toBe(0);
+});
+
+test("a served or aborted run removes every abort listener it added", async () => {
+  const clock = new Clock();
+  const gate = gateOn(clock, UNPACED);
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const served = new AbortController();
+  const servedListeners = watchListeners(served.signal);
+  const aborted = new AbortController();
+  const abortedListeners = watchListeners(aborted.signal);
+  const a1 = run(gate, LARGE, upstream.attempt("a1", { release }));
+  const a2 = run(gate, LARGE, upstream.attempt("a2"), { signal: served.signal });
+  const a3 = handled(run(gate, LARGE, upstream.attempt("a3"), { signal: aborted.signal }));
+  await settle();
+  // Waiting for its turn, a queued run listens for an abort.
+  expect(servedListeners.added()).toBeGreaterThan(0);
+  expect(abortedListeners.added()).toBeGreaterThan(0);
+  aborted.abort();
+  await expectCancelled(a3);
+  release.open();
+  await bounded(Promise.all([a1, a2]));
+  expect(upstream.labels()).toEqual(["a1", "a2"]);
+  expect(servedListeners.leaked()).toBe(0);
+  expect(abortedListeners.leaked()).toBe(0);
+  expect(gate.held).toBe(0);
+});
+
+// Each case is a one-element tuple: test.each spreads an array case into arguments.
+test.each([[new TypeError("fetch failed")], [new BridgeError("auth")]] as const)(
+  "an error from attempt (%p) propagates unchanged and releases the key", async error => {
+    const clock = new Clock();
+    const gate = gateOn(clock, UNPACED);
+    const upstream = new Upstream(clock);
+    const release = new Latch();
+    const a1 = handled(run(gate, LARGE, upstream.attempt("a1", { release, error })));
+    const a2 = run(gate, LARGE, upstream.attempt("a2"));
+    await settle();
+    release.open();
+    expect(await bounded(a1).then(() => undefined, (caught: unknown) => caught)).toBe(error);
+    expect((await bounded(a2)).status).toBe(200);
+    expect(upstream.labels()).toEqual(["a1", "a2"]);
+    expect(gate.held).toBe(0);
+    expect((await bounded(run(gate, LARGE, upstream.attempt("a3")))).status).toBe(200);
+  });
+
+test.each([200, 201, 400, 401, 404, 500, 503])("a %p response is returned as the very same object, unread", async status => {
+  const gate = gateOn(new Clock());
+  const response = ok(status);
+  const record = createGateRecord();
+  expect(await bounded(run(gate, LARGE, async () => response, { record }))).toBe(response);
+  expect(response.bodyUsed).toBe(false);
+  expect(record).toEqual(createGateRecord());
+});
+
+test("the scheduling core returns an upstream 429 unchanged", async () => {
+  const gate = gateOn(new Clock());
+  const response = new Response('{"message":"Rate limit exceeded"}', { status: 429, headers: { "retry-after": "2" } });
+  const record = createGateRecord();
+  expect(await bounded(run(gate, LARGE, async () => response, { record }))).toBe(response);
+  expect(response.bodyUsed).toBe(false);
+  expect(record).toEqual(createGateRecord());
+  expect(gate.held).toBe(0);
+});
+
+test("a new key does not reset another key's pending slot", async () => {
+  // Creating key "b" prunes idle keys. Key "a" has no waiter, but its next slot
+  // (T0 + 2000) is still ahead, so it must keep it: a2 waits for that slot.
+  const clock = new Clock();
+  const gate = gateOn(clock);
+  const upstream = new Upstream(clock);
+  await bounded(run(gate, "a", upstream.attempt("a1")));
+  clock.advance(500);
+  await bounded(run(gate, "b", upstream.attempt("b1")));
+  await bounded(run(gate, "a", upstream.attempt("a2")));
+  expect(upstream.sent).toEqual([["a1", T0], ["b1", T0 + 500], ["a2", T0 + 2000]]);
+});
+
+test("a new key does not drop a key with an attempt in flight", async () => {
+  // Key "a" is unpaced, so its slot has always passed, but a1 is still in
+  // flight. Creating key "b" must not drop "a", or a2 would start beside a1.
+  const clock = new Clock();
+  const gate = gateOn(clock, UNPACED);
+  const upstream = new Upstream(clock);
+  const release = new Latch();
+  const a1 = run(gate, "a", upstream.attempt("a1", { release }));
+  await settle();
+  await bounded(run(gate, "b", upstream.attempt("b1")));
+  const a2 = run(gate, "a", upstream.attempt("a2"));
+  await settle();
+  expect(upstream.labels()).toEqual(["a1", "b1"]);
+  release.open();
+  await bounded(Promise.all([a1, a2]));
+  expect(upstream.labels()).toEqual(["a1", "b1", "a2"]);
+  expect(gate.held).toBe(0);
+});
+
+test("now() reads the injected clock, and performance.now() by default", () => {
+  const clock = new Clock();
+  const gate = gateOn(clock);
+  expect(gate.now()).toBe(T0);
+  clock.advance(5);
+  expect(gate.now()).toBe(T0 + 5);
+  const reading = spyOn(performance, "now").mockReturnValue(1234.5);
+  try {
+    expect(new UpstreamGate(UNPACED).now()).toBe(1234.5);
+  } finally {
+    reading.mockRestore();
+  }
+});
+
+test("the gate paces on the real clock and timers by default", async () => {
+  const gate = new UpstreamGate(parseRateLimitOptions({ requestsPerSecond: 50 })); // 20 ms apart
+  const controller = new AbortController();
+  const listeners = watchListeners(controller.signal);
+  const sent: number[] = [];
+  const attempt = async (): Promise<Response> => { sent.push(performance.now()); return ok(); };
+  const responses = await bounded(Promise.all([0, 1].map(() => run(gate, LARGE, attempt, { signal: controller.signal }))));
+  expect(responses.map(response => response.status)).toEqual([200, 200]);
+  expect(sent[1]! - sent[0]!).toBeGreaterThanOrEqual(19);
+  expect(listeners.added()).toBeGreaterThan(0);
+  expect(listeners.leaked()).toBe(0);
+  expect(gate.held).toBe(0);
+});
+
+test("an abort ends the default pacing sleep at once", async () => {
+  const gate = new UpstreamGate(PACED);
+  await bounded(run(gate, LARGE, async () => ok()));
+  const controller = new AbortController();
+  const listeners = watchListeners(controller.signal);
+  const refused = counted();
+  const started = performance.now();
+  const waiting = handled(run(gate, LARGE, refused.attempt, { signal: controller.signal }));
+  await tick();
+  expect(listeners.added()).toBeGreaterThan(0); // the default sleep listens for the abort
+  controller.abort();
+  await expectCancelled(waiting);
+  expect(performance.now() - started).toBeLessThan(1000); // not the 2000 ms pacing wait
+  expect(refused.calls()).toBe(0);
+  expect(listeners.leaked()).toBe(0);
+  expect(gate.held).toBe(0);
+});
+
+test("createGateRecord returns fresh, empty records", () => {
+  const first = createGateRecord();
+  const second = createGateRecord();
+  expect(first).toEqual({ queuedMs: 0, rejections: 0, headers: {}, exhausted: false });
+  first.headers["x-ratelimit-remaining-req-minute"] = "0";
+  first.queuedMs = 5;
+  expect(second).toEqual({ queuedMs: 0, rejections: 0, headers: {}, exhausted: false });
+});
