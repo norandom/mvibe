@@ -10,8 +10,9 @@
  * by its status alone and turns it into a RateLimitSignal: the wait from
  * Retry-After (parseRetryAfter) or a capped fallback, plus a copy of the
  * x-ratelimit-* headers that is safe to record. UpstreamGate schedules the
- * outbound attempts per key: arrival order, optional pacing, and a bounded wait
- * and depth, with an AbortSignal cancelling a waiting request. */
+ * outbound attempts per key: arrival order, optional pacing, rate-limit holds that
+ * send a rejected request again, and a bounded wait and depth, with an AbortSignal
+ * cancelling a waiting request. */
 import { BridgeError } from "./bridge.js";
 
 export interface RateLimitOptions {
@@ -223,19 +224,22 @@ export function classifyRateLimit(response: Response, fallbackWaitMs: number, ca
   return Object.freeze({ waitMs: parsed, retryAfterPresent: true, headers });
 }
 
-// --- scheduling (Requirements 3.1, 3.5, 4.1, 4.2, 6.3) ---------------------------
+// --- scheduling (Requirements 1.3, 3.1, 3.5, 4.1, 4.2, 4.3, 5.1, 5.3, 6.3) ---------
 
 /** What the gate did for one request, for the request diagnostic (Requirement 5.1).
  * Numbers, a flag and `x-ratelimit-*` header values only: never a body, a prompt or
  * a credential. UpstreamGate.run fills a record the caller supplies. */
 export interface GateRecord {
-  /** Milliseconds the request waited inside the gate before it was sent or refused. */
+  /** Milliseconds the request waited inside the gate, holds included, before it was
+   * sent or refused; the time an attempt was in flight is not counted. */
   queuedMs: number;
   /** Upstream 429s received for the request. */
   rejections: number;
-  /** `x-ratelimit-*` names and values from the upstream 429s. */
+  /** `x-ratelimit-*` names and values from the upstream 429s, merged across them;
+   * a later 429's value replaces an earlier one. */
   headers: Record<string, string>;
-  /** Set when the gate answered with a 429 instead of waiting any longer. */
+  /** Set when the gate answered with a 429 (its own, or the last upstream one)
+   * instead of waiting any longer. */
   exhausted: boolean;
 }
 
@@ -253,12 +257,22 @@ export interface GateDeps {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Draws the backoff jitter from [0, 1); `Math.random` by default. */
   random?: () => number;
-  /** Told the key and the wait in milliseconds as a rate-limit hold starts. */
+  /** Told the key and the hold in milliseconds (the wait, clamped to `maxWaitMs`)
+   * as a rate-limit hold starts; does nothing by default. */
   warn?: (key: string, waitMs: number) => void;
+  /** Wall-clock time in epoch milliseconds, used only to turn an HTTP-date
+   * `Retry-After` into a delay; `Date.now()` by default. Holds and slots stay on
+   * the monotonic `now`. */
+  wallNow?: () => number;
 }
 
 const EXHAUSTED_TYPE = "rate_limit_error";
 const EXHAUSTED_CODE = "rate_limited";
+// The shortest hold after a 429 on an unpaced key; a paced key holds at least its interval.
+const UNPACED_HOLD_MS = 1000;
+// The backoff stops doubling here. Any cap is reached long before, and the base
+// stays finite however many 429s a run receives.
+const MAX_DOUBLINGS = 64;
 
 function cancelled(): BridgeError {
   return new BridgeError("cancelled");
@@ -351,8 +365,21 @@ function exhausted(record: GateRecord, waitMs: number): Response {
   });
 }
 
-/** Schedules upstream attempts per key: FIFO order, optional pacing, and a bounded
- * wait and depth (the plugin's counterpart of the proxy's UpstreamGate).
+/** Cancel the body of a 429 that will be sent again, without reading it, so its
+ * stream is released while the run waits. This never throws and never waits: a
+ * body that is absent or locked has nothing to cancel, and a cancel that rejects
+ * or never settles cannot hold up the key. */
+function discard(response: Response): void {
+  try {
+    response.body?.cancel().catch(() => undefined);
+  } catch {
+    // Nothing left to release.
+  }
+}
+
+/** Schedules upstream attempts per key: FIFO order, optional pacing, rate-limit
+ * holds, and a bounded wait and depth (the plugin's counterpart of the proxy's
+ * UpstreamGate).
  *
  * A key (`models`, a model id) is one line. Runs on a key are served in arrival
  * order, and only the run at the head of the line has an attempt in flight. A paced
@@ -360,13 +387,26 @@ function exhausted(record: GateRecord, waitMs: number): Response {
  * apart. An unpaced key, `models` always among them, lets the head send as soon as
  * the run ahead has finished. Keys never wait for one another.
  *
+ * An upstream 429 holds its key: no run on it is sent before the hold ends. The
+ * 429 asks for a wait: as long as `Retry-After` says, but at least the pacing
+ * interval (1000 ms when unpaced). Without a usable `Retry-After` it is a jittered
+ * backoff that starts at that interval, doubles with each rejection of the run and
+ * never exceeds `backoffCapMs`. The key is held for that wait, but never longer
+ * than `maxWaitMs`, and `warn(key, holdMs)` is called as each hold starts. The
+ * rejected run keeps the head of its line and is sent again when the hold ends,
+ * unless the wait it was asked for, or the key's next slot, ends past its deadline
+ * (arrival + `maxWaitMs`): then it returns that 429 at once, unread. A wait that
+ * ends exactly at the deadline is not longer than the maximum wait, so the run is
+ * sent again there.
+ *
  * At most `maxQueue` runs are inside the gate at once, waiting or in flight,
  * counted across all keys. A run beyond that bound, a run that reaches the head
- * after its deadline (arrival + `maxWaitMs`), and a run whose next slot lies past
- * that deadline get a synthesized 429 at once, without an attempt.
+ * after its deadline, and a run whose next slot or hold ends past that deadline get
+ * a synthesized 429 at once, without an attempt.
  *
- * A run whose AbortSignal aborts while it waits leaves its line without sending,
- * promotes the run behind it, and throws BridgeError("cancelled"). */
+ * A run whose AbortSignal aborts while it waits, a hold included, leaves its line
+ * without sending, promotes the run behind it, and throws BridgeError("cancelled");
+ * the key's hold stays for the runs behind it. */
 export class UpstreamGate {
   readonly #options: RateLimitOptions;
   readonly #deps: Readonly<Required<GateDeps>>;
@@ -380,6 +420,7 @@ export class UpstreamGate {
       sleep: deps.sleep ?? sleepFor,
       random: deps.random ?? Math.random,
       warn: deps.warn ?? (() => undefined),
+      wallNow: deps.wallNow ?? (() => Date.now()),
     };
   }
 
@@ -393,18 +434,25 @@ export class UpstreamGate {
     return this.#deps.now();
   }
 
-  /** Call `attempt` when `key` comes to this run and return its response unchanged and unread.
+  /** Call `attempt` when `key` comes to this run and return the upstream answer.
    *
-   * The run arrives when `run` is called and gives up at arrival + `maxWaitMs`.
-   * When the gate is full, the run reaches the head too late, or the key's next
-   * slot lies past that deadline, the gate returns a synthesized 429 (JSON body,
+   * The run arrives when `run` is called and gives up at arrival + `maxWaitMs`. A
+   * response other than a 429 is returned unchanged and unread. A 429 is counted in
+   * `record` with its `x-ratelimit-*` headers and holds the key; its body is
+   * cancelled, never read, and the run waits at the head of its line and calls
+   * `attempt` again. When the wait that 429 asks for, or the key's next slot, would
+   * end past the deadline, the run returns that very 429 object at once instead,
+   * unread and with its headers as received, and sets `record.exhausted`. When the
+   * gate is full, the run reaches the head too late, or the key's next slot lies past
+   * the deadline before an attempt, the gate returns a synthesized 429 (JSON body,
    * `retry-after` of at least 1 second) without calling `attempt` and sets
-   * `record.exhausted`. Time spent waiting is added to `record.queuedMs`.
+   * `record.exhausted`. Time spent waiting, holds included, is added to
+   * `record.queuedMs`; time an attempt is in flight is not.
    *
-   * A `signal` that is aborted at entry, or aborts while the run waits, makes `run`
-   * throw BridgeError("cancelled") without calling `attempt`; a waiting run leaves
-   * its line and promotes the next. An error from `attempt` propagates unchanged
-   * once the key is released. */
+   * A `signal` that is aborted at entry, or aborts while the run waits (a hold
+   * included), makes `run` throw BridgeError("cancelled") without calling `attempt`
+   * again; a waiting run leaves its line and promotes the next, and the key's hold
+   * stays. An error from `attempt` propagates unchanged once the key is released. */
   async run(key: string, attempt: () => Promise<Response>, signal: AbortSignal | undefined, record: GateRecord): Promise<Response> {
     throwIfAborted(signal);
     const arrived = this.#deps.now();
@@ -424,21 +472,76 @@ export class UpstreamGate {
     }
   }
 
-  /** Wait for the head position and the key's slot, then send once. */
+  /** Wait for the head position, then send until the upstream takes the request.
+   *
+   * Each 429 holds the key and sends again from the head, until the run is out of
+   * time. The run is out of time as soon as a 429 asks for a wait that ends past the
+   * deadline. That is decided on the wait as asked, before the key's hold is clamped
+   * to `maxWaitMs`; otherwise a clamped hold ending exactly on the deadline would buy
+   * one more send the upstream already refused. It is also out of time when the
+   * key's next slot ends past the deadline (a backoff cap below the pacing
+   * interval), since no send could happen in time. Either way the 429 at hand is
+   * returned unread; a 429 that is sent again has its body cancelled first. */
   async #serve(key: string, state: KeyState, waiter: Waiter, attempt: () => Promise<Response>,
     signal: AbortSignal | undefined, arrived: number, record: GateRecord): Promise<Response> {
     if (state.waiters[0] !== waiter) await unlessAborted(waiter.turn, signal);
     const interval = this.#interval(key);
-    const onTime = await this.#waitForSlot(state, arrived + this.#options.maxWaitMs, signal);
-    // However late an abort lands, nothing is sent after it.
-    throwIfAborted(signal);
-    const now = this.#deps.now();
-    record.queuedMs += now - arrived;
-    if (!onTime) return exhausted(record, Math.max(state.readyAt() - now, interval));
-    if (interval > 0) state.nextSlot = now + interval;
-    // The head keeps the key while its attempt is in flight. The response is
-    // returned as it came; upstream 429 handling (hold and re-send) belongs here.
-    return await attempt();
+    const shortest = interval > 0 ? interval : UNPACED_HOLD_MS;
+    const deadline = arrived + this.#options.maxWaitMs;
+    // Waiting is counted from arrival and then from each 429, so the time an
+    // attempt is in flight is never counted as queued.
+    let waitedFrom = arrived;
+    let rejections = 0;
+    for (;;) {
+      // After a 429 the decision below already covers the slot and the hold, so
+      // only a clock that moved on in between can make this refuse.
+      const onTime = await this.#waitForSlot(state, deadline, signal);
+      // However late an abort lands, nothing is sent after it.
+      throwIfAborted(signal);
+      const now = this.#deps.now();
+      record.queuedMs += now - waitedFrom;
+      if (!onTime) return exhausted(record, Math.max(state.readyAt() - now, interval));
+      if (interval > 0) state.nextSlot = now + interval;
+      // The head keeps the key while its attempt is in flight.
+      const response = await attempt();
+      const rejection = classifyRateLimit(response, shortest * 2 ** Math.min(rejections, MAX_DOUBLINGS),
+        this.#options.backoffCapMs, this.#deps.wallNow());
+      if (rejection === undefined) return response;
+      rejections += 1;
+      record.rejections += 1;
+      Object.assign(record.headers, rejection.headers);
+      const rejectedAt = this.#deps.now();
+      const wait = this.#hold(key, state, rejection, shortest, rejectedAt);
+      if (Math.max(rejectedAt + wait, state.readyAt()) > deadline) {
+        // The host presents this 429 itself: status, headers and body as received.
+        record.exhausted = true;
+        return response;
+      }
+      discard(response);
+      waitedFrom = rejectedAt;
+    }
+  }
+
+  /** Hold `key` after a 429, warn once as the hold starts, and return the wait.
+   *
+   * `Retry-After` sets the wait, floored at `shortest` (the pacing interval, 1000 ms
+   * when unpaced) so that a zero or past value never makes the re-send follow at
+   * once. Without one, the backoff from classifyRateLimit (already capped) is
+   * jittered between half and one and a half times itself, then kept within
+   * `shortest` and `backoffCapMs`, the cap winning. The key is held from `now` for
+   * that wait, but for no longer than `maxWaitMs`; the hold only ever moves forward.
+   * The returned wait is the unclamped one, which decides whether the run can still
+   * be sent within its deadline. */
+  #hold(key: string, state: KeyState, rejection: RateLimitSignal, shortest: number, now: number): number {
+    const wait = rejection.retryAfterPresent
+      ? Math.max(rejection.waitMs, shortest)
+      : Math.min(Math.max(rejection.waitMs * (0.5 + this.#deps.random()), shortest), this.#options.backoffCapMs);
+    const hold = Math.min(wait, this.#options.maxWaitMs);
+    if (now + hold > state.holdUntil) {
+      state.holdUntil = now + hold;
+      this.#deps.warn(key, hold);
+    }
+    return wait;
   }
 
   /** Sleep until the key may send and return true, or return false to give up.

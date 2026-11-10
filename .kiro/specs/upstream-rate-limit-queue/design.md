@@ -170,7 +170,7 @@ sequenceDiagram
     end
 ```
 
-Flow decisions: the deadline is `arrival + max_wait`; a `Retry-After` value is floored at the key's pacing interval (1 s when unpaced) so a zero or past `Retry-After` never produces back-to-back re-sends; the exhaustion decision uses the unclamped wait (`now + wait > deadline`, decided before any clamping, so a `Retry-After` longer than the remaining wait never yields an extra re-send exactly at the deadline); if the resulting `hold_until` lies beyond the deadline the gate stops waiting and returns the last 429 (materialized in the proxy, unread in the plugin) with `Retry-After` ensured: the upstream value when it parses and is at least 1 s, otherwise the remaining hold rounded up (minimum 1). Client disconnect or `AbortSignal` cancels the wait, removes the waiter, and never sends. Pacing advances `next_slot` only for paced keys; the `models` key is never paced. Attribution and econ run inside the first attempt because they need that attempt's credential snapshot; later attempts re-send the cached bytes with a fresh snapshot's headers.
+Flow decisions: the deadline is `arrival + max_wait`; a `Retry-After` value is floored at the key's pacing interval (1 s when unpaced) so a zero or past `Retry-After` never produces back-to-back re-sends; the exhaustion decision uses the unclamped wait (`now + wait > deadline`, decided before any clamping, so a `Retry-After` longer than the remaining wait never yields an extra re-send exactly at the deadline); if the resulting `hold_until` lies beyond the deadline the gate stops waiting and returns the last 429: the proxy materializes it with `Retry-After` ensured (the upstream value when it parses and is at least 1 s, otherwise the remaining hold rounded up, minimum 1); the plugin returns the same `Response` object unread and unaltered (Req 4.3), adding only the existing `x-should-retry: false` in `provider.ts`. Client disconnect or `AbortSignal` cancels the wait, removes the waiter, and never sends. Pacing advances `next_slot` only for paced keys; the `models` key is never paced. Attribution and econ run inside the first attempt because they need that attempt's credential snapshot; later attempts re-send the cached bytes with a fresh snapshot's headers.
 
 ### Gate key state
 
@@ -462,7 +462,7 @@ export function classifyRateLimit(response: Response, fallbackWaitMs: number, ca
 ##### Service Interface
 ```typescript
 export interface GateRecord { queuedMs: number; rejections: number; headers: Record<string, string>; exhausted: boolean; }
-export interface GateDeps { now?: () => number; sleep?: (ms: number, signal?: AbortSignal) => Promise<void>; random?: () => number; warn?: (key: string, waitMs: number) => void; }
+export interface GateDeps { now?: () => number; wallNow?: () => number /* Date.now; only for HTTP-date Retry-After */; sleep?: (ms: number, signal?: AbortSignal) => Promise<void>; random?: () => number; warn?: (key: string, waitMs: number) => void; }
 export class UpstreamGate {
   constructor(options: RateLimitOptions, deps?: GateDeps);
   run(key: string, attempt: () => Promise<Response>, signal: AbortSignal | undefined, record: GateRecord): Promise<Response>;
