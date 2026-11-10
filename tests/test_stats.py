@@ -2,13 +2,21 @@
 operator configuration parsed from MVIBE_STATS_* (task 2.1, Requirements 2.5,
 2.7, 5.2), the passive upstream usage observer (task 2.2, Requirements 1.1,
 1.2, 1.4, 1.5, 1.6) and the in-process ledger and counters fed by the
-diagnostics sink (task 2.3, Requirements 1.7, 3.1, 3.4)."""
+diagnostics sink (task 2.3, Requirements 1.7, 3.1, 3.4), the throttled usage
+reporter and the `mmhmem stats --json` runner (task 2.4, Requirements 2.1,
+2.2, 2.3, 2.4, 3.2, 3.3)."""
 import ast
+import asyncio
 import dataclasses
 from datetime import datetime, timedelta, timezone
+import inspect
 import json
+import logging
+import os
 from pathlib import Path
+import re
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +24,7 @@ import pytest
 from fakes import Clock
 from mvibe_proxy import diagnostics, stats
 from mvibe_proxy.diagnostics import GateRecord, RequestDiagnostic
-from mvibe_proxy.econ import EconCounters
+from mvibe_proxy.econ import EconCounters, McpError, StdioMcpClient
 from mvibe_proxy.stats import (
     ProxyCounters,
     StatsConfig,
@@ -924,3 +932,711 @@ def test_counters_default_clock_is_wall_time():
     started = datetime.fromisoformat(ProxyCounters().snapshot()['started_at'])
     assert started.tzinfo is not None and started.utcoffset() == timedelta(0)
     assert abs((datetime.now(timezone.utc) - started).total_seconds()) < 60
+
+
+# --- UsageReporter (task 2.4, Requirements 2.1, 2.2, 2.3, 2.4) ---------------
+
+SMALL = 'mistral-small-latest'
+REPORT_TOOL = 'session_resume_or_handoff'
+FAILURE_WARNING = 'Stats report to mmhmem failed (McpError); will retry next interval'
+FINAL_WARNING = ('Final stats report to mmhmem failed ({}); '
+                 'usage since the last report was not recorded')
+# mmhmem may answer a resume with checkpoint text: it must never be logged.
+RESULT_SENTINEL = 'CHECKPOINT-TEXT-SENTINEL'
+TASK_ID = re.compile(r'mvibe-proxy-\d{8}T\d{6}Z-[0-9a-f]{8}')
+
+
+async def _until(predicate, timeout_s: float = 2.0) -> None:
+    async def poll():
+        while not predicate():
+            await asyncio.sleep(0)
+    await asyncio.wait_for(poll(), timeout_s)
+
+
+class RecordingClient:
+    """A ToolCaller double recording (name, arguments, timeout_ms) per call.
+
+    `failures` maps a call index to the exception that call raises; `hang`
+    parks every call until it is cancelled; `during` runs inside each call.
+    """
+
+    def __init__(self, *, failures=None, hang=False, during=None):
+        self.calls = []
+        self.failures = dict(failures or {})
+        self.hang = hang
+        self.during = during
+        self.cancelled = 0
+
+    async def call_tool(self, name, arguments, *, timeout_ms):
+        index = len(self.calls)
+        self.calls.append((name, json.loads(json.dumps(arguments)), timeout_ms))
+        await asyncio.sleep(0)
+        if self.during is not None:
+            self.during(index)
+        if self.hang:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled += 1
+                raise
+        error = self.failures.get(index)
+        if error is not None:
+            raise error
+        return {'content': [{'type': 'text', 'text': RESULT_SENTINEL}]}
+
+    def usages(self):
+        return [arguments['client_usage'] for _, arguments, _ in self.calls]
+
+
+class Ticks:
+    """An injected sleep the test releases one reporter tick at a time."""
+
+    def __init__(self, clock: Clock):
+        self.clock = clock
+        self.intervals = []
+        self.parked = False
+        self.cancelled = 0
+        self._release = asyncio.Queue()
+
+    async def sleep(self, seconds):
+        self.intervals.append(seconds)
+        self.parked = True
+        try:
+            await self._release.get()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        finally:
+            self.parked = False
+        self.clock.advance(seconds)
+
+    async def tick(self):
+        """Release the parked sleep and wait until the loop parks again."""
+        await _until(lambda: self.parked)
+        count = len(self.intervals)
+        self._release.put_nowait(None)
+        await _until(lambda: len(self.intervals) > count and self.parked)
+
+
+def _reporter(client, ledger, **kwargs):
+    clock = kwargs.pop('clock', None) or Clock()
+    warnings = kwargs.pop('warnings', None)
+    options = {'project': 'mvibe', 'interval_s': 60, 'clock': clock.time}
+    if warnings is not None:
+        options['warn'] = warnings.append
+    options.update(kwargs)
+    return stats.UsageReporter(client, ledger, **options)
+
+
+def _ledger(*usages):
+    ledger = UsageLedger()
+    for usage in usages:
+        ledger.add(usage)
+    return ledger
+
+
+def _expected_call(task_id, model, prompt, completion, *, project='mvibe', timeout_ms=10_000):
+    return (REPORT_TOOL, {
+        'project': project,
+        'agent_harness': 'mvibe-proxy',
+        'workspace_task_id': task_id,
+        'client_usage': {'prompt_tokens': prompt, 'completion_tokens': completion,
+                         'source': f'mvibe-proxy {model}'},
+    }, timeout_ms)
+
+
+@pytest.mark.anyio
+async def test_observable_successful_tick_sets_last_report_at_and_the_model_source():
+    clock = Clock()
+    ticks = Ticks(clock)
+    client = RecordingClient()
+    reporter = _reporter(client, _ledger(Usage(120, 30, MODEL)), clock=clock, sleep=ticks.sleep)
+    assert reporter.last_report_at is None
+    await reporter.start()
+    try:
+        await ticks.tick()
+        assert ticks.intervals[0] == 60
+        assert reporter.last_report_at == clock.time() == 1_700_000_060
+        assert client.calls[0][1]['client_usage']['source'] == 'mvibe-proxy mistral-large-latest'
+        assert reporter.failures == 0
+    finally:
+        await reporter.stop()
+
+
+@pytest.mark.anyio
+async def test_one_call_per_model_with_cumulative_totals_and_one_task_id():
+    clock = Clock()
+    ticks = Ticks(clock)
+    client = RecordingClient()
+    ledger = _ledger(Usage(100, 20, SMALL), Usage(5, 7, MODEL), Usage(1, 1, SMALL))
+    reporter = _reporter(client, ledger, clock=clock, sleep=ticks.sleep, project='proj-x',
+                         timeout_ms=2500)
+    await reporter.start()
+    try:
+        await ticks.tick()
+    finally:
+        await reporter.stop()
+    task_id = reporter.task_id
+    # Sources are sorted, so large comes before small.
+    assert client.calls == [
+        _expected_call(task_id, MODEL, 5, 7, project='proj-x', timeout_ms=2500),
+        _expected_call(task_id, SMALL, 101, 21, project='proj-x', timeout_ms=2500),
+    ]
+
+
+def test_default_task_id_is_per_process_utc_start_plus_random_suffix():
+    clock = Clock()  # 1_700_000_000 is 2023-11-14T22:13:20Z
+    first = _reporter(RecordingClient(), UsageLedger(), clock=clock)
+    second = _reporter(RecordingClient(), UsageLedger(), clock=clock)
+    assert TASK_ID.fullmatch(first.task_id)
+    assert first.task_id.startswith('mvibe-proxy-20231114T221320Z-')
+    assert first.task_id != second.task_id
+    clock.advance(3600)
+    assert first.task_id.startswith('mvibe-proxy-20231114T221320Z-')  # computed once
+    assert _reporter(RecordingClient(), UsageLedger(), task_id='given').task_id == 'given'
+
+
+@pytest.mark.anyio
+async def test_an_explicit_task_id_is_used_in_every_call():
+    client = RecordingClient()
+    reporter = _reporter(client, _ledger(Usage(1, 2, MODEL), Usage(3, 4, SMALL)), task_id='t-1')
+    assert await reporter.report() is True
+    assert [arguments['workspace_task_id'] for _, arguments, _ in client.calls] == ['t-1', 't-1']
+
+
+@pytest.mark.anyio
+async def test_an_unchanged_ledger_makes_no_call_on_a_tick():
+    clock = Clock()
+    ticks = Ticks(clock)
+    client = RecordingClient()
+    ledger = UsageLedger()
+    reporter = _reporter(client, ledger, clock=clock, sleep=ticks.sleep)
+    await reporter.start()
+    try:
+        await ticks.tick()  # an empty ledger has nothing to report
+        assert client.calls == [] and reporter.last_report_at is None
+        ledger.add(Usage(10, 2, MODEL))
+        await ticks.tick()
+        assert len(client.calls) == 1
+        reported_at = reporter.last_report_at
+        await ticks.tick()  # unchanged since the last successful report
+        await ticks.tick()
+        assert len(client.calls) == 1
+        assert reporter.last_report_at == reported_at
+    finally:
+        await reporter.stop()
+    assert len(client.calls) == 1  # nothing new to flush either
+
+
+@pytest.mark.anyio
+async def test_a_later_tick_reports_new_cumulative_totals_not_deltas():
+    clock = Clock()
+    ticks = Ticks(clock)
+    client = RecordingClient()
+    ledger = _ledger(Usage(100, 20, MODEL))
+    reporter = _reporter(client, ledger, clock=clock, sleep=ticks.sleep)
+    await reporter.start()
+    try:
+        await ticks.tick()
+        ledger.add(Usage(50, 5, MODEL))
+        ledger.add(Usage(8, 0, SMALL))
+        await ticks.tick()
+    finally:
+        await reporter.stop()
+    assert [(u['source'], u['prompt_tokens'], u['completion_tokens']) for u in client.usages()] == [
+        ('mvibe-proxy mistral-large-latest', 100, 20),
+        ('mvibe-proxy mistral-large-latest', 150, 25),
+        ('mvibe-proxy mistral-small-latest', 8, 0),
+    ]
+    assert len({arguments['workspace_task_id'] for _, arguments, _ in client.calls}) == 1
+
+
+@pytest.mark.anyio
+async def test_unknown_model_and_zero_totals():
+    client = RecordingClient()
+    ledger = _ledger(Usage(0, 0, 'mistral-embed'), Usage(4, 1, None))
+    reporter = _reporter(client, ledger)
+    assert await reporter.report() is True
+    # A model whose cumulative totals are both zero has nothing to report.
+    assert [u['source'] for u in client.usages()] == ['mvibe-proxy unknown']
+
+
+@pytest.mark.anyio
+async def test_report_with_nothing_to_send_makes_no_call_and_sets_no_report_time():
+    client = RecordingClient()
+    reporter = _reporter(client, _ledger(Usage(0, 0, MODEL)))
+    assert await reporter.report() is True
+    assert client.calls == [] and reporter.last_report_at is None
+
+
+@pytest.mark.anyio
+async def test_a_failure_counts_warns_once_and_skips_the_remaining_sources():
+    clock = Clock()
+    ticks = Ticks(clock)
+    counters = ProxyCounters(clock=clock.time)
+    warnings = []
+    client = RecordingClient(failures={0: McpError(
+        'timeout: no session_resume_or_handoff response within 10000 ms')})
+    ledger = _ledger(Usage(5, 7, MODEL), Usage(1, 1, SMALL))
+    reporter = _reporter(client, ledger, clock=clock, sleep=ticks.sleep, counters=counters,
+                         warnings=warnings)
+    await reporter.start()
+    try:
+        await ticks.tick()
+        assert len(client.calls) == 1  # the second source was skipped
+        assert reporter.failures == 1
+        assert warnings == [FAILURE_WARNING]
+        assert counters.report_failures == 1
+        assert reporter.last_report_at is None and counters.last_report_at is None
+        # The unchanged ledger is retried on the next tick, and success resets the streak.
+        await ticks.tick()
+        assert [u['source'] for u in client.usages()] == [
+            'mvibe-proxy mistral-large-latest', 'mvibe-proxy mistral-large-latest',
+            'mvibe-proxy mistral-small-latest']
+        assert reporter.failures == 0
+        assert reporter.last_report_at == clock.time() == 1_700_000_120
+        assert counters.last_report_at == reporter.last_report_at
+        assert counters.report_failures == 1
+        assert warnings == [FAILURE_WARNING]
+    finally:
+        await reporter.stop()
+
+
+@pytest.mark.anyio
+async def test_one_warning_per_failure_streak():
+    clock = Clock()
+    ticks = Ticks(clock)
+    counters = ProxyCounters(clock=clock.time)
+    warnings = []
+    error = McpError('terminated: the mmhmem stdio child is not running')
+    client = RecordingClient(failures={0: error, 1: error, 3: error})
+    ledger = _ledger(Usage(5, 7, MODEL))
+    reporter = _reporter(client, ledger, clock=clock, sleep=ticks.sleep, counters=counters,
+                         warnings=warnings)
+    await reporter.start()
+    try:
+        await ticks.tick()
+        await ticks.tick()
+        assert reporter.failures == 2 and counters.report_failures == 2
+        assert warnings == [FAILURE_WARNING]
+        await ticks.tick()  # call 2 succeeds
+        assert reporter.failures == 0 and reporter.last_report_at is not None
+        ledger.add(Usage(1, 1, MODEL))
+        await ticks.tick()  # call 3 fails: a new streak warns again
+        assert reporter.failures == 1 and counters.report_failures == 3
+        assert warnings == [FAILURE_WARNING, FAILURE_WARNING]
+    finally:
+        await reporter.stop()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('error', 'name'), [
+    (McpError('tool: SECRET-TOOL-TEXT'), 'McpError'),
+    (asyncio.TimeoutError(), 'TimeoutError'),
+    (RuntimeError('SECRET-RUNTIME-TEXT'), 'RuntimeError'),
+    (BrokenPipeError(32, 'SECRET-PIPE-TEXT'), 'BrokenPipeError'),
+])
+async def test_any_exception_is_a_counted_failure_named_by_class_only(error, name):
+    warnings = []
+    counters = ProxyCounters(clock=Clock().time)
+    reporter = _reporter(RecordingClient(failures={0: error}), _ledger(Usage(5, 7, MODEL)),
+                         counters=counters, warnings=warnings)
+    assert await reporter.report() is False
+    assert reporter.failures == 1 and counters.report_failures == 1
+    assert warnings == [f'Stats report to mmhmem failed ({name}); will retry next interval']
+    assert 'SECRET' not in warnings[0]
+
+
+@pytest.mark.anyio
+async def test_report_returns_true_only_when_every_source_succeeded():
+    client = RecordingClient(failures={1: McpError('timeout: x')})
+    reporter = _reporter(client, _ledger(Usage(5, 7, MODEL), Usage(1, 1, SMALL)))
+    assert await reporter.report() is False
+    assert reporter.last_report_at is None
+    assert await reporter.report() is True
+    assert reporter.last_report_at == 1_700_000_000
+
+
+@pytest.mark.anyio
+async def test_usage_added_during_a_report_is_reported_on_the_next_tick():
+    clock = Clock()
+    ticks = Ticks(clock)
+    ledger = _ledger(Usage(5, 7, MODEL))
+    client = RecordingClient(during=lambda index: index == 0 and ledger.add(Usage(1, 1, MODEL)))
+    reporter = _reporter(client, ledger, clock=clock, sleep=ticks.sleep)
+    await reporter.start()
+    try:
+        await ticks.tick()
+        assert [u['prompt_tokens'] for u in client.usages()] == [5]
+        await ticks.tick()  # the revision moved during the first report
+        assert [u['prompt_tokens'] for u in client.usages()] == [5, 6]
+        await ticks.tick()
+        assert len(client.calls) == 2
+    finally:
+        await reporter.stop()
+
+
+@pytest.mark.anyio
+async def test_a_raising_warn_never_escapes_a_report():
+    def warn(message):
+        raise RuntimeError('warn sink failed')
+    reporter = _reporter(RecordingClient(failures={0: McpError('timeout: x')}),
+                         _ledger(Usage(5, 7, MODEL)), warn=warn)
+    assert await reporter.report() is False
+    assert reporter.failures == 1
+
+
+@pytest.mark.anyio
+async def test_the_default_warn_logs_one_warning_record(caplog):
+    caplog.set_level(logging.WARNING)
+    reporter = _reporter(RecordingClient(failures={0: McpError('timeout: x'), 1: McpError('x')}),
+                         _ledger(Usage(5, 7, MODEL)))
+    await reporter.report()
+    await reporter.report()
+    messages = [record.getMessage() for record in caplog.records
+                if record.levelno == logging.WARNING]
+    assert messages == [FAILURE_WARNING]
+
+
+@pytest.mark.anyio
+async def test_the_call_result_is_never_logged(capsys, caplog):
+    caplog.set_level(logging.DEBUG)
+    clock = Clock()
+    ticks = Ticks(clock)
+    warnings = []
+    ledger = _ledger(Usage(5, 7, MODEL))
+    client = RecordingClient(failures={1: McpError('timeout: x')})
+    reporter = _reporter(client, ledger, clock=clock, sleep=ticks.sleep, warnings=warnings)
+    await reporter.start()
+    try:
+        await ticks.tick()
+        assert warnings == []  # warn is only for failures
+        ledger.add(Usage(1, 1, MODEL))
+        await ticks.tick()
+        assert warnings == [FAILURE_WARNING]
+    finally:
+        await reporter.stop()
+    captured = capsys.readouterr()
+    rendered = captured.out + captured.err + caplog.text + ''.join(warnings)
+    assert RESULT_SENTINEL not in rendered
+
+
+@pytest.mark.anyio
+async def test_start_is_idempotent():
+    clock = Clock()
+    ticks = Ticks(clock)
+    client = RecordingClient()
+    reporter = _reporter(client, _ledger(Usage(5, 7, MODEL)), clock=clock, sleep=ticks.sleep)
+    await reporter.start()
+    await reporter.start()
+    try:
+        await _until(lambda: ticks.parked)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert ticks.intervals == [60]  # one loop only
+        await ticks.tick()
+        assert len(client.calls) == 1
+    finally:
+        await reporter.stop()
+
+
+@pytest.mark.anyio
+async def test_stop_cancels_the_loop_and_flushes_once():
+    clock = Clock()
+    ticks = Ticks(clock)
+    counters = ProxyCounters(clock=clock.time)
+    client = RecordingClient()
+    ledger = _ledger(Usage(5, 7, MODEL))
+    reporter = _reporter(client, ledger, clock=clock, sleep=ticks.sleep, counters=counters)
+    await reporter.start()
+    await _until(lambda: ticks.parked)
+    await asyncio.wait_for(reporter.stop(), 5)
+    assert ticks.cancelled == 1 and not ticks.parked
+    assert client.calls == [_expected_call(reporter.task_id, MODEL, 5, 7)]
+    assert reporter.last_report_at == counters.last_report_at == 1_700_000_000
+    # Idempotent, and a stopped reporter never restarts or reports again.
+    ledger.add(Usage(1, 1, MODEL))
+    await reporter.stop()
+    await reporter.start()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert len(client.calls) == 1 and ticks.intervals == [60]
+
+
+@pytest.mark.anyio
+async def test_stop_without_start_flushes_and_stop_without_changes_does_not():
+    client = RecordingClient()
+    reporter = _reporter(client, _ledger(Usage(5, 7, MODEL)))
+    await reporter.stop()
+    assert len(client.calls) == 1
+    idle_client = RecordingClient()
+    idle = _reporter(idle_client, UsageLedger())
+    await idle.stop()
+    assert idle_client.calls == []
+
+
+@pytest.mark.anyio
+async def test_stop_after_a_successful_tick_has_nothing_to_flush():
+    clock = Clock()
+    ticks = Ticks(clock)
+    client = RecordingClient()
+    reporter = _reporter(client, _ledger(Usage(5, 7, MODEL)), clock=clock, sleep=ticks.sleep)
+    await reporter.start()
+    await ticks.tick()
+    await reporter.stop()
+    assert len(client.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_stop_retries_a_failed_tick_in_the_final_flush():
+    clock = Clock()
+    ticks = Ticks(clock)
+    client = RecordingClient(failures={0: McpError('timeout: x')})
+    reporter = _reporter(client, _ledger(Usage(5, 7, MODEL)), clock=clock, sleep=ticks.sleep,
+                         warnings=[])
+    await reporter.start()
+    await ticks.tick()
+    assert reporter.failures == 1
+    await reporter.stop()
+    assert len(client.calls) == 2 and reporter.failures == 0
+
+
+def test_the_final_report_bound_is_two_seconds():
+    assert stats.UsageReporter.FINAL_REPORT_TIMEOUT_S == 2.0
+
+
+@pytest.mark.anyio
+async def test_a_hanging_final_report_is_bounded_and_counted(monkeypatch):
+    monkeypatch.setattr(stats.UsageReporter, 'FINAL_REPORT_TIMEOUT_S', 0.05)
+    counters = ProxyCounters(clock=Clock().time)
+    warnings = []
+    client = RecordingClient(hang=True)
+    reporter = _reporter(client, _ledger(Usage(5, 7, MODEL)), counters=counters,
+                         warnings=warnings)
+    started = time.monotonic()
+    await asyncio.wait_for(reporter.stop(), 5)
+    assert time.monotonic() - started < 1.0
+    assert client.cancelled == 1
+    assert reporter.failures == 1 and counters.report_failures == 1
+    assert reporter.last_report_at is None
+    assert warnings == [FINAL_WARNING.format('TimeoutError')]
+
+
+@pytest.mark.anyio
+async def test_a_failing_final_report_never_raises_from_stop():
+    warnings = []
+    reporter = _reporter(RecordingClient(failures={0: RuntimeError('boom')}),
+                         _ledger(Usage(5, 7, MODEL)), warnings=warnings)
+    await reporter.stop()
+    assert reporter.failures == 1
+    assert warnings == [FINAL_WARNING.format('RuntimeError')]
+
+
+@pytest.mark.parametrize('interval', (0, -1, float('nan'), float('inf')))
+def test_the_interval_must_be_a_positive_finite_number(interval):
+    with pytest.raises(ValueError, match='interval_s'):
+        _reporter(RecordingClient(), UsageLedger(), interval_s=interval)
+
+
+def test_the_stdio_client_satisfies_the_tool_caller_protocol():
+    expected = inspect.signature(stats.ToolCaller.call_tool)
+    actual = inspect.signature(StdioMcpClient.call_tool)
+    assert [(p.name, p.kind) for p in actual.parameters.values()] == [
+        (p.name, p.kind) for p in expected.parameters.values()]
+    assert inspect.iscoroutinefunction(StdioMcpClient.call_tool)
+
+
+def test_stats_does_not_import_econ_at_runtime():
+    # Design boundary: stats may name the stdio client's type only; it types
+    # the client as the ToolCaller protocol, so econ is never imported.
+    tree = ast.parse(Path(stats.__file__).read_text(encoding='utf-8'))
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            assert node.module != 'mvibe_proxy.econ'
+            assert not (node.module == 'mvibe_proxy' and any(
+                alias.name == 'econ' for alias in node.names))
+        elif isinstance(node, ast.Import):
+            assert all(alias.name != 'mvibe_proxy.econ' for alias in node.names)
+
+
+# --- mmhmem_stats (task 2.4, Requirements 3.2, 3.3) -----------------------------
+
+FAKE_MMHMEM = Path(__file__).with_name('fixtures') / 'fake_mmhmem_stats.py'
+SENTINEL_BIN = str(Path('/sentinel/mmhmem-never-run'))
+STDERR_SENTINEL = 'STDERR-SENTINEL'
+ENV_SECRET = 'SECRET-ENV-VALUE-7f3a'
+FIXTURE_DAYS = [{
+    'day': '2026-11-10', 'project': 'mvibe', 'harness': 'mvibe-proxy',
+    'avoided_input_tokens_est': 1200,
+    'frontier_prompt_tokens_client_reported': 5000,
+    'frontier_completion_tokens_client_reported': 700,
+    'client_reported_sources': ['mvibe-proxy mistral-large-latest'],
+    'worker_prompt_tokens': 0, 'worker_completion_tokens': 0, 'reads': 3,
+}]
+FIXTURE_TOTALS = {
+    'avoided_input_tokens_est': 1200,
+    'frontier_prompt_tokens_client_reported': 5000,
+    'frontier_completion_tokens_client_reported': 700,
+    'worker_prompt_tokens': 0, 'worker_completion_tokens': 0, 'reads': 3,
+}
+
+
+class Spawner:
+    """Runs the fixture script in place of the configured binary.
+
+    Records the argv and keywords mmhmem_stats asked for, and every process
+    started, so tests can prove the fixed `stats --json` call and that a
+    timed-out child is gone. The real mmhmem binary is never run.
+    """
+
+    def __init__(self):
+        self.argv = []
+        self.kwargs = []
+        self.processes = []
+
+    async def __call__(self, program, *args, **kwargs):
+        self.argv.append((program, *args))
+        self.kwargs.append(kwargs)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, '-I', str(FAKE_MMHMEM), *args, **kwargs)
+        self.processes.append(process)
+        return process
+
+
+def _fake_env(mode, **extra):
+    return {**os.environ, 'FAKE_MMHMEM_MODE': mode, 'MISTRAL_API_KEY': ENV_SECRET, **extra}
+
+
+async def _run_stats(mode, *, spawner=None, timeout_s=20.0, **extra):
+    spawner = spawner or Spawner()
+    result = await asyncio.wait_for(
+        stats.mmhmem_stats(SENTINEL_BIN, env=_fake_env(mode, **extra), timeout_s=timeout_s,
+                           spawn=spawner), 30)
+    rendered = json.dumps(result)
+    assert STDERR_SENTINEL not in rendered and ENV_SECRET not in rendered
+    assert all(process.returncode is not None for process in spawner.processes)
+    return result, spawner
+
+
+@pytest.mark.anyio
+async def test_unconfigured_binary_is_not_configured_without_spawning():
+    spawner = Spawner()
+    result = await stats.mmhmem_stats(None, env=dict(os.environ), timeout_s=1, spawn=spawner)
+    assert result == {'available': False, 'reason': 'not_configured'}
+    assert spawner.argv == []
+
+
+@pytest.mark.anyio
+async def test_unconfigured_binary_never_reaches_the_default_spawn(monkeypatch):
+    def deny(*args, **kwargs):
+        raise AssertionError('mmhmem_stats must not spawn without a binary')
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', deny)
+    result = await stats.mmhmem_stats(None, env={}, timeout_s=1)
+    assert result == {'available': False, 'reason': 'not_configured'}
+
+
+@pytest.mark.anyio
+async def test_stats_json_is_parsed_into_days_and_totals():
+    result, spawner = await _run_stats('json')
+    assert result == {'available': True, 'days': FIXTURE_DAYS, 'totals': FIXTURE_TOTALS}
+    assert spawner.argv == [(SENTINEL_BIN, 'stats', '--json')]
+    kwargs = spawner.kwargs[0]
+    assert kwargs['stdout'] == asyncio.subprocess.PIPE
+    assert kwargs['stderr'] == asyncio.subprocess.DEVNULL
+    assert kwargs['stdin'] == asyncio.subprocess.DEVNULL
+    assert kwargs['env']['FAKE_MMHMEM_MODE'] == 'json'
+
+
+@pytest.mark.anyio
+async def test_the_callers_environment_reaches_the_child(tmp_path):
+    data_dir = str(tmp_path / 'mmhmem-data')
+    result, _ = await _run_stats('echo_data_dir', AGENT_MEM_DATA_DIR=data_dir)
+    assert result == {'available': True, 'days': [], 'totals': {'data_dir': data_dir}}
+
+
+@pytest.mark.anyio
+async def test_the_empty_store_notice_is_no_stats_yet():
+    result, _ = await _run_stats('notice')
+    assert result == {'available': False, 'reason': 'no_stats_yet'}
+
+
+@pytest.mark.anyio
+async def test_a_non_zero_exit_is_reported_by_its_code():
+    result, _ = await _run_stats('exit3')
+    assert result == {'available': False, 'reason': 'exit_3'}
+
+
+@pytest.mark.anyio
+async def test_a_child_running_past_the_timeout_is_killed():
+    started = time.monotonic()
+    result, spawner = await _run_stats('sleep', timeout_s=0.5)
+    assert result == {'available': False, 'reason': 'timeout'}
+    assert len(spawner.processes) == 1
+    assert spawner.processes[0].returncode is not None  # the process is gone
+    assert time.monotonic() - started < 10
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('output', (
+    '',
+    'garbage',
+    '{"days": [',
+    '[]',
+    '"days"',
+    '{"days": [], "totals": []}',
+    '{"days": {}, "totals": {}}',
+    '{"days": []}',
+    '{"totals": {}}',
+    'NaN-ish {"days": [], "totals": {}}',
+    'no token-savings statistics recorded yet',
+))
+async def test_invalid_output_is_invalid_json(output):
+    result, _ = await _run_stats('raw', FAKE_MMHMEM_OUTPUT=output)
+    assert result == {'available': False, 'reason': 'invalid_json'}
+
+
+@pytest.mark.anyio
+async def test_stdout_is_capped_and_an_overflowing_child_is_killed():
+    assert stats.MMHMEM_STATS_STDOUT_LIMIT == 8 * 1024 * 1024
+    result, spawner = await _run_stats('flood')
+    assert result == {'available': False, 'reason': 'invalid_json'}
+    assert spawner.processes[0].returncode is not None
+
+
+@pytest.mark.anyio
+async def test_stdout_at_the_cap_is_parsed_and_one_byte_over_is_rejected(monkeypatch):
+    monkeypatch.setattr(stats, 'MMHMEM_STATS_STDOUT_LIMIT', 4096)
+    at_cap, _ = await _run_stats('sized', FAKE_MMHMEM_SIZE='4096')
+    assert at_cap == {'available': True, 'days': [], 'totals': {'reads': 1}}
+    over, _ = await _run_stats('sized', FAKE_MMHMEM_SIZE='4097')
+    assert over == {'available': False, 'reason': 'invalid_json'}
+
+
+@pytest.mark.anyio
+async def test_a_spawn_failure_is_sanitized():
+    async def missing(program, *args, **kwargs):
+        raise FileNotFoundError(2, 'No such file or directory', program)
+    result = await stats.mmhmem_stats(SENTINEL_BIN, env={}, timeout_s=1, spawn=missing)
+    assert result == {'available': False, 'reason': 'spawn_failed'}
+
+
+@pytest.mark.anyio
+async def test_the_default_spawn_runs_the_configured_path(tmp_path):
+    # A path that does not exist: the real spawn entry point fails, nothing runs.
+    missing = str(tmp_path / 'no-such-mmhmem')
+    result = await stats.mmhmem_stats(missing, env=dict(os.environ), timeout_s=5)
+    assert result == {'available': False, 'reason': 'spawn_failed'}
+    assert missing not in json.dumps(result)
+
+
+@pytest.mark.anyio
+async def test_cancelling_the_call_kills_the_child():
+    spawner = Spawner()
+    task = asyncio.create_task(stats.mmhmem_stats(
+        SENTINEL_BIN, env=_fake_env('sleep'), timeout_s=30, spawn=spawner))
+    await _until(lambda: spawner.processes, timeout_s=10)
+    await asyncio.sleep(0.2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 10)
+    assert spawner.processes[0].returncode is not None

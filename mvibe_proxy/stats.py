@@ -1,28 +1,37 @@
-"""Proxy stats: passive upstream usage observation, in-process counters, and
-(task 2.4) propagation to mmhmem plus the `mmhmem stats --json` view.
+"""Proxy stats: passive upstream usage observation, in-process counters,
+throttled propagation to mmhmem and the `mmhmem stats --json` view.
 
 Inert by default (Requirement 5.2): while MVIBE_STATS_USAGE is unset and no
 mmhmem binary is configured, StatsConfig.from_env yields the default config
 and nothing is reported; the proxy still keeps its in-process counters for
 GET /stats. Configuration, the observer, the ledger and the counters are
-pure and in-memory: no I/O, no clocks other than the injected one.
+pure and in-memory: no I/O, no clocks other than the injected one. Only
+UsageReporter (tool calls through an injected stdio client) and
+mmhmem_stats (one bounded subprocess per call) perform I/O.
 
 Dependency direction is diagnostics -> stats -> proxy: this module reads
-RequestDiagnostic records; diagnostics and streaming never import it. Nothing
-here retains content. The observer keeps only the two usage numbers and the
-request's model id (Requirement 1.6), and a counters snapshot holds fixed
+RequestDiagnostic records; diagnostics and streaming never import it, and it
+types the mmhmem stdio client as the ToolCaller protocol instead of
+importing econ. Nothing here retains content. The observer keeps only the
+two usage numbers and the request's model id (Requirement 1.6), the
+reporter sends numbers and model labels only, and a counters snapshot holds fixed
 keys, counts, outcome and status strings and model ids only (Requirement 3.4).
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import math
 import os
 import time
 from types import MappingProxyType
+from typing import Protocol
+import uuid
 
 from mvibe_proxy.diagnostics import RequestDiagnostic
 
@@ -462,7 +471,7 @@ class ProxyCounters:
     `observe` is registered with `diagnostics.set_counters_sink` and reads
     each finished request's outcome, status, economics counters, rate-limit
     record and usage; values that are not counts are ignored. The usage
-    reporter (task 2.4) records its outcomes through `report_succeeded(at)`
+    reporter records its outcomes through `report_succeeded(at)`
     and `report_failed()`; `last_report_at` and `report_failures` are their
     read-only views. All updates run on the event loop, so no lock is held.
     """
@@ -574,4 +583,284 @@ class ProxyCounters:
 
 
 # --- propagation and the mmhmem view (Requirements 2.1-2.4, 3.2, 3.3) --------
-# UsageReporter and mmhmem_stats (task 2.4) belong in this section.
+
+REPORT_TOOL = 'session_resume_or_handoff'
+# The same harness economics records its savings under (econ.AGENT_HARNESS);
+# each model's usage is reported as the source `mvibe-proxy <model>`.
+AGENT_HARNESS = 'mvibe-proxy'
+DEFAULT_REPORT_TIMEOUT_MS = 10_000
+
+_LOG = logging.getLogger('mvibe.proxy')
+
+
+class ToolCaller(Protocol):
+    """What the reporter needs from the mmhmem stdio client.
+
+    `econ.StdioMcpClient` satisfies it structurally, so this module never
+    imports `econ` (design dependency direction: stats names the client's
+    type only).
+    """
+
+    async def call_tool(self, name: str, arguments: Mapping[str, object], *,
+                        timeout_ms: int) -> object: ...
+
+
+def _default_task_id(started: float) -> str:
+    """`mvibe-proxy-<UTC start>-<8 hex>`: unique per process (Requirement 2.3)."""
+    stamp = datetime.fromtimestamp(started, tz=timezone.utc)
+    return f'{AGENT_HARNESS}-{stamp:%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}'
+
+
+def _log_warning(message: str) -> None:
+    _LOG.warning(message)
+
+
+class UsageReporter:
+    """Throttled propagation of the ledger's cumulative usage to mmhmem.
+
+    Every `interval_s` the loop checks the ledger's revision and, when it
+    changed since the last fully successful report, calls `report()`: one
+    `session_resume_or_handoff` per model with non-zero totals (sorted),
+    carrying that model's cumulative `client_usage` for this process under
+    harness `mvibe-proxy` and one task id per process, so mmhmem's
+    latest-report-per-task semantics count each process once per source
+    (Requirements 2.1-2.3). The call result, which may hold checkpoint text,
+    is discarded unread and never logged.
+
+    Any exception from a call is a failure (Requirement 2.4): the rest of
+    that tick's sources are skipped, `failures` (the current streak) and the
+    counters' `report_failures` grow, and `warn` fires once as a streak
+    starts, naming the exception class only. A success resets the streak and
+    records `last_report_at`. Nothing here ever raises into the caller or
+    the event loop; inference never waits on it. `stop()` cancels the loop
+    and makes one final report bounded by FINAL_REPORT_TIMEOUT_S.
+    """
+
+    FINAL_REPORT_TIMEOUT_S = 2.0  # Requirement 2.2: shutdown waits at most this long
+
+    def __init__(self, client: ToolCaller, ledger: UsageLedger, *, project: str,
+                 interval_s: float, counters: ProxyCounters | None = None,
+                 task_id: str | None = None, clock: Callable[[], float] = time.time,
+                 sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
+                 warn: Callable[[str], None] | None = None,
+                 timeout_ms: int = DEFAULT_REPORT_TIMEOUT_MS) -> None:
+        if (isinstance(interval_s, bool) or not isinstance(interval_s, (int, float))
+                or not math.isfinite(interval_s) or interval_s <= 0):
+            raise ValueError('interval_s must be a positive finite number of seconds')
+        self._client = client
+        self._ledger = ledger
+        self._project = project
+        self._interval_s = float(interval_s)
+        self._counters = counters
+        self._clock = clock
+        self._sleep = sleep
+        self._warn = _log_warning if warn is None else warn
+        self._timeout_ms = timeout_ms
+        self._task_id = _default_task_id(clock()) if task_id is None else task_id
+        self._reported_revision = 0  # a fresh ledger has nothing to report
+        self._loop_task: asyncio.Task[None] | None = None
+        self._stopped = False
+        self._failures = 0
+        self._last_report_at: float | None = None
+
+    @property
+    def task_id(self) -> str:
+        return self._task_id
+
+    @property
+    def failures(self) -> int:
+        """The length of the current failure streak (0 after a success)."""
+        return self._failures
+
+    @property
+    def last_report_at(self) -> float | None:
+        """Clock time of the last fully successful report, or None."""
+        return self._last_report_at
+
+    async def start(self) -> None:
+        """Start the background loop; idempotent, and a no-op after stop()."""
+        if self._stopped or self._loop_task is not None:
+            return
+        self._loop_task = asyncio.create_task(self._run(), name='mvibe-stats-reporter')
+
+    async def report(self) -> bool:
+        """One call per model source; True when every call succeeded. Never raises."""
+        try:
+            revision = self._ledger.revision
+            sources = [(model, prompt, completion)
+                       for model, (prompt, completion) in sorted(self._ledger.by_model().items())
+                       if prompt or completion]
+            for model, prompt, completion in sources:
+                await self._client.call_tool(REPORT_TOOL, {
+                    'project': self._project,
+                    'agent_harness': AGENT_HARNESS,
+                    'workspace_task_id': self._task_id,
+                    'client_usage': {'prompt_tokens': prompt, 'completion_tokens': completion,
+                                     'source': f'{AGENT_HARNESS} {model}'},
+                }, timeout_ms=self._timeout_ms)  # the result is discarded unread
+        except Exception as error:
+            self._record_failure(error)
+            return False
+        self._reported_revision = revision
+        if sources:
+            self._record_success()
+        return True
+
+    async def stop(self) -> None:
+        """Cancel the loop, then report once more if the ledger changed, waiting
+        at most FINAL_REPORT_TIMEOUT_S for that report. Idempotent; never raises."""
+        if self._stopped:
+            return
+        self._stopped = True
+        task, self._loop_task = self._loop_task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if self._ledger.revision == self._reported_revision:
+            return
+        try:
+            await asyncio.wait_for(self.report(), self.FINAL_REPORT_TIMEOUT_S)
+        except TimeoutError as error:
+            self._record_failure(error)
+        except Exception:
+            pass  # report() never raises; this keeps stop() fail-safe regardless
+
+    # -- internals --
+
+    async def _run(self) -> None:
+        while True:
+            await self._sleep(self._interval_s)
+            if self._ledger.revision != self._reported_revision:
+                await self.report()
+
+    def _record_success(self) -> None:
+        at = self._clock()
+        self._last_report_at = at
+        self._failures = 0
+        if self._counters is not None:
+            self._counters.report_succeeded(at)
+
+    def _record_failure(self, error: BaseException) -> None:
+        self._failures += 1
+        if self._counters is not None:
+            self._counters.report_failed()
+        if self._failures != 1:
+            return  # one warning per failure streak
+        # The class name only: messages could echo child or transport text.
+        name = type(error).__name__
+        if self._stopped:
+            message = (f'Final stats report to mmhmem failed ({name}); '
+                       'usage since the last report was not recorded')
+        else:
+            message = f'Stats report to mmhmem failed ({name}); will retry next interval'
+        try:
+            self._warn(message)
+        except Exception:
+            pass
+
+
+#: `mmhmem stats --json` output beyond this many bytes is rejected (invalid_json).
+MMHMEM_STATS_STDOUT_LIMIT = 8 * 1024 * 1024
+# mmhmem's NO_STATS_MESSAGE (src/cli/mod.rs) starts with this text.
+_NO_STATS_NOTICE = b'No token-savings statistics'
+_STATS_READ_CHUNK = 64 * 1024
+_STATS_REAP_TIMEOUT_S = 1.0
+
+Spawn = Callable[..., Awaitable[asyncio.subprocess.Process]]
+
+
+def _unavailable(reason: str) -> dict[str, object]:
+    return {'available': False, 'reason': reason}
+
+
+async def mmhmem_stats(bin_path: str | None, *, env: Mapping[str, str], timeout_s: float,
+                       spawn: Spawn | None = None) -> dict[str, object]:
+    """mmhmem's own statistics from `[bin_path, 'stats', '--json']` (Requirements 3.2, 3.3).
+
+    Returns `{"available": True, "days": [...], "totals": {...}}`, or
+    `{"available": False, "reason": ...}` with a fixed reason:
+    `not_configured` (no binary; nothing is spawned), `spawn_failed` (the
+    binary could not be started), `timeout` (no exit within `timeout_s`; the
+    child is killed), `exit_<code>` (non-zero exit), `no_stats_yet` (mmhmem's
+    plain-text empty-store notice) or `invalid_json` (output that is not one
+    JSON object with a `days` list and a `totals` object, or more than
+    MMHMEM_STATS_STDOUT_LIMIT bytes; an oversized child is killed).
+
+    The child gets `env` (the proxy's environment, so AGENT_MEM_DATA_DIR and
+    AGENT_MEM_LOG_FILE apply), no stdin, and its stderr is discarded unread:
+    the result never carries stderr, environment values, paths or exception
+    text. Never raises except on cancellation, which kills the child too.
+    The call returns within about `timeout_s` plus a 1 s reap bound.
+    `spawn` replaces `asyncio.create_subprocess_exec` (resolved per call) for
+    tests; it receives the fixed argv and the subprocess keywords.
+    """
+    if bin_path is None:
+        return _unavailable('not_configured')
+    spawner = asyncio.create_subprocess_exec if spawn is None else spawn
+    try:
+        process = await spawner(bin_path, 'stats', '--json', env=dict(env),
+                                stdin=asyncio.subprocess.DEVNULL,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.DEVNULL)
+    except (OSError, ValueError):
+        return _unavailable('spawn_failed')
+    finished = False
+    try:
+        try:
+            output = await asyncio.wait_for(_read_stats_output(process), timeout_s)
+        except TimeoutError:
+            return _unavailable('timeout')
+        if output is None:
+            return _unavailable('invalid_json')  # beyond MMHMEM_STATS_STDOUT_LIMIT
+        finished = True
+        if process.returncode != 0:
+            return _unavailable(f'exit_{process.returncode}')
+        return _parse_stats_output(output)
+    finally:
+        if not finished:
+            await _abandon(process)
+
+
+async def _read_stats_output(process: asyncio.subprocess.Process) -> bytes | None:
+    """Stdout to EOF, then the exit; None as soon as the output exceeds the cap."""
+    stdout = process.stdout
+    output = bytearray()
+    if stdout is not None:
+        while chunk := await stdout.read(_STATS_READ_CHUNK):
+            if len(output) + len(chunk) > MMHMEM_STATS_STDOUT_LIMIT:
+                return None
+            output += chunk
+    await process.wait()
+    return bytes(output)
+
+
+async def _abandon(process: asyncio.subprocess.Process) -> None:
+    """Kill the child, discard its pending output and reap it, bounded."""
+    if process.returncode is None:
+        with contextlib.suppress(OSError):  # ProcessLookupError: already gone
+            process.kill()
+
+    async def drain() -> None:
+        # Unread output could keep the pipe open and `wait()` pending.
+        if process.stdout is not None:
+            while await process.stdout.read(_STATS_READ_CHUNK):
+                pass
+        await process.wait()
+
+    with contextlib.suppress(TimeoutError, OSError):
+        await asyncio.wait_for(drain(), _STATS_REAP_TIMEOUT_S)
+
+
+def _parse_stats_output(output: bytes) -> dict[str, object]:
+    if output.lstrip().startswith(_NO_STATS_NOTICE):
+        return _unavailable('no_stats_yet')
+    try:
+        document = json.loads(output)
+    except (ValueError, RecursionError):  # JSONDecodeError and UnicodeDecodeError included
+        return _unavailable('invalid_json')
+    if not isinstance(document, dict):
+        return _unavailable('invalid_json')
+    days, totals = document.get('days'), document.get('totals')
+    if not isinstance(days, list) or not isinstance(totals, dict):
+        return _unavailable('invalid_json')
+    return {'available': True, 'days': days, 'totals': totals}
