@@ -420,6 +420,31 @@ test("discovery GET /v1/models is never paced while chat requests start 2000 ms 
   expect(f.times.at(-1)).toBe(T0 + 2000); expect(clock.sleeps).toEqual([2000]);
 });
 
+// Each case is a one-element tuple: test.each spreads an array case into arguments.
+test.each([[undefined], [{ modelRequestsPerSecond: { "codestral-latest": 2 } }]] as const)(
+  "two concurrent chat fetches on one model without a configured rate overlap (host contract, %#)", async raw => {
+    // OpenCode runs sessions side by side; with no rate for the model the gate must
+    // not serialize them. Each attempt holds in its snapshot resolve, so both are in
+    // flight before either is answered.
+    const clock = new Clock(); const f = fixture({ gate: gateOn(clock, raw), now: clock.now });
+    let release = (): void => undefined;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    f.snapshot(async target => {
+      const revision = String(f.resolved.length);
+      await released;
+      return { target, headers: { Authorization: `Bearer synthetic-${revision}` }, expires_at: Date.now() / 1000 + 300, revision, metadata: { call_source: "vibe_code" } };
+    });
+    f.script(ok, ok);
+    const both = Promise.all([f.fetch(url, chat()), f.fetch(url, chat())]);
+    for (let turn = 0; turn < 5; turn++) await tick();
+    expect(f.resolved).toEqual([url, url]); expect(f.sent).toHaveLength(0);
+    release();
+    const answered = await bounded(both);
+    expect(answered.map(response => response.status)).toEqual([200, 200]);
+    expect(f.times).toEqual([T0, T0]); expect(clock.sleeps).toEqual([]);
+    expect(f.sent.map(request => request.headers.get("authorization"))).toEqual(["Bearer synthetic-1", "Bearer synthetic-2"]);
+  });
+
 const GATE_KEYS: [name: string, target: string, body: string | undefined, key: string][] = [
   ["a chat model", url, '{"model":"mistral-large-latest"}', "mistral-large-latest"],
   ["control and format characters dropped", url, JSON.stringify({ model: "mistral-\u0000large\n-latest‮ " }), "mistral-large-latest"],

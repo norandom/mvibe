@@ -1,4 +1,4 @@
-# mvibe 3.1.0 — upstream rate-limit queueing and proxy stats
+# mvibe 3.1.1 — upstream rate-limit queueing and proxy stats
 
 For students, researchers and educators only. This is untested, experimental
 software, not production software. Original mvibe contributions use the Beerware
@@ -11,7 +11,7 @@ API-key entry. Experimental direct ID-token OIDC remains a separate opt-in route
 it counted as API usage on the tested account. The existing-login route consumed
 the expected Vibe allowance in user-confirmed OpenCode tests.
 
-Download `mvibe-3.1.0.zip` and `SHA256SUMS`, verify the checksum, then extract to a
+Download `mvibe-3.1.1.zip` and `SHA256SUMS`, verify the checksum, then extract to a
 permanent directory outside a development checkout. Complete normal Vibe browser
 sign-in under the same native OS/user first. With uv, Bun 1.4.4 and OpenCode 2 installed:
 
@@ -31,6 +31,22 @@ The standalone wheel is also available for Python library consumers. The archive
 includes the optional proxy with `/openapi.json`, Swagger `/docs`, and opt-in
 `--log` diagnostics. Plugin diagnostics use `options.diagnostics: true`; the CLI
 also needs `--print-logs` for visible events.
+
+## New in 3.1.1
+
+- **First published release of the 3.1 line.** The `v3.1.0` tag was never
+  published: its release checks failed in the native OpenCode host test.
+- **Plugin: concurrent sessions overlap again.** In 3.1.0 the provider plugin
+  sent one request per model at a time even without a configured rate, so two
+  sessions on the same model could not run side by side. Models without a
+  configured rate now send concurrently as before; an upstream 429 still holds
+  the model and re-sends, and models with a configured rate still queue and
+  are spaced by their interval. `maxQueue` (default 64) bounds the requests
+  waiting or in flight. The proxy is unchanged: it still sends one request per
+  model at a time until the previous response starts.
+- **Proxy `/stats`:** a request counts as held only from 1 ms of queue time.
+- **Docker Compose** passes `MVIBE_RATE_LIMIT_RPS` and
+  `MVIBE_RATE_LIMIT_MODEL_RPS` through from an untracked `.env`.
 
 ## New in 3.1.0
 
@@ -54,8 +70,9 @@ also needs `--print-logs` for visible events.
     and `backoffCapMs`. The plugin talks to Mistral directly, so its rates are
     configured separately from the proxy's and the two do not share a budget.
   - Queues are keyed by the model name the client sends; an alias and its
-    dated id are two queues. Requests per model are sent one at a time until
-    the previous response starts, also without a configured rate.
+    dated id are two queues. The proxy sends requests per model one at a time
+    until the previous response starts, also without a configured rate; the
+    plugin does so only for models with a configured rate (since 3.1.1).
 - **Diagnostics.** Proxy and plugin events carry `queued_ms`,
   `rate_limit_rejections` and the outcome `rate_limited`; the proxy logs one
   warning per hold.

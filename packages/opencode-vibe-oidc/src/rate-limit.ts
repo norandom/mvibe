@@ -336,14 +336,19 @@ class Waiter {
 
 /** One gate key: its pacing slot, its rate-limit hold and its FIFO line.
  *
- * `waiters[0]` belongs to the run that owns the key. That run waits for the slot
- * and then has the key's only attempt in flight; every later run waits for its
- * turn until the run ahead of it leaves and promotes it. `holdUntil` is the end of
- * the key's rate-limit hold, honoured by every run on the key. Times are on the
- * gate's clock, in milliseconds. */
+ * `waiters[0]` belongs to the run whose turn it is; every later run waits for its
+ * turn until the run ahead of it leaves and promotes it. On a paced key the head
+ * waits for the slot and then keeps its place while it has the key's only attempt
+ * in flight. On an unpaced key the head leaves the line as it sends, so any number
+ * of its attempts can be in flight (`sending` counts them), and a run they get a
+ * 429 for re-joins the line at the head for the hold. `holdUntil` is the end of
+ * the key's rate-limit hold, honoured by every run on the key before it sends.
+ * Times are on the gate's clock, in milliseconds. */
 class KeyState {
   nextSlot = 0;
   holdUntil = 0;
+  /** Unpaced runs whose attempt is in flight; they are not in `waiters`. */
+  sending = 0;
   readonly waiters: Waiter[] = [];
 
   /** The earliest time at which the head may send. */
@@ -379,34 +384,43 @@ function discard(response: Response): void {
 
 /** Schedules upstream attempts per key: FIFO order, optional pacing, rate-limit
  * holds, and a bounded wait and depth (the plugin's counterpart of the proxy's
- * UpstreamGate).
+ * UpstreamGate; unlike the proxy's, an unpaced key here does not serialize).
  *
- * A key (`models`, a model id) is one line. Runs on a key are served in arrival
- * order, and only the run at the head of the line has an attempt in flight. A paced
- * key (`rateFor` returns a rate) starts its attempts at least `1000 / rate` ms
- * apart. An unpaced key, `models` always among them, lets the head send as soon as
- * the run ahead has finished. Keys never wait for one another.
+ * A key (`models`, a model id) is one line, and runs on a key take their turn in
+ * arrival order. A paced key (`rateFor` returns a rate) has at most one attempt in
+ * flight, the head's, and starts its attempts at least `1000 / rate` ms apart. An
+ * unpaced key, `models` always among them, has no spacing to enforce: its head
+ * leaves the line as it sends, so concurrent runs have their attempts in flight
+ * at the same time, as they had without the gate; only a hold makes them wait.
+ * Keys never wait for one another.
  *
- * An upstream 429 holds its key: no run on it is sent before the hold ends. The
- * 429 asks for a wait: as long as `Retry-After` says, but at least the pacing
- * interval (1000 ms when unpaced). Without a usable `Retry-After` it is a jittered
- * backoff that starts at that interval, doubles with each rejection of the run and
- * never exceeds `backoffCapMs`. The key is held for that wait, but never longer
- * than `maxWaitMs`, and `warn(key, holdMs)` is called as each hold starts. The
- * rejected run keeps the head of its line and is sent again when the hold ends,
- * unless the wait it was asked for, or the key's next slot, ends past its deadline
- * (arrival + `maxWaitMs`): then it returns that 429 at once, unread. A wait that
- * ends exactly at the deadline is not longer than the maximum wait, so the run is
- * sent again there.
+ * An upstream 429 holds its key: no run on it starts an attempt before the hold
+ * ends. Attempts already in flight on an unpaced key are not affected; each run
+ * handles its own answer. The 429 asks for a wait: as long as `Retry-After` says,
+ * but at least the pacing interval (1000 ms when unpaced). Without a usable
+ * `Retry-After` it is a jittered backoff that starts at that interval, doubles
+ * with each rejection of the run and never exceeds `backoffCapMs`. The key is held
+ * for that wait, but never longer than `maxWaitMs`, and `warn(key, holdMs)` is
+ * called as each hold starts (a 429 that does not move the hold forward starts
+ * none). The rejected run keeps the head of its line (on an unpaced key it
+ * re-joins the line at the head) and is sent again when the hold ends, unless the
+ * wait it was asked for, or the key's next slot, ends past its deadline (arrival +
+ * `maxWaitMs`): then it returns that 429 at once, unread. A wait that ends exactly
+ * at the deadline is not longer than the maximum wait, so the run is sent again
+ * there. Several unpaced runs rejected meanwhile each re-join at the head and are
+ * all sent again when the hold ends.
  *
  * At most `maxQueue` runs are inside the gate at once, waiting or in flight,
- * counted across all keys. A run beyond that bound, a run that reaches the head
- * after its deadline, and a run whose next slot or hold ends past that deadline get
- * a synthesized 429 at once, without an attempt.
+ * counted across all keys, so on an unpaced key it also bounds the attempts in
+ * flight. A run beyond that bound, a run that reaches the head after its deadline,
+ * and a run whose next slot or hold ends past that deadline get a synthesized 429
+ * at once, without an attempt.
  *
  * A run whose AbortSignal aborts while it waits, a hold included, leaves its line
  * without sending, promotes the run behind it, and throws BridgeError("cancelled");
- * the key's hold stays for the runs behind it. */
+ * the key's hold stays for the runs behind it. A run aborted while its attempt is
+ * in flight detaches that attempt and throws the same; a paced key is released at
+ * once. */
 export class UpstreamGate {
   readonly #options: RateLimitOptions;
   readonly #deps: Readonly<Required<GateDeps>>;
@@ -474,6 +488,10 @@ export class UpstreamGate {
 
   /** Wait for the head position, then send until the upstream takes the request.
    *
+   * A paced run stays at the head while its attempt is in flight. An unpaced run
+   * leaves the line as it sends, promoting the run behind it, and re-joins at the
+   * head when a 429 is to be sent again.
+   *
    * Each 429 holds the key and sends again from the head, until the run is out of
    * time. The run is out of time as soon as a 429 asks for a wait that ends past the
    * deadline. That is decided on the wait as asked, before the key's hold is clamped
@@ -494,17 +512,37 @@ export class UpstreamGate {
     let rejections = 0;
     for (;;) {
       // After a 429 the decision below already covers the slot and the hold, so
-      // only a clock that moved on in between can make this refuse.
+      // only a clock that moved on in between, or a longer hold that another run on
+      // an unpaced key started meanwhile, can make this refuse.
       const onTime = await this.#waitForSlot(state, deadline, signal);
       // However late an abort lands, nothing is sent after it.
       throwIfAborted(signal);
       const now = this.#deps.now();
+      // On an unpaced key another run's 429 can start a hold while this run resumes
+      // from its check; that hold applies to this run as well. (A paced key's slot
+      // and hold change only through its head, so this never repeats there.)
+      if (onTime && now < state.readyAt()) continue;
       record.queuedMs += now - waitedFrom;
       if (!onTime) return exhausted(record, Math.max(state.readyAt() - now, interval));
       if (interval > 0) state.nextSlot = now + interval;
-      // The head keeps the key while its attempt is in flight, unless the run is
-      // aborted meanwhile: then the attempt is detached and the key released.
-      const response = await this.#inFlight(attempt(), signal);
+      // A paced head keeps the key while its attempt is in flight, unless the run
+      // is aborted meanwhile: then the attempt is detached and the key released.
+      // An unpaced key has no spacing to enforce, so its head hands the line on
+      // as soon as it sends and concurrent requests overlap as they did before
+      // the gate existed; only a hold makes them wait. Everything from the check
+      // above to the send runs without a pause, so no hold can start in between.
+      let response: Response;
+      if (interval === 0) {
+        this.#leave(state, waiter);
+        state.sending += 1;
+        try {
+          response = await this.#inFlight(attempt(), signal);
+        } finally {
+          state.sending -= 1;
+        }
+      } else {
+        response = await this.#inFlight(attempt(), signal);
+      }
       const rejection = classifyRateLimit(response, shortest * 2 ** Math.min(rejections, MAX_DOUBLINGS),
         this.#options.backoffCapMs, this.#deps.wallNow());
       if (rejection === undefined) return response;
@@ -520,16 +558,20 @@ export class UpstreamGate {
       }
       discard(response);
       waitedFrom = rejectedAt;
+      // An unpaced run left its line to send; rejected, it is back at the head
+      // and waits out the hold there.
+      if (interval === 0) state.waiters.unshift(waiter);
     }
   }
 
   /** Await an in-flight attempt, or detach it as soon as `signal` aborts.
    *
-   * On abort the run rejects with BridgeError("cancelled") and releases the key at
-   * once, so a transport that ignores the abort (or a discovery superseded by a
-   * newer one) cannot hold later runs on the key. The detached attempt settles on
-   * its own: its eventual response is discarded and a rejection is swallowed. A
-   * failure of the attempt itself propagates unchanged. */
+   * On abort the run rejects with BridgeError("cancelled") at once. A paced run then
+   * releases the key, so a transport that ignores the abort cannot hold later runs
+   * on the key; an unpaced run (a discovery superseded by a newer one among them)
+   * left the line when it sent and only stops counting as in flight and as held.
+   * The detached attempt settles on its own: its eventual response is discarded and
+   * a rejection is swallowed. A failure of the attempt itself propagates unchanged. */
   async #inFlight(pending: Promise<Response>, signal: AbortSignal | undefined): Promise<Response> {
     if (signal === undefined) return pending;
     let abort = (): void => undefined;
@@ -607,13 +649,14 @@ export class UpstreamGate {
   /** The state for `key`, created on first use.
    *
    * Before creating one, the gate drops idle keys whose slot and hold have passed:
-   * no waiter and nothing left to enforce. A dropped key behaves exactly like a
-   * new one, so the key map holds only keys that still have something to enforce. */
+   * no waiter, no unpaced attempt in flight (its 429 would hold this very state)
+   * and nothing left to enforce. A dropped key behaves exactly like a new one, so
+   * the key map holds only keys that still have something to enforce. */
   #state(key: string, now: number): KeyState {
     let state = this.#keys.get(key);
     if (state === undefined) {
       for (const [name, known] of this.#keys) {
-        if (known.waiters.length === 0 && known.readyAt() <= now) this.#keys.delete(name);
+        if (known.waiters.length === 0 && known.sending === 0 && known.readyAt() <= now) this.#keys.delete(name);
       }
       state = new KeyState();
       this.#keys.set(key, state);
@@ -623,10 +666,16 @@ export class UpstreamGate {
 
   /** Take `waiter` out of its line; if it was the head, promote the next run.
    * A next run that was aborted meanwhile leaves through here as the head in turn
-   * and promotes the run after it. */
+   * and promotes the run after it. A waiter that is no longer in the line (an
+   * unpaced run that left it to send) is left alone. On an unpaced key a run that
+   * re-joined at the head can stand before runs already past their turn, so a run
+   * may also leave from behind the head; it then promotes nobody, and promoting a
+   * run already past its turn does nothing. */
   #leave(state: KeyState, waiter: Waiter): void {
-    const wasHead = state.waiters[0] === waiter;
-    state.waiters.splice(state.waiters.indexOf(waiter), 1);
-    if (wasHead) state.waiters[0]?.promote();
+    const position = state.waiters.indexOf(waiter);
+    // An unpaced run that is in flight has already left its line.
+    if (position < 0) return;
+    state.waiters.splice(position, 1);
+    if (position === 0) state.waiters[0]?.promote();
   }
 }
