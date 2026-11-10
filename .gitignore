@@ -17,3 +17,6 @@ reports/
 # mmhmem state bind-mounted by docker-compose.yml (statistics, caches, audit); keep only the placeholder
 mmhmem-data/*
 !mmhmem-data/.gitkeep
+
+# operator-specific compose settings (rates, credential mount paths)
+.env

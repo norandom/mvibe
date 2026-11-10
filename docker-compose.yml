@@ -66,6 +66,14 @@ services:
       # child inherits these two keys (durable store + hash-only audit log).
       AGENT_MEM_DATA_DIR: /data/mmhmem
       AGENT_MEM_LOG_FILE: /data/mmhmem/audit/mmhmem.log
+      # Upstream pacing (off by default; a 429 is always held and re-sent).
+      # Rates are account-specific, so set them in an untracked .env next to
+      # this file, e.g. MVIBE_RATE_LIMIT_MODEL_RPS=mistral-large-latest=0.5
+      # (comma-separated model=requests-per-second; each model has its own
+      # queue, keyed by the model name clients send). MVIBE_RATE_LIMIT_RPS is
+      # the default for every model without an entry. Blank means unset.
+      MVIBE_RATE_LIMIT_RPS: ${MVIBE_RATE_LIMIT_RPS:-}
+      MVIBE_RATE_LIMIT_MODEL_RPS: ${MVIBE_RATE_LIMIT_MODEL_RPS:-}
       # Stats propagation (on by default): the proxy reports its measured
       # token usage to the embedded mmhmem child so `mmhmem stats` shows real
       # spend next to the estimated savings, and GET /stats returns both. The
