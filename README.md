@@ -168,6 +168,39 @@ See the [provider guide](docs/opencode-provider.md) for manual configuration,
 model metadata and diagnostics. Ordinary logging is off by default. Payload
 capture requires separate opt-in and can contain sensitive conversation content.
 
+## Update mmhmem in the proxy image
+
+The Docker image of the proxy embeds one pinned
+[mmhmem](https://github.com/norandom/mmhmem) release and downloads it,
+checksum-verified, when the image is built. A new mmhmem release is therefore
+not picked up until you rebuild. The release archive and the OpenCode provider
+do not bundle mmhmem, and an mmhmem installed on the host for your agents is
+updated separately.
+
+1. Wait until the mmhmem release is **published**. While its release workflow
+   is still running the assets do not exist and the image build fails at the
+   download step.
+2. Rebuild with the new version (no leading `v`). State in `./mmhmem-data` is
+   kept:
+
+   ```powershell
+   $env:MMHMEM_VERSION = '0.5.3'; docker compose up --build -d
+   ```
+
+   ```bash
+   MMHMEM_VERSION=0.5.3 docker compose up --build -d
+   ```
+
+3. Check it: `docker compose exec proxy mmhmem --version`, then
+   `curl http://127.0.0.1:8765/stats`.
+
+The variable only applies to that build. To keep the version, put
+`MMHMEM_VERSION=0.5.3` in the untracked `.env` next to `docker-compose.yml`.
+To make it the default for everyone, change `ARG MMHMEM_VERSION` in the
+`Dockerfile` and the default in `docker-compose.yml` to the same value; a test
+requires them to match, and CI checks that the binary in the image reports
+that version.
+
 ## Other uses and project details
 
 - [Desktop setup and backend verification](docs/desktop-setup.md)
