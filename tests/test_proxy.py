@@ -1,4 +1,5 @@
 """Offline public-factory route contract; every external boundary is injected."""
+import asyncio
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -41,7 +42,7 @@ class Session:
         self.events.append('close')
 
 
-def harness(session=None, *, response_status=200, fail_send=False, force=False):
+def harness(session=None, *, response_status=200, fail_send=False, force=False, content=b'{"result":"synthetic"}'):
     session = session or Session()
     requests = []
     options = []
@@ -52,7 +53,7 @@ def harness(session=None, *, response_status=200, fail_send=False, force=False):
             requests.append(request)
             if fail_send:
                 raise RuntimeError('secret upstream credential')
-            return httpx2.Response(response_status, content=b'{"result":"synthetic"}')
+            return httpx2.Response(response_status, content=content)
         return httpx2.AsyncClient(transport=httpx2.MockTransport(upstream), follow_redirects=False)
 
     app = proxy.create_app(lambda: session, client_factory, force_login=force)
@@ -261,3 +262,98 @@ async def test_default_native_startup_and_requests_share_fresh_session(monkeypat
     assert [request.headers['authorization'] for request in sent] == [
         'Bearer request-one', 'Bearer request-two']
     assert session._closed
+
+
+async def raw_asgi(app, method, path, *, body=b'', headers=(), events, receive=None, scopes=None):
+    """One raw ASGI request; `events` records when the app takes the request body.
+
+    `receive` replaces the default single-chunk body delivery; `scopes` collects the scope."""
+    messages = []
+    delivered = False
+    async def deliver():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            events.append('body')
+            return {'type': 'http.request', 'body': body, 'more_body': False}
+        await asyncio.Event().wait()
+    async def send(message):
+        messages.append(message)
+    scope = {'type': 'http', 'asgi': {'version': '3.0', 'spec_version': '2.4'}, 'http_version': '1.1',
+             'method': method, 'scheme': 'http', 'path': path, 'raw_path': path.encode(),
+             'query_string': b'', 'root_path': '', 'headers': list(headers),
+             'client': ('local', 1), 'server': ('local', 80)}
+    if scopes is not None:
+        scopes.append(scope)
+    await app(scope, receive or deliver, send)
+    return messages
+
+
+MODELS_LIST = {'object': 'list', 'data': [{'id': 'mistral-large-4', 'object': 'model'}]}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('method', 'path', 'headers', 'body'), [
+    ('POST', '/v1/chat/completions', [], b' {"tools": [ ]}\n\x00'),
+    ('GET', '/v1/models', [(b'anthropic-version', b'2023-06-01')], b''),
+    ('GET', '/api/tags', [], b''),
+])
+async def test_routes_read_the_body_before_acquiring(method, path, headers, body):
+    chat = path == '/v1/chat/completions'
+    upstream_body = b'{"result":"synthetic"}' if chat else json.dumps(MODELS_LIST).encode()
+    app, session, sent, _ = harness(content=upstream_body)
+    async with app.router.lifespan_context(app):
+        messages = await asyncio.wait_for(
+            raw_asgi(app, method, path, body=body, headers=headers, events=session.events), 1)
+    resolves = [index for index, event in enumerate(session.events)
+                if isinstance(event, tuple) and event[0] == 'resolve']
+    # The route consumed the body before acquisition (and its disconnect watcher) began.
+    assert len(resolves) == 1 and session.events.index('body') < resolves[0]
+    assert messages[0]['status'] == 200 and len(sent) == 1
+    assert sent[0].content == body
+    received = b''.join(m.get('body', b'') for m in messages if m['type'] == 'http.response.body')
+    if chat:
+        assert received == upstream_body
+    elif path == '/v1/models':
+        translated = json.loads(received)
+        assert [m['id'] for m in translated['data']] == ['mistral-large-4'] and translated['has_more'] is False
+    else:
+        assert [m['name'] for m in json.loads(received)['models']] == ['mistral-large-4']
+
+
+def disconnecting(chunks, events):
+    """receive() handing over `chunks` (more_body=True), then reporting the client gone."""
+    pending = list(chunks)
+    async def receive():
+        if pending:
+            events.append('body')
+            return {'type': 'http.request', 'body': pending.pop(0), 'more_body': True}
+        events.append('disconnect')
+        return {'type': 'http.disconnect'}
+    return receive
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('method', 'path', 'headers'), [
+    ('POST', '/v1/chat/completions', []),
+    ('POST', '/api/chat', []),
+    ('GET', '/v1/models', [(b'anthropic-version', b'2023-06-01')]),
+    ('GET', '/api/tags', []),
+])
+@pytest.mark.parametrize('chunks', [(), (b'{"model": "mistral-',)], ids=['before-body', 'mid-body'])
+async def test_disconnect_during_body_read_is_cancelled_and_never_sent(method, path, headers, chunks):
+    app, session, sent, _ = harness()
+    scopes = []
+    async with app.router.lifespan_context(app):
+        # Returns normally: an ordinary client disconnect never escapes the app.
+        messages = await asyncio.wait_for(raw_asgi(
+            app, method, path, headers=headers, events=session.events,
+            receive=disconnecting(chunks, session.events), scopes=scopes), 1)
+    assert 'disconnect' in session.events
+    assert not sent
+    assert not [event for event in session.events if isinstance(event, tuple) and event[0] == 'resolve']
+    assert scopes[0]['mvibe.diagnostic'].outcome == 'cancelled'
+    # The client is gone: at most an empty 204, whose status only lands in the diagnostic.
+    starts = [m for m in messages if m['type'] == 'http.response.start']
+    assert not starts or [m['status'] for m in starts] == [204]
+    assert b''.join(m.get('body', b'') for m in messages if m['type'] == 'http.response.body') == b''

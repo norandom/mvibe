@@ -27,6 +27,7 @@ import webbrowser
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.requests import ClientDisconnect
 import json
 from urllib.parse import urlencode
 from mvibe_proxy import compat
@@ -148,6 +149,18 @@ def _has_tool_result(payload: dict) -> bool:
         return False
     return any(isinstance(message, dict) and message.get('role') == 'tool'
                for message in messages)
+
+
+async def _read_body(request: Request, diagnostic: RequestDiagnostic) -> bytes | None:
+    """The request body, or None when the client left while it was being read.
+
+    That disconnect is ordinary, not a server error: it records `cancelled`,
+    and the route returns an empty response without contacting the upstream."""
+    try:
+        return await request.body()
+    except ClientDisconnect:
+        diagnostic.failure('cancelled')
+        return None
 
 
 _ECON_HOOK_LOG = logging.getLogger('mvibe-proxy.econ')
@@ -310,6 +323,10 @@ def create_app(
         }:
             diagnostic.failure('unsupported')
             return JSONResponse({'error': {'message': 'Unsupported endpoint'}}, status_code=404)
+        # Read the body before the owned response watches receive() for a
+        # disconnect; make_acquire's own request.body() is then a cache hit.
+        if await _read_body(request, diagnostic) is None:
+            return Response(status_code=204)
         return request.app.state.stream_owner.response(
             make_acquire(request, path, diagnostic=diagnostic), diagnostic)
 
@@ -317,8 +334,10 @@ def create_app(
         """POST route translating an adapter dialect body to the upstream /v1 target."""
         async def handler(request: Request) -> Response:
             diagnostic = request.scope.get('mvibe.diagnostic') or RequestDiagnostic()
+            raw = await _read_body(request, diagnostic)
+            if raw is None:
+                return Response(status_code=204)
             try:
-                raw = await request.body()
                 adapter_body = json.loads(raw) if raw else {}
                 if not isinstance(adapter_body, dict):
                     raise compat.CompatError('body must be a JSON object')
@@ -378,6 +397,9 @@ def create_app(
         if request.headers.get('anthropic-version'):
             # Anthropic-dialect model list; OpenAI shape is unchanged otherwise.
             diagnostic = request.scope.get('mvibe.diagnostic') or RequestDiagnostic()
+            # Consumed before the disconnect watcher starts.
+            if await _read_body(request, diagnostic) is None:
+                return Response(status_code=204)
             return request.app.state.stream_owner.response(
                 make_acquire(request, 'models', b'', diagnostic), diagnostic,
                 compat.BufferJson(compat.anthropic_models_list, 'anthropic'))
@@ -412,6 +434,9 @@ def create_app(
     @app.get('/api/tags', response_model=None, openapi_extra={'summary': 'Ollama-compatible model list', **_OLLAMA_DOC})
     async def ollama_tags_route(request: Request) -> Response:
         diagnostic = request.scope.get('mvibe.diagnostic') or RequestDiagnostic()
+        # Consumed before the disconnect watcher starts.
+        if await _read_body(request, diagnostic) is None:
+            return Response(status_code=204)
         return request.app.state.stream_owner.response(
             make_acquire(request, 'models', b'', diagnostic), diagnostic,
             compat.BufferJson(compat.ollama_tags, 'ollama'))

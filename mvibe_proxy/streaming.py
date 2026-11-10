@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 import logging
+from typing import TYPE_CHECKING
 
 import anyio
 import httpx2
@@ -11,11 +12,40 @@ from starlette.responses import JSONResponse, Response
 
 from mvibe_auth.api import AuthError
 
+if TYPE_CHECKING:
+    from mvibe_proxy.diagnostics import RequestDiagnostic
+
 logger = logging.getLogger('mvibe.proxy')
 
 
 class StreamAborted(RuntimeError):
     """A started response cannot be completed after transport retirement."""
+
+
+class ClientDisconnected(RuntimeError):
+    """The client left while its upstream response was still being acquired."""
+
+
+async def _watch_disconnect(receive: Callable[[], Awaitable[dict]],
+                            on_disconnect: Callable[[], None]) -> None:
+    # Routes read the request body before acquiring, so receive() can only
+    # report the client leaving; any other message is ignored.
+    while True:
+        message = await receive()
+        if message['type'] == 'http.disconnect':
+            on_disconnect()
+            return
+
+
+def _start_headers(upstream) -> list[tuple[bytes, bytes]]:
+    headers = [(b'content-type', upstream.headers.get('content-type', 'application/json').encode('latin-1')),
+               (b'cache-control', b'no-cache')]
+    if upstream.status_code == 429:
+        # Rate-limit guidance reaches the client only with a 429; every other
+        # status keeps exactly the two headers above.
+        headers += [(name.lower(), value) for name, value in upstream.headers.raw
+                    if name.lower() == b'retry-after' or name.lower().startswith(b'x-ratelimit-')]
+    return headers
 
 
 class ProxyStreamOwner:
@@ -93,6 +123,63 @@ class ProxyStreamOwner:
     def response(self, acquire: Callable[[], Awaitable], diagnostic=None, transform=None):
         return _OwnedResponse(self, acquire, diagnostic, transform)
 
+    async def _discard(self, upstream, diagnostic=None) -> None:
+        # Bounded close of an acquired response that no client will read.
+        upstream.stream = _OwnedByteStream(self, upstream.stream, diagnostic)
+        await self._protected(self._finish(upstream))
+
+    async def acquire_watching(self, receive: Callable[[], Awaitable[dict]],
+                               acquire: Callable[[], Awaitable[httpx2.Response]],
+                               diagnostic: RequestDiagnostic | None) -> httpx2.Response:
+        """Acquire an upstream response for a caller that inspects it before responding.
+
+        The caller has already read the request body. Nothing is sent to the
+        client here. A client disconnect cancels the acquisition, records
+        `cancelled` and raises ClientDisconnected; retirement raises StreamAborted.
+        """
+        if self.retired:
+            raise StreamAborted('Upstream unavailable')
+        upstream = None
+        error = None
+        disconnected = False
+        cancellation = anyio.CancelScope()
+
+        def disconnect() -> None:
+            nonlocal disconnected
+            disconnected = True
+            if diagnostic is not None:
+                diagnostic.failure('cancelled')
+            cancellation.cancel()
+
+        self._active.add(cancellation)
+        try:
+            with cancellation:
+                async with anyio.create_task_group() as group:
+                    group.start_soon(_watch_disconnect, receive, disconnect)
+                    try:
+                        upstream = await acquire()
+                    except Exception as caught:
+                        # Re-raised below, not wrapped in the task group's ExceptionGroup.
+                        error = caught
+                    group.cancel_scope.cancel()
+        except BaseException:
+            if upstream is not None:
+                await self._discard(upstream, diagnostic)
+            raise
+        finally:
+            self._active.discard(cancellation)
+        if cancellation.cancel_called or self.retired:
+            # The client left or retirement cancelled the acquisition: a response
+            # won by the race is closed, never returned.
+            if upstream is not None:
+                await self._discard(upstream, diagnostic)
+            if disconnected:
+                raise ClientDisconnected('Client disconnected')
+            raise StreamAborted('Upstream unavailable')
+        if error is not None:
+            raise error
+        return upstream
+
 
 class _OwnedByteStream(httpx2.AsyncByteStream):
     def __init__(self, owner: ProxyStreamOwner, stream, diagnostic=None):
@@ -137,67 +224,69 @@ class _OwnedResponse(Response):
 
     async def __call__(self, scope, receive, send) -> None:
         upstream = None
+        error = None
         disconnected = False
         completed = False
         cancellation = anyio.CancelScope()
         self.owner._active.add(cancellation)
+
+        def disconnect() -> None:
+            nonlocal disconnected
+            disconnected = True
+            if self.diagnostic is not None and not completed:
+                self.diagnostic.failure('cancelled')
+            cancellation.cancel()
+
         try:
             with cancellation:
-                try:
-                    if self.owner.retired:
-                        raise StreamAborted('Upstream unavailable')
-                    # Acquisition is inside the same try/finally as headers/body.
-                    upstream = await self.acquire()
-                    upstream.stream = _OwnedByteStream(self.owner, upstream.stream, self.diagnostic)
-                    if self.diagnostic is not None:
-                        self.diagnostic.upstream(upstream.status_code)
-                    if self.owner.retired:
-                        raise StreamAborted('Upstream unavailable')
-                except AuthError:
-                    if self.diagnostic is not None:
-                        self.diagnostic.failure('auth')
-                    await JSONResponse({'error': {'message': 'Vibe authentication failed; run proxy.py --login'}}, status_code=401)(scope, receive, send)
-                    return
-                except Exception:
-                    if self.diagnostic is not None:
-                        self.diagnostic.failure('connection')
-                    await JSONResponse({'error': {'message': 'Upstream connection failed'}}, status_code=502)(scope, receive, send)
-                    return
-
-                async def disconnect() -> None:
-                    nonlocal disconnected
-                    while True:
-                        message = await receive()
-                        if message['type'] == 'http.disconnect':
-                            disconnected = True
-                            if self.diagnostic is not None and not completed:
-                                self.diagnostic.failure('cancelled')
-                            cancellation.cancel()
-                            return
-
+                # The route has already read the body, so the watcher can run
+                # during acquisition: a client leaving while its request is held
+                # cancels acquire() before any response byte is sent.
                 async with anyio.create_task_group() as group:
-                    group.start_soon(disconnect)
-                    # Treat even an interrupted start send as committed: never
-                    # attempt replacement headers/JSON after invoking send.
-                    await send({'type': 'http.response.start', 'status': upstream.status_code,
-                                'headers': [(b'content-type', upstream.headers.get('content-type', 'application/json').encode('latin-1')),
-                                            (b'cache-control', b'no-cache')]})
-                    if self.diagnostic is not None and self.diagnostic.outcome == 'completed':
-                        self.diagnostic.phase = 'stream'
-                    telemetry = getattr(scope['app'].state, 'telemetry', None) if 'app' in scope else None
-                    if telemetry is not None:
-                        with telemetry.tracer.start_as_current_span('proxy.stream'):
+                    group.start_soon(_watch_disconnect, receive, disconnect)
+                    try:
+                        if self.owner.retired:
+                            raise StreamAborted('Upstream unavailable')
+                        # Acquisition is inside the same try/finally as headers/body.
+                        upstream = await self.acquire()
+                        upstream.stream = _OwnedByteStream(self.owner, upstream.stream, self.diagnostic)
+                        if self.diagnostic is not None and not disconnected:
+                            self.diagnostic.upstream(upstream.status_code)
+                        if self.owner.retired:
+                            raise StreamAborted('Upstream unavailable')
+                    except AuthError:
+                        if self.diagnostic is not None:
+                            self.diagnostic.failure('auth')
+                        error = JSONResponse({'error': {'message': 'Vibe authentication failed; run proxy.py --login'}}, status_code=401)
+                    except Exception:
+                        if self.diagnostic is not None:
+                            self.diagnostic.failure('connection')
+                        error = JSONResponse({'error': {'message': 'Upstream connection failed'}}, status_code=502)
+                    if error is None and not disconnected:
+                        # Treat even an interrupted start send as committed: never
+                        # attempt replacement headers/JSON after invoking send.
+                        await send({'type': 'http.response.start', 'status': upstream.status_code,
+                                    'headers': _start_headers(upstream)})
+                        if self.diagnostic is not None and self.diagnostic.outcome == 'completed':
+                            self.diagnostic.phase = 'stream'
+                        telemetry = getattr(scope['app'].state, 'telemetry', None) if 'app' in scope else None
+                        if telemetry is not None:
+                            with telemetry.tracer.start_as_current_span('proxy.stream'):
+                                await self._stream_body(upstream, send, self.transform)
+                        else:
                             await self._stream_body(upstream, send, self.transform)
-                    else:
-                        await self._stream_body(upstream, send, self.transform)
-                    # Bodyless/cached responses may bypass iterator auto-close.
-                    # Finish ownership before declaring downstream completion.
-                    await upstream.aclose()
-                    if self.owner.retired:
-                        raise StreamAborted('Upstream stream interrupted')
-                    completed = True
-                    await send({'type': 'http.response.body', 'body': b'', 'more_body': False})
+                        # Bodyless/cached responses may bypass iterator auto-close.
+                        # Finish ownership before declaring downstream completion.
+                        await upstream.aclose()
+                        if self.owner.retired:
+                            raise StreamAborted('Upstream stream interrupted')
+                        completed = True
+                        await send({'type': 'http.response.body', 'body': b'', 'more_body': False})
                     group.cancel_scope.cancel()
+                if error is not None and not disconnected:
+                    # Pre-response failures are sent after the watcher stops.
+                    await error(scope, receive, send)
+                    return
             if cancellation.cancel_called and not disconnected:
                 raise StreamAborted('Upstream stream interrupted')
         except Exception:

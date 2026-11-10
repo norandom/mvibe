@@ -3,6 +3,7 @@ import asyncio
 import gzip
 from urllib.parse import parse_qsl
 
+import anyio
 import httpx2
 import pytest
 
@@ -46,7 +47,7 @@ def app_for(streams, *, status=200, headers=None):
     return app, requests, client
 
 
-async def call(app, *, send_hook=None, query=b'', body=b'', method='GET', disconnect=None):
+async def call(app, *, send_hook=None, query=b'', body=b'', method='GET', disconnect=None, scopes=None):
     messages = []
     read = False
     async def receive():
@@ -67,6 +68,8 @@ async def call(app, *, send_hook=None, query=b'', body=b'', method='GET', discon
              'path': '/v1/models' if method == 'GET' else '/v1/chat/completions',
              'raw_path': b'/v1/models', 'query_string': query, 'root_path': '',
              'headers': [], 'client': ('local', 1), 'server': ('local', 80)}
+    if scopes is not None:
+        scopes.append(scope)
     await app(scope, receive, send)
     return messages
 
@@ -340,3 +343,217 @@ async def test_bodyless_close_timeout_does_not_send_terminal_success():
         assert app.state.stream_owner.retired
     assert messages[0]['status'] == 204
     assert not any(m.get('more_body') is False for m in messages)
+
+
+def blocked_acquisition_app():
+    """An app whose credential resolve parks until cancelled; records upstream sends."""
+    session = Session()
+    entered, stopped = asyncio.Event(), asyncio.Event()
+    async def blocked(url):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+    session.resolve = blocked
+    requests = []
+    def upstream(request):
+        requests.append(request)
+        return httpx2.Response(200, content=b'{}')
+    app = proxy.create_app(lambda: session, lambda **kwargs: httpx2.AsyncClient(transport=httpx2.MockTransport(upstream)))
+    return app, requests, entered, stopped
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('method', ['GET', 'POST'])
+async def test_disconnect_while_acquiring_cancels_without_response_start(method):
+    app, requests, entered, stopped = blocked_acquisition_app()
+    disconnect = asyncio.Event()
+    scopes = []
+    async with app.router.lifespan_context(app):
+        task = asyncio.create_task(call(app, method=method, body=b'{"model":"m"}' if method == 'POST' else b'',
+                                        disconnect=disconnect, scopes=scopes))
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            disconnect.set()
+            # Returns normally: a client that left is not a stream abort.
+            messages = await asyncio.wait_for(task, 1)
+        finally:
+            task.cancel()
+        assert stopped.is_set()
+        assert not any(m['type'] == 'http.response.start' for m in messages)
+        assert not messages and not requests
+        assert scopes[0]['mvibe.diagnostic'].outcome == 'cancelled'
+        assert not app.state.stream_owner._active
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('status', [429, 200])
+async def test_rate_limit_headers_reach_the_client_only_on_429(status):
+    payload = b'{"message":"Requests rate limit exceeded"}'
+    app, _, _ = app_for([Stream((payload,))], status=status, headers=[
+        ('content-type', 'application/json'), ('retry-after', '2'),
+        ('x-ratelimit-remaining-req-minute', '0'), ('X-RateLimit-Limit-Req-Minute', '30'),
+        ('x-other', 'never-forwarded'), ('content-length', str(len(payload)))])
+    async with app.router.lifespan_context(app):
+        messages = await call(app)
+    assert messages[0]['status'] == status
+    headers = [h for h in messages[0]['headers'] if h[0] != b'x-request-id']
+    expected = [(b'content-type', b'application/json'), (b'cache-control', b'no-cache')]
+    if status == 429:
+        expected += [(b'retry-after', b'2'), (b'x-ratelimit-remaining-req-minute', b'0'),
+                     (b'x-ratelimit-limit-req-minute', b'30')]
+    assert headers == expected
+    assert b''.join(m.get('body', b'') for m in messages) == payload
+
+
+class ClosableClient:
+    async def aclose(self):
+        pass
+
+
+def watching_owner():
+    from mvibe_proxy.diagnostics import RequestDiagnostic
+    from mvibe_proxy.streaming import ProxyStreamOwner
+    return ProxyStreamOwner(ClosableClient()), RequestDiagnostic()
+
+
+@pytest.mark.anyio
+async def test_acquire_watching_returns_the_upstream_response():
+    owner, diagnostic = watching_owner()
+    watched, released = asyncio.Event(), asyncio.Event()
+    async def receive():
+        if not watched.is_set():
+            watched.set()
+            # Anything but a disconnect is ignored while acquiring.
+            return {'type': 'http.request', 'body': b'', 'more_body': False}
+        try:
+            await asyncio.Event().wait()
+        finally:
+            released.set()
+    stream = Stream()
+    upstream = httpx2.Response(429, headers={'retry-after': '2'}, stream=stream)
+    async def acquire():
+        await asyncio.wait_for(watched.wait(), 1)
+        await asyncio.sleep(0)
+        return upstream
+    result = await asyncio.wait_for(owner.acquire_watching(receive, acquire, diagnostic), 1)
+    # Handed back unread and open: the caller owns it from here.
+    assert result is upstream and not stream.iterated and not stream.close_started.is_set()
+    assert released.is_set() and diagnostic.outcome == 'completed'
+    assert not owner._active
+
+
+@pytest.mark.anyio
+async def test_acquire_watching_disconnect_cancels_acquisition():
+    from mvibe_proxy.streaming import ClientDisconnected
+    owner, diagnostic = watching_owner()
+    gone, entered, stopped = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    finished = []
+    async def receive():
+        await gone.wait()
+        return {'type': 'http.disconnect'}
+    async def acquire():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+            finished.append('sent upstream')
+        finally:
+            stopped.set()
+    task = asyncio.create_task(owner.acquire_watching(receive, acquire, diagnostic))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        gone.set()
+        with pytest.raises(ClientDisconnected):
+            await asyncio.wait_for(task, 1)
+    finally:
+        task.cancel()
+    assert stopped.is_set() and not finished
+    assert diagnostic.outcome == 'cancelled'
+    assert not owner._active
+
+
+@pytest.mark.anyio
+async def test_acquire_watching_closes_a_response_won_by_a_racing_disconnect():
+    from mvibe_proxy.streaming import ClientDisconnected
+    owner, diagnostic = watching_owner()
+    stream = Stream()
+    upstream = httpx2.Response(200, stream=stream)
+    async def receive():
+        return {'type': 'http.disconnect'}
+    async def acquire():
+        # Finish acquiring even though the watcher saw the disconnect meanwhile.
+        with anyio.CancelScope(shield=True):
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        return upstream
+    with pytest.raises(ClientDisconnected):
+        await asyncio.wait_for(owner.acquire_watching(receive, acquire, diagnostic), 1)
+    assert stream.closed.is_set() and diagnostic.outcome == 'cancelled'
+
+
+@pytest.mark.anyio
+async def test_owned_response_sends_nothing_when_a_disconnect_races_acquisition():
+    owner, diagnostic = watching_owner()
+    stream = Stream()
+    upstream = httpx2.Response(429, headers={'retry-after': '2'}, stream=stream)
+    async def receive():
+        return {'type': 'http.disconnect'}
+    async def acquire():
+        # Finish acquiring even though the watcher saw the disconnect meanwhile.
+        with anyio.CancelScope(shield=True):
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        return upstream
+    messages = []
+    async def send(message):
+        messages.append(message)
+    await asyncio.wait_for(owner.response(acquire, diagnostic)({'type': 'http'}, receive, send), 1)
+    assert not messages and not stream.iterated and stream.closed.is_set()
+    assert diagnostic.outcome == 'cancelled' and not owner._active
+
+
+@pytest.mark.anyio
+async def test_acquire_watching_propagates_acquisition_errors_unwrapped():
+    from mvibe_auth.api import AuthError, AuthFailure
+    owner, diagnostic = watching_owner()
+    async def receive():
+        await asyncio.Event().wait()
+    async def acquire():
+        await asyncio.sleep(0)
+        raise AuthError(AuthFailure('rejected'))
+    with pytest.raises(AuthError):
+        await asyncio.wait_for(owner.acquire_watching(receive, acquire, diagnostic), 1)
+    assert diagnostic.outcome == 'completed' and not owner._active
+
+
+@pytest.mark.anyio
+async def test_acquire_watching_respects_retirement():
+    from mvibe_proxy.streaming import StreamAborted
+    owner, diagnostic = watching_owner()
+    calls, entered, stopped = [], asyncio.Event(), asyncio.Event()
+    async def receive():
+        await asyncio.Event().wait()
+    async def never():
+        calls.append('acquire')
+    owner.retired = True
+    with pytest.raises(StreamAborted):
+        await owner.acquire_watching(receive, never, diagnostic)
+    assert not calls
+
+    owner, diagnostic = watching_owner()
+    async def held():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+    task = asyncio.create_task(owner.acquire_watching(receive, held, diagnostic))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await owner.shutdown()
+        with pytest.raises(StreamAborted):
+            await asyncio.wait_for(task, 1)
+    finally:
+        task.cancel()
+    assert stopped.is_set() and not owner._active
