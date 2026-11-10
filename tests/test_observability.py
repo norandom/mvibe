@@ -235,7 +235,11 @@ async def test_enabled_export_enqueues_correlated_allowlisted_record(monkeypatch
     assert record['model'] == 'mistral-large-4'
     assert 'secret' not in json.dumps(record)
     assert set(record) <= {'service', 'event', 'timestamp', 'request_id', 'trace_id',
-                           'span_id', 'phase', 'outcome', 'status', 'elapsed_ms', 'model', 'hint'}
+                           'span_id', 'phase', 'outcome', 'status', 'elapsed_ms', 'model', 'hint',
+                           'queued_ms', 'rate_limit_rejections'}
+    # Every request goes through the rate-limit gate, so its numbers are always exported.
+    assert type(record['queued_ms']) is float and record['queued_ms'] >= 0
+    assert record['rate_limit_rejections'] == 0
 
 
 def _client_factory(sent):

@@ -10,7 +10,9 @@ import httpx2
 import pytest
 
 import proxy
+from fakes import Clock
 from mvibe_auth.api import AuthConfig, AuthError, AuthFailure, AuthSnapshot, LoginCompleted
+from mvibe_proxy import diagnostics
 from mvibe_proxy.ratelimit import (ENV_BACKOFF_CAP_S, ENV_MAX_QUEUE, ENV_MAX_WAIT_S,
                                    ENV_MODEL_RPS, ENV_RPS, RateLimitConfig, UpstreamGate)
 
@@ -46,22 +48,65 @@ class Session:
 
 
 def harness(session=None, *, response_status=200, fail_send=False, force=False, content=b'{"result":"synthetic"}',
-            **app_options):
+            upstream=None, **app_options):
+    """An app on fakes; `upstream(request)`, when given, answers in place of response_status/content."""
     session = session or Session()
     requests = []
     options = []
 
     def client_factory(**kwargs):
         options.append(kwargs)
-        async def upstream(request):
+        async def respond(request):
             requests.append(request)
             if fail_send:
                 raise RuntimeError('secret upstream credential')
+            if upstream is not None:
+                return upstream(request)
             return httpx2.Response(response_status, content=content)
-        return httpx2.AsyncClient(transport=httpx2.MockTransport(upstream), follow_redirects=False)
+        return httpx2.AsyncClient(transport=httpx2.MockTransport(respond), follow_redirects=False)
 
     app = proxy.create_app(lambda: session, client_factory, force_login=force, **app_options)
     return app, session, requests, options
+
+
+def clocked_gate(clock, *, sleep=None, warn=None):
+    """A gate_factory for the real gate on the fake `clock`.
+
+    Its waits advance the clock (or run `sleep`), and its jitter is fixed at 1.0,
+    so a hold without Retry-After lasts exactly the backoff (1 s for the first)."""
+    def gate_factory(config):
+        return UpstreamGate(config, clock=clock.time, wall_clock=clock.time,
+                            sleep=sleep or clock.sleep, random=lambda: 0.5, warn=warn)
+    return gate_factory
+
+
+def answers(clock, *script, latency=0.0, sent_at=None):
+    """An upstream answering the `(status, headers, content)` entries of `script` in
+    order, the last one repeating. Each answer takes `latency` seconds of `clock`;
+    `sent_at` collects the clock reading as each request reaches the upstream."""
+    pending = list(script)
+    def upstream(request):
+        if sent_at is not None:
+            sent_at.append(clock.time())
+        clock.advance(latency)
+        status, headers, content = pending.pop(0) if len(pending) > 1 else pending[0]
+        return httpx2.Response(status, headers=headers, content=content)
+    return upstream
+
+
+# One second of maximum wait against answers that take 50 ms: the first hold
+# (at least 1 s) already ends past the deadline, so the gate answers the
+# upstream 429 itself after exactly one send.
+SHORT_WAIT = RateLimitConfig(max_wait_s=1.0)
+UPSTREAM_LATENCY = 0.05
+
+
+def resolves(session):
+    return [event for event in session.events if isinstance(event, tuple) and event[0] == 'resolve']
+
+
+def body_of(messages):
+    return b''.join(m.get('body', b'') for m in messages if m['type'] == 'http.response.body')
 
 
 @pytest.mark.anyio
@@ -146,13 +191,20 @@ async def test_safe_pre_response_errors(failure):
 @pytest.mark.anyio
 @pytest.mark.parametrize('status', [401, 403, 429, 500, 302])
 async def test_upstream_application_status_is_preserved_without_replay(status):
-    app, _, sent, _ = harness(response_status=status)
+    # Through a gate that cannot wait: an upstream 429 is not re-sent but answered
+    # by the gate with the upstream body and a Retry-After; every other status
+    # passes the gate unchanged.
+    clock = Clock()
+    app, _, sent, _ = harness(
+        upstream=answers(clock, (status, {}, b'{"result":"synthetic"}'), latency=UPSTREAM_LATENCY),
+        rate_limit_config=SHORT_WAIT, gate_factory=clocked_gate(clock))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
-            response = await client.get('/v1/models')
+            response = await asyncio.wait_for(client.get('/v1/models'), 5)
     assert response.status_code == status
     assert response.content == b'{"result":"synthetic"}'
     assert len(sent) == 1
+    assert response.headers.get('retry-after') == ('1' if status == 429 else None)
 
 
 @pytest.mark.parametrize('source', [None, 'existing-vibe', 'oidc'])
@@ -388,11 +440,13 @@ async def test_default_native_startup_and_requests_share_fresh_session(monkeypat
     assert session._closed
 
 
-async def raw_asgi(app, method, path, *, body=b'', headers=(), events, receive=None, scopes=None):
+async def raw_asgi(app, method, path, *, body=b'', headers=(), events, receive=None, scopes=None,
+                   messages=None):
     """One raw ASGI request; `events` records when the app takes the request body.
 
-    `receive` replaces the default single-chunk body delivery; `scopes` collects the scope."""
-    messages = []
+    `receive` replaces the default single-chunk body delivery; `scopes` collects the scope;
+    `messages`, when given, receives each sent message as it is sent."""
+    messages = [] if messages is None else messages
     delivered = False
     async def deliver():
         nonlocal delivered
@@ -481,3 +535,280 @@ async def test_disconnect_during_body_read_is_cancelled_and_never_sent(method, p
     starts = [m for m in messages if m['type'] == 'http.response.start']
     assert not starts or [m['status'] for m in starts] == [204]
     assert b''.join(m.get('body', b'') for m in messages if m['type'] == 'http.response.body') == b''
+
+
+# --- the rate-limit gate on every upstream request (upstream-rate-limit-queue 2.4) ---
+# Requirements 2.1, 2.2, 2.5, 2.8, 3.1, 3.5, 6.2: make_acquire parses the body
+# once for the gate key, and the gate's attempt resolves, prepares (first
+# attempt only) and sends.
+
+RATE_LIMIT_SETTINGS = ('MVIBE_RATE_LIMIT_MAX_WAIT_S', 'MVIBE_RATE_LIMIT_MAX_QUEUE', 'MVIBE_RATE_LIMIT_RPS')
+TOOL_CHAT = {'model': 'mistral-large-4', 'messages': [
+    {'role': 'user', 'content': 'read it'},
+    {'role': 'assistant', 'content': '', 'tool_calls': [
+        {'id': 'call-1', 'type': 'function', 'function': {'name': 'read', 'arguments': '{}'}}]},
+    {'role': 'tool', 'tool_call_id': 'call-1', 'content': 'synthetic file content'}]}
+
+
+class CountingSession(Session):
+    """Each resolve hands out a new credential, so every attempt can be told apart."""
+
+    async def resolve(self, url):
+        snapshot = await super().resolve(url)
+        return AuthSnapshot({**snapshot.headers, 'Authorization': f'Bearer synthetic-{len(resolves(self))}'},
+                            snapshot.expires_at, snapshot.revision, snapshot.target)
+
+
+class RecordingPlan:
+    """Stands in for AccountPlanResolver and records the snapshots it was asked about."""
+
+    def __init__(self):
+        self.snapshots = []
+
+    async def resolve(self, snapshot):
+        self.snapshots.append(snapshot)
+        return 'Pro'
+
+    async def close(self):
+        pass
+
+
+class CountingShunt:
+    """Stands in for EconShunt: rewrites tool results in place and counts its calls."""
+
+    def __init__(self):
+        self.applied = 0
+
+    def apply(self, payload, diagnostic=None):
+        self.applied += 1
+        for message in payload['messages']:
+            if message.get('role') == 'tool':
+                message['content'] = 'summarized'
+
+    async def shutdown(self):
+        pass
+
+
+@pytest.mark.anyio
+async def test_a_429_is_held_then_resent_with_a_fresh_snapshot_and_the_first_prepared_body():
+    clock = Clock()
+    sent_at = []
+    plan, shunt = RecordingPlan(), CountingShunt()
+    app, session, sent, _ = harness(
+        CountingSession(),
+        upstream=answers(clock, (429, {'x-ratelimit-remaining-req-minute': '0'}, b'{"message":"rate limited"}'),
+                         (200, {'content-type': 'application/json'}, b'{"result":"synthetic"}'),
+                         sent_at=sent_at),
+        account_plan_factory=lambda config: plan, gate_factory=clocked_gate(clock))
+    scopes = []
+    t0 = clock.time()
+    async with app.router.lifespan_context(app):
+        app.state.econ = shunt
+        messages = await asyncio.wait_for(raw_asgi(
+            app, 'POST', '/v1/chat/completions', body=json.dumps(TOOL_CHAT).encode(),
+            events=session.events, scopes=scopes), 5)
+        assert app.state.rate_gate.held == 0
+    # The client sees only the accepted answer.
+    assert messages[0]['type'] == 'http.response.start' and messages[0]['status'] == 200
+    assert body_of(messages) == b'{"result":"synthetic"}'
+    # Held for the 1 s backoff, then the identical bytes re-sent under a new credential.
+    assert sent_at == [t0, t0 + 1] and len(sent) == 2
+    assert sent[0].content == sent[1].content
+    assert [request.headers['authorization'] for request in sent] == [
+        'Bearer synthetic-1', 'Bearer synthetic-2']
+    assert len(resolves(session)) == 2
+    # Attribution and economics ran once, with the first attempt's snapshot.
+    assert [snapshot.headers['Authorization'] for snapshot in plan.snapshots] == ['Bearer synthetic-1']
+    assert shunt.applied == 1
+    forwarded = json.loads(sent[1].content)
+    assert forwarded['metadata']['user_plan'] == 'Pro'
+    assert forwarded['messages'][-1]['content'] == 'summarized'
+    diagnostic = scopes[0]['mvibe.diagnostic']
+    assert (diagnostic.rate_limit.rejections, diagnostic.rate_limit.queued_ms) == (1, 1000.0)
+    assert not diagnostic.rate_limit.exhausted
+    assert (diagnostic.outcome, diagnostic.model) == ('completed', 'mistral-large-4')
+
+
+@pytest.mark.anyio
+async def test_a_429_beyond_the_maximum_wait_reaches_the_client_with_its_body_and_guidance(capsys):
+    clock = Clock()
+    rejection = b'{"message":"Requests rate limit exceeded","detail":"caf\xc3\xa9"}'
+    app, _, sent, _ = harness(
+        upstream=answers(clock, (429, {'content-type': 'application/json', 'retry-after': '5',
+                                       'x-ratelimit-limit-req-minute': '5'}, rejection),
+                         latency=UPSTREAM_LATENCY),
+        rate_limit_config=RateLimitConfig(max_wait_s=1.0), gate_factory=clocked_gate(clock))
+    diagnostics.configure_stdout()
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+                response = await asyncio.wait_for(client.post(
+                    '/v1/chat/completions', content=b'{"model":"mistral-large-4"}'), 5)
+        rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    finally:
+        diagnostics.disable_stdout()
+    # Retry-After 5 s cannot be honoured within 1 s: one send, then the upstream 429 itself.
+    assert len(sent) == 1
+    assert response.status_code == 429 and response.content == rejection
+    assert response.headers['retry-after'] == '5'
+    assert response.headers['x-ratelimit-limit-req-minute'] == '5'
+    assert response.headers['content-type'] == 'application/json'
+    row = rows[-1]
+    assert (row['outcome'], row['phase'], row['status']) == ('rate_limited', 'upstream', 429)
+    assert all(name in row['hint'] for name in RATE_LIMIT_SETTINGS)
+    assert (row['rate_limit_rejections'], row['rate_limit_headers']) == (
+        1, {'x-ratelimit-limit-req-minute': '5'})
+    assert row['request_id'] == response.headers['x-request-id']
+
+
+@pytest.mark.anyio
+async def test_parallel_chat_requests_are_sent_at_the_configured_rate():
+    clock = Clock()
+    sent_at = []
+    app, _, sent, _ = harness(
+        upstream=answers(clock, (200, {}, b'{"result":"synthetic"}'), sent_at=sent_at),
+        rate_limit_config=RateLimitConfig(default_rps=0.5), gate_factory=clocked_gate(clock))
+    t0 = clock.time()
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            responses = await asyncio.wait_for(asyncio.gather(*(
+                client.post('/v1/chat/completions', content=b'{"model":"mistral-large-4"}')
+                for _ in range(3))), 5)
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert all(response.content == b'{"result":"synthetic"}' for response in responses)
+    assert sent_at == [t0, t0 + 2, t0 + 4] and len(sent) == 3
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('path', 'headers'), [
+    ('/v1/models', {}), ('/v1/models', {'anthropic-version': '2023-06-01'}), ('/api/tags', {})])
+async def test_model_list_requests_are_never_paced(path, headers):
+    clock = Clock()
+    sent_at = []
+    app, _, sent, _ = harness(
+        upstream=answers(clock, (200, {}, json.dumps(MODELS_LIST).encode()), sent_at=sent_at),
+        rate_limit_config=RateLimitConfig(default_rps=0.5), gate_factory=clocked_gate(clock))
+    t0 = clock.time()
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+            for _ in range(2):
+                response = await asyncio.wait_for(client.get(path, headers=headers), 5)
+                assert response.status_code == 200
+    assert sent_at == [t0, t0] and len(sent) == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('method', 'path', 'body'), [
+    ('POST', '/v1/chat/completions', b' {"tools": [ ]}\n\x00'),
+    ('POST', '/v1/embeddings', b'{"model": "mistral-embed", "input": ["x"]}'),
+    ('GET', '/v1/models', b''),
+])
+async def test_first_attempt_success_is_forwarded_byte_exact_without_queueing(method, path, body):
+    clock = Clock()
+    payload = b'{"result":"synthetic","bytes":"caf\xc3\xa9"}\n'
+    app, session, sent, _ = harness(
+        upstream=answers(clock, (200, {'content-type': 'application/json', 'retry-after': '1',
+                                       'x-ratelimit-remaining-req-minute': '4'}, payload)),
+        gate_factory=clocked_gate(clock))
+    scopes = []
+    async with app.router.lifespan_context(app):
+        messages = await asyncio.wait_for(raw_asgi(
+            app, method, path, body=body, events=session.events, scopes=scopes), 5)
+    assert messages[0]['status'] == 200
+    # Today's header set: no rate-limit guidance on a success.
+    assert [header for header in messages[0]['headers'] if header[0] != b'x-request-id'] == [
+        (b'content-type', b'application/json'), (b'cache-control', b'no-cache')]
+    assert body_of(messages) == payload
+    assert len(sent) == 1 and sent[0].content == body
+    record = scopes[0]['mvibe.diagnostic'].rate_limit
+    assert (record.queued_ms, record.rejections, record.exhausted) == (0.0, 0, False)
+
+
+@pytest.mark.anyio
+async def test_a_held_request_sends_the_client_nothing_until_the_upstream_accepts():
+    clock = Clock()
+    holding, release = asyncio.Event(), asyncio.Event()
+
+    async def held_sleep(seconds):
+        holding.set()
+        await release.wait()
+        clock.advance(seconds)
+
+    app, session, sent, _ = harness(
+        upstream=answers(clock, (429, {'retry-after': '2'}, b'{"message":"rate limited"}'),
+                         (200, {}, b'{"result":"synthetic"}')),
+        gate_factory=clocked_gate(clock, sleep=held_sleep))
+    messages = []
+    async with app.router.lifespan_context(app):
+        task = asyncio.create_task(raw_asgi(
+            app, 'POST', '/v1/chat/completions', body=b'{"model":"mistral-large-4"}',
+            events=session.events, messages=messages))
+        try:
+            await asyncio.wait_for(holding.wait(), 5)
+            await asyncio.sleep(0)
+            # Held after the 429: nothing has reached the client, not even a status.
+            assert messages == [] and len(sent) == 1 and not task.done()
+            release.set()
+            await asyncio.wait_for(task, 5)
+        finally:
+            task.cancel()
+    assert messages[0]['type'] == 'http.response.start' and messages[0]['status'] == 200
+    assert body_of(messages) == b'{"result":"synthetic"}' and len(sent) == 2
+
+
+@pytest.mark.anyio
+async def test_embeddings_are_keyed_by_their_model_and_paced_like_chat(capsys):
+    clock = Clock()
+    sent_at = []
+    app, _, sent, _ = harness(
+        upstream=answers(clock, (200, {}, b'{"data":[]}'), sent_at=sent_at),
+        rate_limit_config=RateLimitConfig(default_rps=0.5), gate_factory=clocked_gate(clock))
+    t0 = clock.time()
+    diagnostics.configure_stdout()
+    try:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+                responses = await asyncio.wait_for(asyncio.gather(*(
+                    client.post('/v1/embeddings', content=b'{"model":"mistral-embed","input":["x"]}')
+                    for _ in range(2))), 5)
+        rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    finally:
+        diagnostics.disable_stdout()
+    assert [response.status_code for response in responses] == [200, 200]
+    assert sent_at == [t0, t0 + 2] and len(sent) == 2
+    assert [row['model'] for row in rows] == ['mistral-embed', 'mistral-embed']
+    assert sorted(row['queued_ms'] for row in rows) == [0.0, 2000.0]
+
+
+@pytest.mark.parametrize(('path', 'model', 'key'), [
+    ('models', 'mistral-large-4', 'models'),
+    ('models', None, 'models'),
+    ('chat/completions', 'mistral-large-4', 'mistral-large-4'),
+    ('embeddings', 'mistral-embed', 'mistral-embed'),
+    ('chat/completions', None, 'default'),
+    ('embeddings', None, 'default'),
+    ('chat/completions', 'evil\nproxy_rate_limit_hold model=forged\r\x1b[2J\x00',
+     'evilproxy_rate_limit_hold model=forged[2J'),
+    ('chat/completions', '\n\t\x7f', 'default'),
+    ('chat/completions', 'm' * 500, 'm' * 128),
+    ('embeddings', 'modèle -1', 'modèle-1'),
+])
+def test_gate_key_is_models_the_printable_model_or_default(path, model, key):
+    assert proxy.key_for(path, model) == key
+
+
+@pytest.mark.anyio
+async def test_a_hold_warning_names_the_sanitized_model_on_one_line(caplog):
+    clock = Clock()
+    app, _, sent, _ = harness(
+        upstream=answers(clock, (429, {}, b'{}'), (200, {}, b'{"result":"synthetic"}')),
+        gate_factory=clocked_gate(clock, warn=proxy._warn_rate_limit_hold))
+    model = 'evil\nproxy_rate_limit_hold model=forged wait_s=0.0\r\n'
+    with caplog.at_level(logging.WARNING, logger='mvibe.proxy'):
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
+                response = await asyncio.wait_for(client.post(
+                    '/v1/chat/completions', content=json.dumps({'model': model}).encode()), 5)
+    assert response.status_code == 200 and len(sent) == 2
+    assert [record.getMessage() for record in caplog.records if record.name == 'mvibe.proxy'] == [
+        'proxy_rate_limit_hold model=evilproxy_rate_limit_hold model=forged wait_s=0.0 wait_s=1.0']

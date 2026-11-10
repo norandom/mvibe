@@ -44,7 +44,7 @@
   - _Depends: 1.4, 2.2_
   - _Boundary: create_app, main_
   - _Requirements: 3.3, 3.4, 3.6_
-- [ ] 2.4 Gate loop in `make_acquire`: parse the body once for `key_for(path, model)` and the diagnostic model; make the `attempt` closure resolve a fresh snapshot, assemble headers and traceparent on every attempt, run metadata attribution (`account_plan.resolve(snapshot)`) and econ on the first attempt only with the bytes cached for re-sends, and send; run it through `app.state.rate_gate.run(key, attempt, arrived, record)` with the record attached to the diagnostic.
+- [x] 2.4 Gate loop in `make_acquire`: parse the body once for `key_for(path, model)` and the diagnostic model; make the `attempt` closure resolve a fresh snapshot, assemble headers and traceparent on every attempt, run metadata attribution (`account_plan.resolve(snapshot)`) and econ on the first attempt only with the bytes cached for re-sends, and send; run it through `app.state.rate_gate.run(key, attempt, arrived, record)` with the record attached to the diagnostic.
   - `tests/test_proxy.py`: 429 (no `Retry-After`) then 200 on `/v1/chat/completions` with a fake-clock gate → client 200, two identical upstream bodies, two `resolve` events, attribution and econ applied once using the first attempt's snapshot; 429 with `Retry-After: 5` and `max_wait_s=1` → client 429 with `retry-after`, upstream body bytes and `x-ratelimit-*` forwarded; three parallel chat requests at 0.5 rps are sent 2 s apart; GET `/v1/models` is not paced; success without pacing is byte-exact with `queued_ms == 0`.
   - Observable: during a scripted hold the test client receives no bytes until the upstream accepts.
   - _Depends: 2.1, 2.3_
@@ -56,6 +56,14 @@
   - _Depends: 2.1, 2.4_
   - _Boundary: adapter_post_
   - _Requirements: 2.3, 2.4, 2.6, 6.4_
+
+- [ ] 2.6 Gate deadline edge fix (found by the 2.4 review): decide exhaustion with the unclamped Retry-After hold (exhaust when `now + wait > deadline` before clamping to `max_wait_s`, so a Retry-After beyond the remaining wait never produces an extra re-send exactly at the deadline); default the gate's monotonic `clock` to `time.perf_counter` (Windows `time.monotonic` has 15.6 ms resolution on Python 3.12); render the key with `%r` in `proxy._warn_rate_limit_hold` so spaces or `=` in a model name cannot forge `key=value` tokens; add a proxy-level end-to-end test that a second request for the same model waits behind an active 429 hold (Req 2.2); then remove the 50 ms `UPSTREAM_LATENCY` workaround from the always-429 proxy/diagnostics/streaming tests where the fix makes it unnecessary.
+  - `tests/test_ratelimit.py`: Retry-After 300 with `max_wait_s=120` on a frozen fake clock sends exactly once and returns the 429 immediately; backoff case at exactly the deadline still obeys strict "longer than".
+  - `tests/test_proxy.py`: the Req 2.2 end-to-end test; existing always-429 tests pass without simulated latency.
+  - Observable: the deadline probe scenario (Retry-After 300, max_wait 120, zero-latency attempt) records one upstream send.
+  - _Depends: 2.5_
+  - _Boundary: UpstreamGate, _warn_rate_limit_hold, proxy tests_
+  - _Requirements: 1.2, 2.2, 2.5_
 
 - [ ] 3. Plugin rate-limit module (`packages/opencode-vibe-oidc/src/rate-limit.ts`)
 - [ ] 3.1 (P) Add `RateLimitOptions`, `parseRateLimitOptions(raw)` (defaults 120000 ms, 64, 30000 ms; absent `requestsPerSecond` means no pacing; any non-positive or non-numeric field throws `BridgeError("setup")` naming `rateLimit.<field>`), `rateFor(options, key)` returning `undefined` for `models`, `parseRetryAfter` and `classifyRateLimit` with the same contract as task 1.2.
@@ -99,7 +107,7 @@
 
 - [ ] 5. Run the full offline gates and confirm untouched contracts: `uv run --locked --offline ruff check .` and `uv run --locked --offline pytest` (two xdist workers) in the repository root; `bun run lint`, `bun run typecheck`, `bun run build` and `bun test` in `packages/opencode-vibe-oidc`; `git diff --stat` against the pre-feature baseline shows no changes under `mvibe_auth/`, `src/bridge.ts`, `src/protocol.ts`, `src/protocol.schema.json`, `tests/test_version_coupling.py` or the version fields; no live inference executed.
   - Observable: all commands exit 0 in one run and the diff check lists only the files in the design's File Structure Plan.
-  - _Depends: 2.5, 4.3_
+  - _Depends: 2.6, 4.3_
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
 > Operator documentation for `MVIBE_RATE_LIMIT_*` and `options.rateLimit` (docs/proxy-guide.md, docs/opencode-provider.md, release notes) is deliberately left to the release step; task rules exclude documentation tasks.
@@ -113,3 +121,4 @@
 - Route handlers read the body through `proxy._read_body(request, diagnostic)`; `None` means the client disconnected (diagnostic `cancelled`, return `Response(status_code=204)`). New routes must use it before acquiring.
 - 2.2: `GateRecord` lives in `mvibe_proxy/diagnostics.py` (re-exported by `ratelimit`); the exhausted-429 stdout test attaches the record via a `RequestDiagnostic` subclass until 2.4 wires the gate. `tests/test_observability.py` now skips only the two OpenTelemetry-SDK tests, not the whole module.
 - 2.3: default `gate_factory` is `proxy._default_gate` (supplies the `proxy_rate_limit_hold` warn logger); tests inject their own factory. For 2.4: sanitize the gate key (client-supplied model string) before it reaches the warn log line (`repr` or strip control characters); add `MVIBE_RATE_LIMIT_` to `tests/conftest.py::isolate_environment` so a developer's shell cannot make `main()` tests exit 2.
+- 2.4: every `make_acquire` request runs through the gate; `key_for(path, model)` (printable, 128-char cap) keys pacing; `UpstreamGate.now()` supplies `arrived`; attribution and econ run once in `prepare(snapshot)` on the first attempt. Tests use `clocked_gate`/`answers`/`SHORT_WAIT` with a 50 ms simulated upstream latency because a zero-latency 429 whose Retry-After is clamped to `max_wait_s` re-sends once exactly at the deadline (gate edge, task 2.6). The gate builds exhausted 429s with `x-ratelimit-*` before `retry-after`; header order is not a contract. Every `proxy_request` row now carries `queued_ms` and `rate_limit_rejections`.

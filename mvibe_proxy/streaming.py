@@ -255,11 +255,13 @@ class _OwnedResponse(Response):
                         if self.owner.retired:
                             raise StreamAborted('Upstream unavailable')
                     except AuthError:
-                        if self.diagnostic is not None:
+                        # After a disconnect the client left first: a cancellation
+                        # that surfaced as an error keeps the outcome `cancelled`.
+                        if self.diagnostic is not None and not disconnected:
                             self.diagnostic.failure('auth')
                         error = JSONResponse({'error': {'message': 'Vibe authentication failed; run proxy.py --login'}}, status_code=401)
                     except Exception:
-                        if self.diagnostic is not None:
+                        if self.diagnostic is not None and not disconnected:
                             self.diagnostic.failure('connection')
                         error = JSONResponse({'error': {'message': 'Upstream connection failed'}}, status_code=502)
                     if error is None and not disconnected:

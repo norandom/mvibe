@@ -32,7 +32,7 @@ import json
 from urllib.parse import urlencode
 from mvibe_proxy import compat
 from mvibe_proxy.streaming import ProxyStreamOwner
-from mvibe_proxy.diagnostics import ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout, configure_exporter, clear_exporter, emit_econ_warm
+from mvibe_proxy.diagnostics import GateRecord, ProxyDiagnostics, RequestDiagnostic, configure_stdout, disable_stdout, configure_exporter, clear_exporter, emit_econ_warm
 from mvibe_proxy.econ import EconConfig, EconConfigError, EconShunt, McpError, StdioMcpClient
 from mvibe_proxy.observability import ObserveConfig, ObserveConfigError, OpenObserveExporter, start_telemetry, inject_traceparent
 from mvibe_proxy.ratelimit import RateLimitConfig, RateLimitConfigError, UpstreamGate
@@ -140,6 +140,26 @@ def _request_model(body: bytes) -> str | None:
     if isinstance(payload, dict) and isinstance(payload.get('model'), str):
         return payload['model']
     return None
+
+
+# A gate key comes from the client's model name and reaches the hold warning.
+_GATE_KEY_LIMIT = 128
+
+
+def key_for(path: str, model: str | None) -> str:
+    """The rate-limit gate key of one upstream request.
+
+    `models` for the model list, which is never paced (Req 3.5); otherwise the
+    model the request names, else `default`. Only the model's printable
+    characters are kept, at most 128 of them, so a client-supplied name can
+    never start a log line of its own."""
+    if path == 'models':
+        return 'models'
+    if isinstance(model, str):
+        printable = ''.join(char for char in model if char.isprintable())[:_GATE_KEY_LIMIT]
+        if printable:
+            return printable
+    return 'default'
 
 
 def _has_tool_result(payload: dict) -> bool:
@@ -282,39 +302,52 @@ def create_app(
         return {'status': 'ok'}
 
     def make_acquire(request: Request, path: str, body: bytes | None = None, diagnostic=None):
-        """Shared per-request auth snapshot + upstream send for any /v1 target."""
+        """Shared upstream acquisition for any /v1 target, through the rate-limit gate.
+
+        The body is parsed once, before the gate, for the gate key and the
+        diagnostic model. Every attempt the gate makes resolves a fresh
+        credential snapshot and assembles its own headers (Req 2.8); the first
+        attempt also runs metadata attribution and economics with its snapshot,
+        and every attempt sends those same prepared bytes."""
         async def acquire():
-            session = request.app.state.auth
+            state = request.app.state
+            session = state.auth
             url = session.config.audience.rstrip('/') + '/v1/' + path
-            telemetry = getattr(request.app.state, 'telemetry', None)
-            if telemetry is not None:
-                with telemetry.tracer.start_as_current_span('auth.resolve'):
-                    snapshot = await session.resolve(url)
-            else:
-                snapshot = await session.resolve(url)
-            headers = dict(snapshot.headers)
-            if telemetry is not None:
-                inject_traceparent(headers)
-            headers['Content-Type'] = 'application/json'
             # HTTPX QueryParams groups keys; encode ordered Starlette pairs
             # directly into the URL to preserve interleaved repeated values.
             query = urlencode(request.query_params.multi_items())
             target = url + ('?' + query if query else '')
-            client = request.app.state.client
-            payload = body if body is not None else await request.body()
+            raw = body if body is not None else await request.body()
+            parsed = None
+            model = None
             if path == 'chat/completions':
-                parsed = parse_request_body(payload)
+                # The single strict parse feeds the gate key, the model field
+                # and the attribution below; the tolerant fallback keeps model
+                # extraction working for bodies that will be relayed raw.
+                parsed = parse_request_body(raw)
+                found = parsed.get('model') if parsed is not None else _request_model(raw)
+                model = found if isinstance(found, str) else None
                 if diagnostic is not None:
-                    # The single strict parse feeds both the model field and the
-                    # attribution below; the tolerant fallback keeps model
-                    # extraction working for bodies that will be relayed raw.
-                    model = parsed.get('model') if parsed is not None else _request_model(payload)
-                    diagnostic.model = model if isinstance(model, str) else None
-                plan = await request.app.state.account_plan.resolve(snapshot)
+                    diagnostic.model = model
+            elif path != 'models':
+                model = _request_model(raw)
+                if diagnostic is not None and model is not None:
+                    diagnostic.model = model
+            prepared: bytes | None = None
+
+            async def prepare(snapshot) -> bytes:
+                """The bytes every attempt sends, attributed and economised once."""
+                nonlocal parsed
+                if path != 'chat/completions':
+                    return raw
+                payload = raw
+                plan = await state.account_plan.resolve(snapshot)
                 attributed = (None if parsed is None
                               else attach_request_metadata_dict(parsed, user_plan=plan))
+                # Only the prepared bytes stay with a held request (Req 6.3).
+                parsed = None
                 if attributed is not None:
-                    shunt = getattr(request.app.state, 'econ', None)
+                    shunt = getattr(state, 'econ', None)
                     if shunt is not None and _has_tool_result(attributed):
                         # Fail-open snapshot (Req 4.5): the attributed bytes
                         # exactly as the metadata attachment produced them —
@@ -335,9 +368,35 @@ def create_app(
                             payload = serialize_request_body(attributed)
                     else:
                         payload = serialize_request_body(attributed)
-            return await client.send(client.build_request(
-                request.method, target, headers=headers,
-                content=payload), stream=True, follow_redirects=False)
+                return payload
+
+            async def attempt():
+                nonlocal prepared
+                telemetry = getattr(state, 'telemetry', None)
+                if telemetry is not None:
+                    with telemetry.tracer.start_as_current_span('auth.resolve'):
+                        snapshot = await session.resolve(url)
+                else:
+                    snapshot = await session.resolve(url)
+                headers = dict(snapshot.headers)
+                if telemetry is not None:
+                    inject_traceparent(headers)
+                headers['Content-Type'] = 'application/json'
+                if prepared is None:
+                    prepared = await prepare(snapshot)
+                client = state.client
+                return await client.send(client.build_request(
+                    request.method, target, headers=headers,
+                    content=prepared), stream=True, follow_redirects=False)
+
+            gate = state.rate_gate
+            record = GateRecord()
+            if diagnostic is not None:
+                diagnostic.rate_limit = record
+            # Exceptions from attempt (AuthError, transport errors) leave the
+            # gate unchanged, so the callers' 401/502 handling still applies.
+            return await gate.run(key_for(path, model), attempt,
+                                  arrived=gate.now(), record=record)
         return acquire
 
     @app.api_route('/v1/{path:path}', methods=['GET', 'POST'], response_model=None, include_in_schema=False)

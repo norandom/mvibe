@@ -29,54 +29,67 @@ UNRETRIED_429_HINT = 'Respect upstream rate_limit guidance before an explicit re
 RATE_LIMIT_FIELDS = ('queued_ms', 'rate_limit_rejections', 'rate_limit_headers')
 
 
-def _attach_rate_limit(monkeypatch, record):
-    """Give every request diagnostic `record`, as the gate wiring in make_acquire does."""
-    from mvibe_proxy import diagnostics
+class SinglePassGate:
+    """A gate that sends once and never retries, leaving the record untouched.
 
-    class Recorded(diagnostics.RequestDiagnostic):
-        def __init__(self):
-            super().__init__()
-            self.rate_limit = record
+    The real gate always holds or gives up on a 429; this one reaches the
+    diagnostic's fallback for a 429 that was forwarded without a retry."""
 
-    monkeypatch.setattr(diagnostics, 'RequestDiagnostic', Recorded)
+    def now(self):
+        return 0.0
+
+    async def run(self, key, attempt, *, arrived, record):
+        return await attempt()
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(('status', 'exhausted', 'outcome', 'hints'), [
-    (400, False, 'upstream_error', ('tool_schema',)),
-    (401, False, 'upstream_error', ('login',)),
-    (403, False, 'upstream_error', ('tenant',)),
-    (422, False, 'upstream_error', ('reasoning',)),
-    # A 429 the gate did not retry keeps the upstream rate_limit hint; a 429 the
+@pytest.mark.parametrize(('status', 'gate', 'outcome', 'hints'), [
+    (400, 'clocked', 'upstream_error', ('tool_schema',)),
+    (401, 'clocked', 'upstream_error', ('login',)),
+    (403, 'clocked', 'upstream_error', ('tenant',)),
+    (422, 'clocked', 'upstream_error', ('reasoning',)),
+    # A 429 forwarded without a retry keeps the upstream rate_limit hint; a 429 the
     # gate answered after giving up is the rate_limited outcome naming the settings.
-    (429, False, 'upstream_error', ('rate_limit',)),
-    (429, True, 'rate_limited', RATE_LIMIT_SETTINGS),
+    (429, 'single-pass', 'upstream_error', ('rate_limit',)),
+    (429, 'exhausting', 'rate_limited', RATE_LIMIT_SETTINGS),
 ])
-async def test_correlated_safe_stdout_upstream_errors(status, exhausted, outcome, hints, capsys, monkeypatch):
+async def test_correlated_safe_stdout_upstream_errors(status, gate, outcome, hints, capsys):
+    from fakes import Clock
     from mvibe_proxy import diagnostics
-    if exhausted:
-        _attach_rate_limit(monkeypatch, diagnostics.GateRecord(
-            queued_ms=1500.0, rejections=2, exhausted=True,
-            headers={'x-ratelimit-remaining-req-minute': '0'}))
+    from mvibe_proxy.ratelimit import RateLimitConfig
+    from test_proxy import answers, clocked_gate
+    clock = Clock()
+    options = {'gate_factory': clocked_gate(clock)}
+    if gate == 'single-pass':
+        options = {'gate_factory': lambda config: SinglePassGate()}
+    elif gate == 'exhausting':
+        # The real gate on a fake clock: the 1 s backoff fits the 1.5 s maximum
+        # wait, so it re-sends once; the second backoff (2 s) does not, so it
+        # gives up and answers the last upstream 429.
+        options = {'rate_limit_config': RateLimitConfig(max_wait_s=1.5),
+                   'gate_factory': clocked_gate(clock)}
     diagnostics.configure_stdout()
     try:
-        app, _, sent, _ = harness(response_status=status)
+        app, _, sent, _ = harness(upstream=answers(clock, (
+            status, {'x-ratelimit-remaining-req-minute': '0'}, b'{"result":"synthetic"}')), **options)
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://local') as client:
                 result = await client.post('/v1/chat/completions?secret-query=secret', content=b'not-json-secret-prompt', headers={'x-request-id':'caller-secret', 'authorization':'secret-header'})
         rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-        assert len(sent) == 1 and sent[0].content == b'not-json-secret-prompt'
+        assert len(sent) == (2 if gate == 'exhausting' else 1)
+        assert all(request.content == b'not-json-secret-prompt' for request in sent)
         assert result.content == b'{"result":"synthetic"}'
         assert rows[-1]['request_id'] == result.headers['x-request-id']
         assert all(hint in rows[-1]['hint'] for hint in hints)
         assert rows[-1]['status'] == status and rows[-1]['outcome'] == outcome
         assert rows[-1]['phase'] == 'upstream'
-        if exhausted:
+        if gate == 'exhausting':
             assert rows[-1]['hint'] == RATE_LIMITED_HINT
-            assert (rows[-1]['queued_ms'], rows[-1]['rate_limit_rejections']) == (1500.0, 2)
+            assert (rows[-1]['queued_ms'], rows[-1]['rate_limit_rejections']) == (1000.0, 2)
             assert rows[-1]['rate_limit_headers'] == {'x-ratelimit-remaining-req-minute': '0'}
         else:
             assert 'MVIBE_RATE_LIMIT' not in rows[-1]['hint']
+            assert (rows[-1]['queued_ms'], rows[-1]['rate_limit_rejections']) == (0.0, 0)
         assert 'secret' not in json.dumps(rows)
     finally:
         diagnostics.disable_stdout()

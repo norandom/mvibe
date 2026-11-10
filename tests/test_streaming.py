@@ -8,7 +8,8 @@ import httpx2
 import pytest
 
 import proxy
-from test_proxy import Session
+from fakes import Clock
+from test_proxy import SHORT_WAIT, UPSTREAM_LATENCY, Session, clocked_gate
 
 
 class Stream(httpx2.AsyncByteStream):
@@ -37,13 +38,20 @@ class Stream(httpx2.AsyncByteStream):
         self.closed.set()
 
 
-def app_for(streams, *, status=200, headers=None):
+def app_for(streams, *, status=200, headers=None, clock=None):
+    """With `clock` (a fakes.Clock) the app's gate runs on it, waits at most
+    SHORT_WAIT and each upstream answer takes UPSTREAM_LATENCY of it, so an
+    upstream 429 is answered by the gate after a single send."""
     requests = []
     async def upstream(request):
         requests.append(request)
+        if clock is not None:
+            clock.advance(UPSTREAM_LATENCY)
         return httpx2.Response(status, stream=streams[len(requests)-1], headers=headers)
     client = httpx2.AsyncClient(transport=httpx2.MockTransport(upstream), follow_redirects=False)
-    app = proxy.create_app(Session, lambda **kwargs: client)
+    options = {} if clock is None else {'rate_limit_config': SHORT_WAIT,
+                                        'gate_factory': clocked_gate(clock)}
+    app = proxy.create_app(Session, lambda **kwargs: client, **options)
     return app, requests, client
 
 
@@ -139,13 +147,18 @@ async def test_decoded_payload_status_headers_and_no_replay_or_redirect(status):
     stream = Stream((gzip.compress(payload),))
     app, requests, _ = app_for([stream], status=status, headers={
         'content-encoding': 'gzip', 'content-length':'999',
-        'location':'https://other.example/secret', 'content-type':'application/custom+json'})
+        'location':'https://other.example/secret', 'content-type':'application/custom+json'},
+        clock=Clock())
     async with app.router.lifespan_context(app):
-        messages = await call(app)
+        messages = await asyncio.wait_for(call(app), 5)
     assert messages[0]['status'] == status and len(requests) == 1
     headers = dict(messages[0]['headers'])
     assert len(headers.pop(b'x-request-id')) == 32
-    assert headers == {b'content-type':b'application/custom+json', b'cache-control':b'no-cache'}
+    expected = {b'content-type':b'application/custom+json', b'cache-control':b'no-cache'}
+    if status == 429:
+        # The gate answers the 429 it could not wait out with a Retry-After of its own.
+        expected[b'retry-after'] = b'1'
+    assert headers == expected
     assert b''.join(m.get('body',b'') for m in messages) == payload
     assert stream.closed.is_set()
 
@@ -388,21 +401,61 @@ async def test_disconnect_while_acquiring_cancels_without_response_start(method)
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('surfaced', ['auth', 'connection'])
+async def test_a_cancellation_surfacing_as_an_error_after_disconnect_stays_cancelled(surfaced):
+    from mvibe_auth.api import AuthError, AuthFailure
+    session = Session()
+    entered = asyncio.Event()
+    async def blocked(url):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # A layer that turns its cancellation into an ordinary error.
+            if surfaced == 'auth':
+                raise AuthError(AuthFailure('rejected')) from None
+            raise RuntimeError('synthetic-secret-transport-error') from None
+    session.resolve = blocked
+    requests = []
+    def upstream(request):
+        requests.append(request)
+        return httpx2.Response(200, content=b'{}')
+    app = proxy.create_app(lambda: session, lambda **kwargs: httpx2.AsyncClient(transport=httpx2.MockTransport(upstream)))
+    disconnect = asyncio.Event()
+    scopes = []
+    async with app.router.lifespan_context(app):
+        task = asyncio.create_task(call(app, method='POST', body=b'{"model":"m"}',
+                                        disconnect=disconnect, scopes=scopes))
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            disconnect.set()
+            messages = await asyncio.wait_for(task, 1)
+        finally:
+            task.cancel()
+        # The client left first: no error response, and the outcome stays cancelled.
+        assert not messages and not requests
+        assert scopes[0]['mvibe.diagnostic'].outcome == 'cancelled'
+        assert not app.state.stream_owner._active and app.state.rate_gate.held == 0
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('status', [429, 200])
 async def test_rate_limit_headers_reach_the_client_only_on_429(status):
     payload = b'{"message":"Requests rate limit exceeded"}'
-    app, _, _ = app_for([Stream((payload,))], status=status, headers=[
+    app, requests, _ = app_for([Stream((payload,))], status=status, headers=[
         ('content-type', 'application/json'), ('retry-after', '2'),
         ('x-ratelimit-remaining-req-minute', '0'), ('X-RateLimit-Limit-Req-Minute', '30'),
-        ('x-other', 'never-forwarded'), ('content-length', str(len(payload)))])
+        ('x-other', 'never-forwarded'), ('content-length', str(len(payload)))], clock=Clock())
     async with app.router.lifespan_context(app):
-        messages = await call(app)
-    assert messages[0]['status'] == status
+        messages = await asyncio.wait_for(call(app), 5)
+    assert messages[0]['status'] == status and len(requests) == 1
     headers = [h for h in messages[0]['headers'] if h[0] != b'x-request-id']
     expected = [(b'content-type', b'application/json'), (b'cache-control', b'no-cache')]
     if status == 429:
-        expected += [(b'retry-after', b'2'), (b'x-ratelimit-remaining-req-minute', b'0'),
-                     (b'x-ratelimit-limit-req-minute', b'30')]
+        # Through the gate, which keeps the upstream's x-ratelimit-* headers in
+        # their order and its usable Retry-After after them.
+        expected += [(b'x-ratelimit-remaining-req-minute', b'0'),
+                     (b'x-ratelimit-limit-req-minute', b'30'), (b'retry-after', b'2')]
     assert headers == expected
     assert b''.join(m.get('body', b'') for m in messages) == payload
 

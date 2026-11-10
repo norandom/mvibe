@@ -416,6 +416,10 @@ class UpstreamGate:
         """The runs inside the gate right now, waiting or in flight, on every key."""
         return self._held
 
+    def now(self) -> float:
+        """A reading of the gate's `clock`, the time base of `run`'s `arrived`."""
+        return self._clock()
+
     async def run(self, key: str, attempt: Callable[[], Awaitable[httpx2.Response]], *,
                   arrived: float, record: GateRecord) -> httpx2.Response:
         """Call `attempt` when `key` comes to this run and return the upstream answer.
