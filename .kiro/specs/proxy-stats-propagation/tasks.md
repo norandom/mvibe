@@ -65,7 +65,7 @@
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.7_
 
 - [ ] 4. Compose persistence: activate the bind mount `./mmhmem-data:/data/mmhmem` with `AGENT_MEM_DATA_DIR`, `AGENT_MEM_LOG_FILE`, `MVIBE_STATS_USAGE: "1"` and `MVIBE_STATS_MMHMEM_BIN: /usr/local/bin/mmhmem` in `docker-compose.yml` (economics keys stay commented; rewrite the stale "binary is inert" and named-volume comments), commit `mmhmem-data/.gitkeep` with `.gitignore` entries `mmhmem-data/*` and `!mmhmem-data/.gitkeep`, and extend `tests/test_version_coupling.py` to assert the active bind mount, the data-dir key and the placeholder alongside the existing invariants.
-  - `uv run --offline --no-sync pytest tests/test_version_coupling.py -n 0` green; `docker compose config` (WSL, optional) renders the bind mount relative to the compose directory.
+  - `uv run --offline --no-sync pytest tests/test_version_coupling.py -n 0` green; `docker compose config` (Podman compose provider on Windows, optional) renders the bind mount relative to the compose directory; also check that the mounted `./mmhmem-data` directory is writable by uid 1000 inside the Podman machine, since Windows bind mounts may map ownership differently than a Linux Docker daemon did.
   - Observable: `git check-ignore mmhmem-data/anything` prints the path while `mmhmem-data/.gitkeep` is tracked.
   - _Boundary: docker-compose.yml, .gitignore, mmhmem-data placeholder, version-coupling test_
   - _Requirements: 2.7, 4.1, 4.2, 4.4, 4.5, 4.6_

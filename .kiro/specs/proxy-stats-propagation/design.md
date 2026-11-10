@@ -352,7 +352,7 @@ Runs `[bin_path, "stats", "--json"]` with the proxy's environment (so `AGENT_MEM
 - `tests/test_version_coupling.py`: compose bind mount and `AGENT_MEM_DATA_DIR` active; existing invariants (4.1, 4.6).
 
 ### Validation gate
-- `uv run --offline --no-sync ruff check .`, `uv run --offline --no-sync pytest`; `.dagger/ci.py check` in WSL remains the container gate (image builds; compose not executed in CI). A manual live check (`docker compose up`, a chat request, `docker compose exec proxy mmhmem stats`, `curl /stats`) is recorded in `docs/live-results.md` when performed, outside the offline gate.
+- `uv run --offline --no-sync ruff check .`, `uv run --offline --no-sync pytest`; `.dagger/ci.py check` (native Dagger CLI on the Podman engine since 2026-11-10) remains the container gate (image builds; compose not executed in CI). A manual live check (`docker compose up`, a chat request, `docker compose exec proxy mmhmem stats`, `curl /stats`) is recorded in `docs/live-results.md` when performed, outside the offline gate.
 
 ## Security Considerations
 - `/stats` has no caller authentication, like every proxy endpoint; the bind default stays loopback and the existing non-loopback warning covers it.
