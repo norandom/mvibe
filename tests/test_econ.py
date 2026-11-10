@@ -2902,3 +2902,30 @@ async def test_e2e_no_content_hint_or_hash_in_any_emitted_record(
     assert secret_path not in rendered
     assert 'vault' not in rendered
     assert sha not in rendered  # hashes stay in memory only
+
+
+# --- generic tools/call seam for the stats reporter (proxy-stats-propagation 1.3)
+
+@pytest.mark.anyio
+async def test_call_tool_sends_a_generic_tools_call_frame_and_returns_the_raw_result(no_spawn):
+    sink = asyncio.StreamReader(limit=2 ** 20)
+    reader = asyncio.StreamReader(limit=2 ** 20)
+    writer = ChildStdinWriter(sink)
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 1, 'result': {'capabilities': {}}})
+    client = econ.StdioMcpClient(SENTINEL_BIN, reader=reader, writer=writer)
+    await client.start()
+    raw_result = {'content': [{'type': 'text', 'text': 'Checkpoint saved'}], 'isError': False}
+    feed_line(reader, {'jsonrpc': '2.0', 'id': 2, 'result': raw_result})
+    arguments = {'project': 'mvibe', 'agent_harness': 'mvibe-proxy', 'workspace_task_id': 'mvibe-proxy-t1',
+                 'client_usage': {'prompt_tokens': 1200, 'completion_tokens': 34, 'source': 'mvibe-proxy mistral-large-latest'}}
+    result = await client.call_tool('session_resume_or_handoff', arguments, timeout_ms=1000)
+    assert result == raw_result  # passed through untouched: callers validate
+    frames = [json.loads(await sink.readline()) for _ in range(3)]
+    assert [frame.get('method') for frame in frames] == ['initialize', 'notifications/initialized', 'tools/call']
+    assert frames[2]['id'] == 2
+    assert frames[2]['params'] == {'name': 'session_resume_or_handoff', 'arguments': arguments}
+    # A timeout names the tool, never the arguments.
+    with pytest.raises(econ.McpError, match='^timeout: no session_resume_or_handoff response') as excinfo:
+        await client.call_tool('session_resume_or_handoff', {'project': 'secret-project-name'}, timeout_ms=20)
+    assert 'secret-project-name' not in str(excinfo.value)
+    await client.shutdown()

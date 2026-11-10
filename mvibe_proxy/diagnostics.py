@@ -6,7 +6,7 @@ no trace IDs are invented here and no exporter is installed.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import sys
@@ -117,6 +117,9 @@ class RequestDiagnostic:
         # The gate's GateRecord, attached by the route that sends through the
         # gate; while it is None the rate-limit fields are absent, not null.
         self.rate_limit: GateRecord | None = None
+        # Upstream token usage (prompt_tokens, completion_tokens) observed on the
+        # response body by the stats observer; absent, not null, when unobserved.
+        self.usage: tuple[int, int] | None = None
 
     def failure(self, code: str) -> None:
         # Only fixed codes chosen by owned call sites reach the log renderer.
@@ -156,11 +159,15 @@ class RequestDiagnostic:
                 'queued_ms': round(record.queued_ms, 2),
                 'rate_limit_rejections': record.rejections}
             snapshot = {} if record is None else {'rate_limit_headers': dict(record.headers)}
+            # Observed upstream usage: two integers on both channels (stats Req 1.7).
+            usage = {} if self.usage is None else {
+                'usage_prompt_tokens': int(self.usage[0]),
+                'usage_completion_tokens': int(self.usage[1])}
             if _logger is not None:
                 _logger.info('proxy_request', request_id=self.request_id,
                              phase=self.phase, outcome=self.outcome, status=self.status,
                              elapsed_ms=round((time.monotonic() - self.started) * 1000, 2),
-                             model=self.model, hint=self.hint, **econ, **limits, **snapshot)
+                             model=self.model, hint=self.hint, **econ, **limits, **snapshot, **usage)
             if _exporter is not None:
                 # The exporter allowlists by construction; None fields are dropped.
                 _exporter.enqueue({
@@ -177,10 +184,32 @@ class RequestDiagnostic:
                     'hint': self.hint,
                     **econ,
                     **limits,
+                    **usage,
                 })
         except Exception:
             # A closed stdout, faulty processor or failing exporter must never break inference.
             pass
+        # In-process counters (stats spec): the sink sees the finished diagnostic
+        # after the channels; its failure, like theirs, never reaches inference.
+        sink = _counters_sink
+        if sink is not None:
+            try:
+                sink(self)
+            except Exception:
+                pass
+
+
+_counters_sink: Callable[[RequestDiagnostic], None] | None = None
+
+
+def set_counters_sink(sink: Callable[[RequestDiagnostic], None] | None) -> None:
+    """Install (or clear) the in-process counters sink fed once per emitted request.
+
+    Owned by the proxy lifespan: `stats.ProxyCounters.observe` is registered at
+    startup and cleared at shutdown. This module never imports `stats`.
+    """
+    global _counters_sink
+    _counters_sink = sink
 
 
 def emit_econ_warm(record: Mapping) -> None:

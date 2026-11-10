@@ -530,9 +530,15 @@ class StdioMcpClient:
             await asyncio.gather(restart_task, return_exceptions=True)
         await self._spawn_and_connect()
 
-    async def shunt_content(self, *, project: str, content: str, kind: str,
-                            source_hint: str | None, timeout_ms: int) -> ShuntResult:
-        """One tools/call shunt_content round trip; the answer is matched by id."""
+    async def call_tool(self, name: str, arguments: Mapping[str, object], *,
+                        timeout_ms: int) -> object:
+        """One generic tools/call round trip; returns the raw `result` object.
+
+        The answer is matched by id. `shunt_content` builds on this; the stats
+        reporter uses it for `session_resume_or_handoff`. Callers validate the
+        result themselves; a timeout or a closed/not-running child surfaces as
+        a sanitized McpError that never echoes the arguments.
+        """
         if self._closed:
             raise McpError('terminated: the client is shut down')
         if not self._connected:
@@ -540,6 +546,22 @@ class StdioMcpClient:
         request_id = self._next_id + 1
         self._next_id = request_id
         waiter = self._register_waiter(request_id)
+        request = {'jsonrpc': '2.0', 'id': request_id, 'method': 'tools/call',
+                   'params': {'name': name, 'arguments': dict(arguments)}}
+        try:
+            await self._send(request, waiter)
+            result = await asyncio.wait_for(waiter, timeout_ms / 1000)
+        except asyncio.TimeoutError:
+            raise McpError(
+                f'timeout: no {name} response within {timeout_ms} ms') from None
+        finally:
+            self._waiters.pop(request_id, None)
+        self._backoff_s = RESTART_BACKOFF_S  # a healthy round trip resets the ladder
+        return result
+
+    async def shunt_content(self, *, project: str, content: str, kind: str,
+                            source_hint: str | None, timeout_ms: int) -> ShuntResult:
+        """One tools/call shunt_content round trip; the answer is matched by id."""
         arguments: dict[str, object] = {
             'project': project,
             'agent_harness': AGENT_HARNESS,
@@ -548,19 +570,8 @@ class StdioMcpClient:
         }
         if source_hint is not None:
             arguments['source_hint'] = source_hint
-        request = {'jsonrpc': '2.0', 'id': request_id, 'method': 'tools/call',
-                   'params': {'name': SHUNT_TOOL, 'arguments': arguments}}
-        try:
-            await self._send(request, waiter)
-            result = await asyncio.wait_for(waiter, timeout_ms / 1000)
-        except asyncio.TimeoutError:
-            raise McpError(
-                f'timeout: no shunt_content response within {timeout_ms} ms') from None
-        finally:
-            self._waiters.pop(request_id, None)
-        shunt = _parse_shunt_result(result)
-        self._backoff_s = RESTART_BACKOFF_S  # a healthy round trip resets the ladder
-        return shunt
+        result = await self.call_tool(SHUNT_TOOL, arguments, timeout_ms=timeout_ms)
+        return _parse_shunt_result(result)
 
     async def shutdown(self, timeout_s: float = 2.0) -> None:
         """Close stdin, wait <= timeout_s for exit, then terminate; idempotent."""

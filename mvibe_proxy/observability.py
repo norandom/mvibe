@@ -32,6 +32,7 @@ _ALLOWED_FIELDS = frozenset({
     'econ_in_bytes', 'econ_out_bytes', 'econ_est_saved_tokens',
     'econ_outcome', 'econ_latency_ms',
     'queued_ms', 'rate_limit_rejections',
+    'usage_prompt_tokens', 'usage_completion_tokens',
 })
 
 

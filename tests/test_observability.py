@@ -340,3 +340,21 @@ def test_bridge_call_span_recorded_when_otel_enabled(monkeypatch):
     spans = exporter.get_finished_spans()
     assert [s.name for s in spans] == ['bridge.call']
     assert spans[0].attributes['bridge.method'] == 'resolve'
+
+
+@pytest.mark.anyio
+async def test_exported_record_carries_observed_usage_numbers():
+    posts = []
+    exporter = OpenObserveExporter(config(), client=mock_client(posts))
+    diagnostic = diagnostics.RequestDiagnostic()
+    diagnostic.usage = (1013, 42)
+    diagnostic.status = 200
+    diagnostics.configure_exporter(exporter)
+    try:
+        diagnostic.emit()
+    finally:
+        diagnostics.clear_exporter()
+    await exporter.shutdown()
+    (row,) = json.loads(posts[0].content)
+    assert (row['usage_prompt_tokens'], row['usage_completion_tokens']) == (1013, 42)
+    assert {'usage_prompt_tokens', 'usage_completion_tokens'} <= set(observability._ALLOWED_FIELDS)

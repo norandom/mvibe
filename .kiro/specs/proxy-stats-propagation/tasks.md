@@ -8,12 +8,12 @@
   - Observable: concatenated observed chunks equal the upstream body bytes.
   - _Boundary: ProxyStreamOwner, _OwnedResponse_
   - _Requirements: 1.3, 1.4_
-- [ ] 1.2 (P) Diagnostics fields and sink: `RequestDiagnostic.usage: tuple[int, int] | None`; `emit()` adds `usage_prompt_tokens`/`usage_completion_tokens` and calls the module-level counters sink (`set_counters_sink`) inside the never-raise guard; allowlist both fields in `observability._ALLOWED_FIELDS`.
+- [x] 1.2 (P) Diagnostics fields and sink: `RequestDiagnostic.usage: tuple[int, int] | None`; `emit()` adds `usage_prompt_tokens`/`usage_completion_tokens` and calls the module-level counters sink (`set_counters_sink`) inside the never-raise guard; allowlist both fields in `observability._ALLOWED_FIELDS`.
   - `tests/test_proxy_diagnostics.py`: fields present only when set; a raising sink does not propagate; `tests/test_observability.py`: exported record keeps both fields.
   - Observable: a `--log` line for an observed request shows `"usage_prompt_tokens": 5`.
   - _Boundary: RequestDiagnostic, exporter allowlist_
   - _Requirements: 1.7, 5.3_
-- [ ] 1.3 (P) Generic tool call on the stdio client: `StdioMcpClient.call_tool(name, arguments, *, timeout_ms)` returning the raw result; `shunt_content` delegates to it with unchanged arguments, timeout and parsing.
+- [x] 1.3 (P) Generic tool call on the stdio client: `StdioMcpClient.call_tool(name, arguments, *, timeout_ms)` returning the raw result; `shunt_content` delegates to it with unchanged arguments, timeout and parsing.
   - `tests/test_econ.py`: existing shunt tests unchanged and green; new test issues `call_tool('session_resume_or_handoff', {...})` through the injected streams and asserts the JSON-RPC frame and result passthrough.
   - Observable: the frame sent for `call_tool` has `method == 'tools/call'` and `params.name` equal to the requested tool.
   - _Boundary: StdioMcpClient_
@@ -78,3 +78,4 @@
 > Operator documentation (`docs/token-economics.md` persistence and stats sections, `docs/proxy-guide.md` `/stats`, release notes) follows at release time; task rules exclude documentation tasks.
 
 ## Implementation Notes
+- 1.2/1.3 (controller, direct): `RequestDiagnostic.usage: tuple[int, int] | None` → `usage_prompt_tokens`/`usage_completion_tokens` on stdout and export (allowlisted); `diagnostics.set_counters_sink(callable | None)` is called once per `emit()` after the channels, inside its own never-raise guard. `StdioMcpClient.call_tool(name, arguments, *, timeout_ms)` returns the raw `result`; `shunt_content` delegates to it (timeouts name the tool, never the arguments).

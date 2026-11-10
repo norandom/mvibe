@@ -404,3 +404,55 @@ async def test_rate_limit_headers_never_carry_body_text_or_credentials(clock, ca
     assert all(name.startswith('x-ratelimit-') for name in row['rate_limit_headers'])
     assert 'secret' not in json.dumps(row) and 'secret' not in json.dumps(exported)
     assert 'rate_limit_headers' not in exported
+
+
+# --- observed upstream usage fields and the counters sink (proxy-stats-propagation 1.2)
+
+def _stdout_row(capsys) -> dict:
+    out = capsys.readouterr().out.strip().splitlines()
+    assert len(out) == 1, out
+    return json.loads(out[0])
+
+
+def test_usage_fields_are_absent_until_observed_and_numeric_once_set(capsys):
+    from mvibe_proxy import diagnostics
+    diagnostics.configure_stdout()
+    try:
+        bare = diagnostics.RequestDiagnostic()
+        bare.emit()
+        row = _stdout_row(capsys)
+        assert 'usage_prompt_tokens' not in row and 'usage_completion_tokens' not in row
+        observed = diagnostics.RequestDiagnostic()
+        observed.usage = (1234, 56)
+        observed.emit()
+        row = _stdout_row(capsys)
+        assert (row['usage_prompt_tokens'], row['usage_completion_tokens']) == (1234, 56)
+        assert all(isinstance(row[key], int) for key in ('usage_prompt_tokens', 'usage_completion_tokens'))
+    finally:
+        diagnostics.disable_stdout()
+
+
+def test_counters_sink_sees_each_emitted_diagnostic_and_never_breaks_emit(capsys):
+    from mvibe_proxy import diagnostics
+    seen = []
+    diagnostics.set_counters_sink(seen.append)
+    diagnostics.configure_stdout()
+    try:
+        diagnostic = diagnostics.RequestDiagnostic()
+        diagnostic.usage = (3, 4)
+        diagnostic.emit()
+        assert seen == [diagnostic]
+        _stdout_row(capsys)  # the stdout line was still written
+        # A sink that raises is contained: emit() returns normally and the line is written.
+        def explode(_diagnostic):
+            raise RuntimeError('sink exploded')
+        diagnostics.set_counters_sink(explode)
+        diagnostics.RequestDiagnostic().emit()
+        _stdout_row(capsys)
+        # Clearing the sink stops the feed.
+        diagnostics.set_counters_sink(None)
+        diagnostics.RequestDiagnostic().emit()
+        assert seen == [diagnostic]
+    finally:
+        diagnostics.set_counters_sink(None)
+        diagnostics.disable_stdout()
