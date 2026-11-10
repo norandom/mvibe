@@ -382,7 +382,7 @@ test("exhaustion returns the upstream 429 with its own body and headers plus x-s
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ phase: "response_headers", outcome: "rate_limited", status: 429, queued_ms: 0, rate_limit_rejections: 1, hint: EXHAUSTED_HINT });
     for (const setting of ["rateLimit.maxWaitMs", "rateLimit.maxQueue", "rateLimit.requestsPerSecond"]) expect(String(rows[0]!.hint)).toContain(setting);
-    expect(JSON.stringify(rows)).not.toMatch(/Rate limit exceeded|x-ratelimit|secret-prompt/);
+    expect(JSON.stringify(rows)).not.toMatch(/Rate limit exceeded|secret-prompt/);
   } finally { stderr.mockRestore(); }
 });
 

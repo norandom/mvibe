@@ -182,8 +182,14 @@ export function createProviderFetch(bridge: Pick<StdioBridge, "request">, audien
     } finally {
       if (options.diagnostics === true) {
         try {
-          // Numbers only from the gate record: never its x-ratelimit-* header values.
-          const held = record === undefined ? {} : { queued_ms: Math.round(record.queuedMs * 100) / 100, rate_limit_rejections: record.rejections };
+          // From the gate record: the held time, the rejection count and the upstream
+          // x-ratelimit-* names and values (Req 1.4) — never credentials or bodies, and
+          // only on this opt-in local line, as the proxy prints them on stdout only.
+          const held = record === undefined ? {} : {
+            queued_ms: Math.round(record.queuedMs * 100) / 100,
+            rate_limit_rejections: record.rejections,
+            ...(Object.keys(record.headers).length > 0 ? { rate_limit_headers: { ...record.headers } } : {}),
+          };
           console.error(JSON.stringify({ ...diagnostic, ...held, elapsed_ms: Math.round((performance.now() - started) * 100) / 100 }));
         } catch { /* Diagnostic output must never affect inference. */ }
       }

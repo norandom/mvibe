@@ -84,7 +84,7 @@
   - _Boundary: UpstreamGate (ts)_
   - _Requirements: 1.3, 4.1, 4.2, 4.3, 5.1, 5.3_
 
-- [ ] 4. Plugin integration
+- [x] 4. Plugin integration
 - [x] 4.1 Re-sendable attempts in `provider.ts`: materialize body bytes once per fetch (the attributed chat JSON string, otherwise `request.clone().arrayBuffer()` for non-GET); restructure the fetch so `resolve → snapshot validation → header policy → capture → transport` is an `attempt` closure that rebuilds the outbound `Request` from method, URL, headers, bytes, `redirect: "manual"` and the original signal on every call; without a gate the closure runs exactly once and all existing behavior (including `x-should-retry: false`) is preserved.
   - `test/provider.test.ts`: all existing tests pass unchanged; a new test calls the exported attempt path twice via an injected gate stub and asserts both sent bodies are byte-equal and each attempt resolved a fresh snapshot (`resolved.length === 2`, second `Authorization` differs).
   - Observable: a POST `/v1/embeddings` body read from the sent `Request` equals the caller's original bytes on a second attempt.
@@ -98,7 +98,7 @@
   - _Depends: 4.1_
   - _Boundary: createProviderFetch_
   - _Requirements: 1.6, 3.5, 4.1, 4.2, 4.3, 4.4, 5.1, 5.2, 5.5_
-- [ ] 4.3 Wire options in `index.ts`: parse `ctx.options.rateLimit` inside `settings()` so invalid values fail setup through the existing labeled `setup` failure path naming `rateLimit.<field>`; construct one `UpstreamGate` per plugin instance with `warn` bound to `console.warn` only when `diagnostics` is enabled; pass the gate to `createProviderFetch`; leave `maxRetries = 0`.
+- [x] 4.3 Wire options in `index.ts`: parse `ctx.options.rateLimit` inside `settings()` so invalid values fail setup through the existing labeled `setup` failure path naming `rateLimit.<field>`; construct one `UpstreamGate` per plugin instance with `warn` bound to `console.warn` only when `diagnostics` is enabled; pass the gate to `createProviderFetch`; leave `maxRetries = 0`.
   - `test/setup.test.ts`: `rateLimit: { requestsPerSecond: "fast" }` rejects setup with a message containing `rateLimit.requestsPerSecond`; valid `rateLimit` leaves registration and the catalog refresh unaffected; model-catalog discovery with a never-answering gate still times out under its existing deadline.
   - Observable: setup with `rateLimit: { requestsPerSecond: 0.5 }` registers the provider and the resulting fetch paces two chat requests 2000 ms apart on a fake clock.
   - _Depends: 4.2_
@@ -129,3 +129,4 @@
 - 3.3: TS gate 429 handling mirrors the proxy; on exhaustion the SAME `Response` is returned unread and unaltered (no `retry-after` added; Req 4.3); the body of a retried 429 is cancelled without awaiting; the give-up check is `max(rejectedAt + wait, readyAt()) > deadline`; `GateDeps.wallNow` (default `Date.now`) feeds HTTP-date parsing; `queuedMs` is counted per wait segment.
 - Process change 2026-11-10: task reviews are inline (controller) from task 4 on; implementers stay Opus xhigh; 4.1 and 4.2 are implemented in one dispatch.
 - 4.1+4.2 (one dispatch, medium-effort review): `provider.ts` reads the body once, attributes chat on the first attempt only, rebuilds the outbound `Request` per attempt with a fresh snapshot, and runs through `options.gate` (typed `Pick<UpstreamGate, "run">`); `queued_ms`/`rate_limit_rejections` appear in the diagnostics line only when a gate ran the request and diagnostics are enabled; the plugin never prints `x-ratelimit-*` values (Req 1.4 is met at the `GateRecord` level). Optional test hardening noted by review: a transport throw and a resolve `BridgeError` on a gated second attempt; wrap the remaining abort tests in `bounded`.
+- 4.3 (controller, direct): `settings()` parses `options.rateLimit`; one `UpstreamGate` per plugin instance, `warn` bound to `console.warn` only when `diagnostics` is on; the gate is passed to `createProviderFetch`; `maxRetries` stays 0. Integration finding fixed in the gate: an abort while an attempt is in flight now detaches the attempt and releases the key (`#inFlight`), because the catalog aborts a superseded discovery whose fake transport ignored the signal and the `models` key stayed held (`registration.test.ts` hung; mutation-checked). Plugin diagnostics line now also carries `rate_limit_headers` (x-ratelimit-* names/values, Req 1.4), mirroring the proxy's stdout-only field. Setup tests must let the catalog's gated discovery finish before using the SDK fetch.

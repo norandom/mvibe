@@ -458,6 +458,7 @@ export function classifyRateLimit(response: Response, fallbackWaitMs: number, ca
 - On 429 that will be retried, the gate cancels the response body (`response.body?.cancel()`) and never reads it. On exhaustion the last 429 is returned unread so the host receives status, headers and body intact.
 - Queue-full or pacing-deadline exhaustion without an upstream attempt returns a synthesized `Response` (status 429, `content-type: application/json`, `retry-after` = max(1, ceil(max(readyAt - now, interval) / 1000)) seconds, body `{"error":{"message":"Upstream rate limit persisted; retry after <n> seconds","type":"rate_limit_error","code":"rate_limited"}}`, the same shape the proxy synthesizes).
 - Transport errors from `attempt` propagate after releasing the position.
+- An abort while the attempt is in flight detaches that attempt: the run rejects with `BridgeError("cancelled")` and releases the key at once, and the detached attempt's eventual response is discarded. This keeps a superseded model-catalog discovery (the catalog aborts the previous attempt's signal) from holding the `models` key while its transport settles.
 
 ##### Service Interface
 ```typescript

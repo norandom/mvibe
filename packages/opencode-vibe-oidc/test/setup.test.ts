@@ -212,3 +212,108 @@ test("aisdk-hook phase failure names the phase and attaches the cause", async ()
   } finally { warn.mockRestore(); }
 });
 
+
+// --- rate-limit options wiring (task 4.3: Req 3.4, 4.4, 4.5, 4.7)
+
+const chatURL = "https://inference.example.test/v1/chat/completions";
+const chatInit = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "mistral-large-latest", messages: [], stream: false }) };
+
+function gatedSetup(rateLimit: unknown, extra: Record<string, unknown> = {}) {
+  return registrationFixture({ audience: "https://inference.example.test", helperCommand: { executable: "uv", args: ["run", "--offline", "--no-sync", "--project", "C:/installed runtime", "-m", "mvibe_auth", "bridge"] }, rateLimit, ...extra });
+}
+
+/** Replace the helper boundary and the network for one gated fetch scenario. The
+ * catalog's discovery (`GET /models`, also gated) is answered with an empty list so
+ * the scenario's transport only sees inference requests. */
+function fakeBoundaries(transport: (request: Request) => Promise<Response>) {
+  let discoveries = 0;
+  const request = spyOn(StdioBridge.prototype, "request").mockImplementation(((method: string, params: { target_url?: string }) => {
+    if (method === "resolve") return Promise.resolve({ target: params.target_url, headers: { Authorization: "Bearer synthetic" }, expires_at: Date.now() / 1000 + 300, revision: "1", metadata: { call_source: "vibe_code" } });
+    return Promise.resolve({ signed_in: true, config_match: true });
+  }) as StdioBridge["request"]);
+  const fetch = spyOn(globalThis, "fetch").mockImplementation(((input: RequestInfo | URL, init?: RequestInit) => {
+    const outbound = new Request(input, init);
+    if (new URL(outbound.url).pathname.endsWith("/models")) { discoveries++; return Promise.resolve(new Response('{"object":"list","data":[]}', { status: 200, headers: { "content-type": "application/json" } })); }
+    return transport(outbound);
+  }) as typeof globalThis.fetch);
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const discovered = async () => { for (let i = 0; i < 200 && discoveries < 1; i++) await new Promise<void>(resolve => setTimeout(resolve, 1)); expect(discoveries).toBeGreaterThanOrEqual(1); };
+  return { restore: () => { request.mockRestore(); fetch.mockRestore(); warn.mockRestore(); }, warn, discovered };
+}
+
+type SdkHookEvent = { options: Record<string, unknown>; sdk: unknown };
+
+async function sdkFetchOf(f: ReturnType<typeof registrationFixture>): Promise<{ fetch: typeof globalThis.fetch; maxRetries: unknown }> {
+  const hook = f.hooks.find(entry => entry.name === "sdk");
+  expect(hook).toBeDefined();
+  const event: SdkHookEvent = { options: {}, sdk: undefined };
+  await (hook!.callback as (sdkEvent: SdkHookEvent) => Promise<void>)(event);
+  return { fetch: event.options.fetch as typeof globalThis.fetch, maxRetries: event.options.maxRetries };
+}
+
+test("an invalid rateLimit option fails setup naming the field before any registration phase", async () => {
+  const f = gatedSetup({ requestsPerSecond: "fast" });
+  const error = await rejectionOf(setupVibe(f.ctx));
+  expect(error).toBeInstanceOf(BridgeError);
+  expect((error as BridgeError).code).toBe("setup");
+  expect((error as BridgeError).message).toContain("rateLimit.requestsPerSecond");
+  expect(f.hooks).toEqual([]);
+  expect(f.providers).toEqual([]);
+});
+
+test("a configured rateLimit builds one gate that the SDK fetch runs through, with host retries still disabled", async () => {
+  const f = gatedSetup({ maxQueue: 1 });
+  f.connect("initial");
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const sent: Request[] = [];
+  const boundaries = fakeBoundaries(async request => { sent.push(request); await held; return new Response("{}", { status: 200, headers: { "content-type": "application/json" } }); });
+  let cleanup: (() => Promise<void>) | undefined;
+  try {
+    cleanup = await setupVibe(f.ctx);
+    // Discovery shares the gate; let it finish so the single queue slot is free.
+    await boundaries.discovered();
+    const sdk = await sdkFetchOf(f);
+    expect(sdk.maxRetries).toBe(0);
+    const first = sdk.fetch(chatURL, chatInit);
+    for (let i = 0; i < 200 && sent.length < 1; i++) await Promise.resolve();
+    expect(sent).toHaveLength(1);
+    // The gate is wired: with maxQueue 1 the second concurrent request is refused by the
+    // gate itself (synthesized 429) and never reaches the transport.
+    const second = await sdk.fetch(chatURL, chatInit);
+    expect(second.status).toBe(429);
+    expect(second.headers.get("x-should-retry")).toBe("false");
+    expect(Number(second.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+    expect(sent).toHaveLength(1);
+    release();
+    expect((await first).status).toBe(200);
+  } finally {
+    release();
+    boundaries.restore();
+    await cleanup?.();
+  }
+});
+
+test("hold warnings reach the host log only when diagnostics are enabled", async () => {
+  for (const diagnostics of [true, false]) {
+    const f = gatedSetup({ maxWaitMs: 1 }, { diagnostics });
+    f.connect("initial");
+    const boundaries = fakeBoundaries(async () => new Response('{"object":"error","message":"Rate limit exceeded","type":"rate_limited"}', { status: 429, headers: { "content-type": "application/json", "retry-after": "30" } }));
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      cleanup = await setupVibe(f.ctx);
+      await boundaries.discovered();
+      const sdk = await sdkFetchOf(f);
+      const response = await sdk.fetch(chatURL, chatInit);
+      expect(response.status).toBe(429);
+      const holdWarnings = boundaries.warn.mock.calls.filter(call => String(call[0]).includes("rate limit hold"));
+      expect(holdWarnings.length).toBe(diagnostics ? 1 : 0);
+      if (diagnostics) expect(String(holdWarnings[0]![0])).toContain("mistral-large-latest");
+    } finally {
+      error.mockRestore();
+      boundaries.restore();
+      await cleanup?.();
+    }
+  }
+});

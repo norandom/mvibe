@@ -6,13 +6,17 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createProviderFetch, providerBaseURL } from "./provider.js";
 import { createModelCatalog, metadataFromHostCatalog } from "./models.js";
 import { mistralRequestBody } from "./reasoning.js";
+import { parseRateLimitOptions, UpstreamGate } from "./rate-limit.js";
+import type { RateLimitOptions } from "./rate-limit.js";
 
 import { registerRequestContext } from "./request-context.js";
 
 export type RegistrationContext = Pick<Plugin.Context, "provider" | "integration" | "options" | "aisdk" | "event" | "session" | "app">;
 
-function settings(options: Plugin.Context["options"]): { command: HelperCommand; audience: string; existingVibe: boolean } {
+function settings(options: Plugin.Context["options"]): { command: HelperCommand; audience: string; existingVibe: boolean; rateLimit: RateLimitOptions } {
   if (options.authSource !== undefined && options.authSource !== "oidc" && options.authSource !== "existing-vibe") throw new BridgeError("setup", "Configure authSource as existing-vibe or oidc.");
+  // Rate-limit pacing and hold bounds (Req 4.7); an invalid field fails setup naming rateLimit.<field> (Req 3.4).
+  const rateLimit = parseRateLimitOptions(options.rateLimit);
   const existingVibe = options.authSource === "existing-vibe";
   const value = options.helperCommand;
   const audience = options.audience;
@@ -24,7 +28,7 @@ function settings(options: Plugin.Context["options"]): { command: HelperCommand;
   const uv = /^uv(\.exe)?$/i.test(name);
   if (uv ? args[0] !== "run" || !args.includes("--offline") || !args.includes("--no-sync") : !isAbsolute(command.executable) || !/^python(?:\d+(?:\.\d+)*)?(\.exe)?$/i.test(name) || /windowsapps/i.test(command.executable)) throw new BridgeError("setup");
   if (args.length < 3 || !["-m", "--module"].includes(args.at(-3)!) || args.at(-2) !== "mvibe_auth" || !(args.at(-1) === "bridge" || (existingVibe && args.at(-1) === "bridge-vibe"))) throw new BridgeError("setup", "Configure helperCommand with an installed uv-managed runtime ending in -m mvibe_auth bridge (or bridge-vibe with authSource existing-vibe).");
-  return { command: { executable: command.executable, args: [...args.slice(0, -1), existingVibe ? "bridge-vibe" : "bridge"] }, audience, existingVibe };
+  return { command: { executable: command.executable, args: [...args.slice(0, -1), existingVibe ? "bridge-vibe" : "bridge"] }, audience, existingVibe, rateLimit };
 }
 
 /** Registration phases in setup order; a failing phase names itself (3.1). */
@@ -40,11 +44,16 @@ function registrationPhaseFailure(phase: RegistrationPhase, error: unknown): Bri
 }
 
 export async function setupVibe(ctx: RegistrationContext) {
-  const { command, audience, existingVibe } = settings(ctx.options);
+  const { command, audience, existingVibe, rateLimit } = settings(ctx.options);
   const baseURL = providerBaseURL(audience);
   const bridge = new StdioBridge({ command, audience });
   const providerID = Provider.ID.make("vibe-oidc");
-  const fetch = createProviderFetch(bridge, audience, globalThis.fetch, { authSource: existingVibe ? "existing-vibe" : "oidc", diagnostics: ctx.options.diagnostics === true, ...(typeof ctx.options.captureDirectory === "string" ? { captureDirectory: ctx.options.captureDirectory } : {}), captureBody: ctx.options.captureBody === true });
+  const diagnostics = ctx.options.diagnostics === true;
+  // One gate per plugin instance: every upstream request (inference and discovery) is
+  // paced and held by it; the host keeps retries disabled below (Req 4.4). Hold warnings
+  // carry only the model key and the wait, and only when diagnostics are enabled (Req 5.5).
+  const gate = new UpstreamGate(rateLimit, diagnostics ? { warn: (key, waitMs) => console.warn(`Vibe OIDC rate limit hold model=${JSON.stringify(key)} wait_ms=${Math.round(waitMs)}`) } : {});
+  const fetch = createProviderFetch(bridge, audience, globalThis.fetch, { authSource: existingVibe ? "existing-vibe" : "oidc", diagnostics, gate, ...(typeof ctx.options.captureDirectory === "string" ? { captureDirectory: ctx.options.captureDirectory } : {}), captureBody: ctx.options.captureBody === true });
   let hostModels: ReadonlyMap<string, unknown> = new Map();
   const catalog = createModelCatalog({ active: () => ctx.integration.connection.active(providerID), reload: () => ctx.provider.reload(), bridge, fetch, baseURL, metadata: () => metadataFromHostCatalog(hostModels, ctx.options.modelMetadata ?? {}), report: message => console.warn(message) });
   const events = new AbortController();

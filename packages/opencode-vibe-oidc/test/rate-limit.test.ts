@@ -1713,3 +1713,50 @@ test.each([
   expect(upstream.times()).toEqual([T0, T0 + 1000]);
   expect(gate.held).toBe(0);
 });
+
+// --- in-flight abort detachment (task 4.3 integration finding: a superseded
+// discovery must not hold the models key while its transport ignores the abort)
+
+test("aborting a run whose attempt is in flight releases the key at once and discards the late response", async () => {
+  const clock = new Clock();
+  const gate = new UpstreamGate(parseRateLimitOptions({}), { now: clock.now, sleep: clock.sleep });
+  const firstTransport = new Latch();
+  const lateBody = new TrackedBody('{"object":"list","data":[]}');
+  const attempts: string[] = [];
+  const controller = new AbortController();
+  const first = handled(gate.run("models", async () => {
+    attempts.push("first");
+    await firstTransport.opened;
+    return new Response(lateBody.stream, { status: 200, headers: { "content-type": "application/json" } });
+  }, controller.signal, createGateRecord()));
+  await settle();
+  expect(attempts).toEqual(["first"]);
+  const second = gate.run("models", async () => {
+    attempts.push("second");
+    return new Response("{}", { status: 200 });
+  }, undefined, createGateRecord());
+  await settle();
+  // The second run queues behind the in-flight first attempt.
+  expect(attempts).toEqual(["first"]);
+  controller.abort();
+  await expectCancelled(first);
+  // The key is released without waiting for the first transport to settle.
+  expect((await bounded(second)).status).toBe(200);
+  expect(attempts).toEqual(["first", "second"]);
+  expect(gate.held).toBe(0);
+  // The detached attempt's response is discarded when it finally arrives.
+  firstTransport.open();
+  await settle();
+  expect(lateBody.cancelled).toBe(true);
+  expect(lateBody.pulls).toBe(0);
+});
+
+test("an attempt that fails while in flight still propagates its own error when the run was not aborted", async () => {
+  const clock = new Clock();
+  const gate = new UpstreamGate(parseRateLimitOptions({}), { now: clock.now, sleep: clock.sleep });
+  const failure = new Error("transport exploded");
+  const controller = new AbortController();
+  const run = gate.run("default", async () => { throw failure; }, controller.signal, createGateRecord());
+  await expect(bounded(run)).rejects.toBe(failure);
+  expect(gate.held).toBe(0);
+});

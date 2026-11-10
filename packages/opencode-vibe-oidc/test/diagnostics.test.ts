@@ -114,7 +114,7 @@ test.each([false, true])("gate fields reach only the opt-in diagnostics line (en
   const warn = spyOn(console, "warn").mockImplementation(() => {});
   let time = 0, sends = 0;
   const gate = new UpstreamGate(parseRateLimitOptions(undefined), { now: () => time, wallNow: () => time, sleep: async ms => { time += ms; }, random: () => 0.5 });
-  const answers = [new Response("secret-rate-limit-body", { status: 429, headers: { "x-ratelimit-remaining-req-minute": "secret-remaining" } }), new Response(null, { status: 200 })];
+  const answers = [new Response("secret-rate-limit-body", { status: 429, headers: { "x-ratelimit-remaining-req-minute": "0", "x-ratelimit-limit-req-minute": "5", "set-cookie": "session=secret-cookie" } }), new Response(null, { status: 200 })];
   const fetch = createProviderFetch(bridge, audience, async () => { sends++; return answers.shift()!; }, { gate, ...(enabled ? { diagnostics: true } : {}) });
   try {
     const result = await fetch(url, { method: "POST", body: '{"model":"mistral-large-4","messages":"secret-prompt"}' });
@@ -125,8 +125,10 @@ test.each([false, true])("gate fields reach only the opt-in diagnostics line (en
       expect(row).toMatchObject({ event: "provider_request", phase: "response_headers", outcome: "headers_received", status: 200, model: "mistral-large-4" });
       expect(typeof row.queued_ms).toBe("number"); expect(typeof row.rate_limit_rejections).toBe("number");
       expect(row.queued_ms).toBe(1000); expect(row.rate_limit_rejections).toBe(1);
-      expect(Object.keys(row).sort()).toEqual(["elapsed_ms", "endpoint", "event", "hint", "model", "outcome", "phase", "queued_ms", "rate_limit_rejections", "request_id", "status"]);
-      expect(JSON.stringify(row)).not.toMatch(/secret|private|example|x-ratelimit/);
+      expect(Object.keys(row).sort()).toEqual(["elapsed_ms", "endpoint", "event", "hint", "model", "outcome", "phase", "queued_ms", "rate_limit_headers", "rate_limit_rejections", "request_id", "status"]);
+      // Req 1.4: the upstream x-ratelimit-* names and values, and nothing else from the response.
+      expect(row.rate_limit_headers).toEqual({ "x-ratelimit-remaining-req-minute": "0", "x-ratelimit-limit-req-minute": "5" });
+      expect(JSON.stringify(row)).not.toMatch(/secret|private|example|cookie/);
     }
   } finally { stderr.mockRestore(); stdout.mockRestore(); warn.mockRestore(); }
 });

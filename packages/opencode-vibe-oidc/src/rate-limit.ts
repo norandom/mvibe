@@ -502,8 +502,9 @@ export class UpstreamGate {
       record.queuedMs += now - waitedFrom;
       if (!onTime) return exhausted(record, Math.max(state.readyAt() - now, interval));
       if (interval > 0) state.nextSlot = now + interval;
-      // The head keeps the key while its attempt is in flight.
-      const response = await attempt();
+      // The head keeps the key while its attempt is in flight, unless the run is
+      // aborted meanwhile: then the attempt is detached and the key released.
+      const response = await this.#inFlight(attempt(), signal);
       const rejection = classifyRateLimit(response, shortest * 2 ** Math.min(rejections, MAX_DOUBLINGS),
         this.#options.backoffCapMs, this.#deps.wallNow());
       if (rejection === undefined) return response;
@@ -519,6 +520,31 @@ export class UpstreamGate {
       }
       discard(response);
       waitedFrom = rejectedAt;
+    }
+  }
+
+  /** Await an in-flight attempt, or detach it as soon as `signal` aborts.
+   *
+   * On abort the run rejects with BridgeError("cancelled") and releases the key at
+   * once, so a transport that ignores the abort (or a discovery superseded by a
+   * newer one) cannot hold later runs on the key. The detached attempt settles on
+   * its own: its eventual response is discarded and a rejection is swallowed. A
+   * failure of the attempt itself propagates unchanged. */
+  async #inFlight(pending: Promise<Response>, signal: AbortSignal | undefined): Promise<Response> {
+    if (signal === undefined) return pending;
+    let abort = (): void => undefined;
+    const aborted = new Promise<never>((_, reject) => {
+      abort = () => reject(cancelled());
+    });
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      return await Promise.race([pending, aborted]);
+    } catch (error) {
+      if (!signal.aborted) throw error;
+      pending.then(discard, () => undefined);
+      throw cancelled();
+    } finally {
+      signal.removeEventListener("abort", abort);
     }
   }
 
