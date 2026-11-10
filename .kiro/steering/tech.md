@@ -20,32 +20,43 @@ are for focused debugging. Run Ruff for Python and ESLint, type checks, build
 and Bun tests for the provider. Test actual OpenCode consumer behavior with the
 prepared host, including streaming, cancellation, tools and no replay.
 
-Reuse Dagger through WSL locally and GitHub Actions for Linux checks. Native
-Windows/macOS checks remain separate evidence. Tests must not require a local
+Reuse Dagger locally (native Windows CLI on the Podman engine since
+2026-11-10) and GitHub Actions for Linux checks. Native Windows/macOS checks
+remain separate evidence. Tests must not require a local
 Vibe installation, real keyring contents or network access; use pinned fixtures
 for native contracts and explicit mocked OS credential boundaries.
 
-## Local container tooling on this Windows workstation (2026-11-02)
+## Local container tooling on this Windows workstation (updated 2026-11-10)
 
-- The Docker daemon lives in **WSL Debian** (default distro, WSL2; observed
-  Docker 29.9.2, Compose v5.6.1, WSL home `/home/mc`). Run compose from there,
-  e.g. `wsl -d Debian bash -c 'cd /mnt/d/Source/mvibe && docker compose up --build'`.
-  Docker Desktop is not installed on the Windows side.
-- Consequence for `docker-compose.yml`: `${HOME}` and the `MVIBE_AUTH_DATA` /
-  `MVIBE_KEYRING_DATA` defaults resolve against the **WSL** filesystem, not
-  Windows. On this workstation set them explicitly, e.g.
-  `MVIBE_AUTH_DATA=/mnt/c/Users/mariu/AppData/Local/mvibe-auth` (Windows
-  `LOCALAPPDATA` via `/mnt/c`) and `MVIBE_KEYRING_DATA` to the exported
-  `python_keyring` directory. Windows Credential Manager is not visible to the
-  WSL Docker daemon, so the native keyring entries must exist as the mounted
-  `keyring_pass.cfg` file (see docs/proxy-guide.md, "Run in Docker").
-- **Dagger also runs through WSL Debian** (same pipeline as GitHub Actions):
-  `cd /mnt/d/Source/mvibe && dagger run uv run --locked --project .dagger --python 3.12 python .dagger/ci.py check|build`
-  with `UV_PROJECT_ENVIRONMENT="$HOME/.cache/mvibe-dagger-runtime"` (see
-  docs/ci.md). Dagger 0.21.8, pinned SDK, no Dagger Cloud account needed.
-- The `bash` available to the agent shell here is WSL bash; the WinGet `uv.exe`
-  is not on the WSL PATH. On Windows use `start_proxy.ps1`/PowerShell (or pass
-  `--uv` to `start_proxy.sh`); inside WSL use a Linux uv.
+- Containers run through **Podman on Windows** (observed Podman 5.8.3 at
+  `C:\Users\mariu\.local\bin\podman.cmd`; machine `podman-machine-default`,
+  rootful default connection, WSL-backed VM type). `docker` is the Podman shim
+  (`C:\Users\mariu\.local\bin\docker.cmd`) and `docker compose` delegates to
+  Docker Compose v5.7.0 through Podman's external compose provider (it prints
+  a provider banner first). Run compose from PowerShell in the repo:
+  `docker compose up --build`. The user prefers compose workflows over ad-hoc
+  `docker run`. The former WSL-Debian Docker daemon is no longer the path.
+- Consequence for `docker-compose.yml`: on Windows `${HOME}` is empty, so the
+  `MVIBE_AUTH_DATA` / `MVIBE_KEYRING_DATA` defaults render as
+  `/.local/share/...` (verified with `docker compose config`). Set both
+  explicitly, e.g. `MVIBE_AUTH_DATA=C:\Users\mariu\AppData\Local\mvibe-auth`
+  and `MVIBE_KEYRING_DATA` to the exported `python_keyring` directory.
+  Windows Credential Manager is not visible inside the Podman machine, so the
+  native keyring entries must exist as the mounted `keyring_pass.cfg` file
+  (see docs/proxy-guide.md, "Run in Docker"). Relative bind mounts such as
+  `./mmhmem-data` resolve against the compose file's directory.
+- **Dagger runs natively on Windows** against the Podman engine (observed
+  `dagger v0.21.11`, engine `image+podman://registry.dagger.io/engine:v0.21.11`;
+  the `.dagger` SDK pin stays 0.21.8). Same pipeline as GitHub Actions, from
+  PowerShell in the repo:
+  `$env:UV_PROJECT_ENVIRONMENT='D:\BuildArtifacts\mvibe-dagger-runtime'; dagger run uv run --locked --project .dagger --python 3.12 python .dagger/ci.py check|build`
+  (see docs/ci.md). No WSL step and no Dagger Cloud account are needed.
+  Verified 2026-11-10: `ci.py check` passed natively in about 7 minutes
+  (container pytest 1692 passed / 5 skipped, image build, mmhmem version and
+  `proxy.py --help` checks green).
+- The `bash` available to the agent shell is Git Bash (not WSL); the WinGet
+  `uv.exe` is on the Windows PATH. Use `start_proxy.ps1`/PowerShell or
+  `uv run --offline --no-sync ...` from Git Bash.
 
 OpenCode auto-updates. Record actual host versions and hashes separately from
 the pinned SDK/CLI reference. Do not treat a user-reported version as verified.
@@ -98,9 +109,9 @@ this offline; keep it green before pushing any release tag.
 
 - **Local CI == GitHub CI via `.dagger/ci.py`**:
   - `.dagger/ci.py` (`check` and `build`) is the **single source of truth** for all Linux checks, container image builds (`docker_image()`), and release artifact construction.
-  - Local WSL execution (`dagger run uv run --locked --project .dagger --python 3.12 python .dagger/ci.py check|build`) and GitHub Actions (`.github/workflows/release.yml` `build` job) run the **exact same `.dagger/ci.py` pipeline**.
+  - Local execution (`dagger run uv run --locked --project .dagger --python 3.12 python .dagger/ci.py check|build`, natively on Windows against Podman since 2026-11-10) and GitHub Actions (`.github/workflows/release.yml` `build` job) run the **exact same `.dagger/ci.py` pipeline**.
   - `.github/workflows/release.yml` must remain a thin wrapper around `.dagger/ci.py` (`check` + `build`), the native Windows/macOS installer smoke matrix (`native`), and tagged release publication (`publish`).
-  - **Never split Linux or Docker verification out of `.dagger/ci.py` into separate GitHub Actions jobs**, and never treat "push to GitHub Actions to validate" as a substitute for running `.dagger/ci.py check` locally in WSL.
+  - **Never split Linux or Docker verification out of `.dagger/ci.py` into separate GitHub Actions jobs**, and never treat "push to GitHub Actions to validate" as a substitute for running `.dagger/ci.py check` locally.
   - Keep handover, scratch, and probe files excluded in `.dagger/ci.py` (`EXCLUDE`) so local notes do not bust Dagger's source layer cache.
 - **Consume published, checksum-verified sibling release binaries (`mmhmem`)**:
   - `Dockerfile` must embed `mmhmem` by downloading the published `x86_64-unknown-linux-musl.tar.gz` release archive and verifying it against `SHA256SUMS` (`sha256sum -c`), pinned to an identical `MMHMEM_VERSION` in both `Dockerfile` and `docker-compose.yml` (enforced offline by `tests/test_version_coupling.py`). Keep the `api.github.com/repos/norandom/mmhmem/releases/tags/v${MMHMEM_VERSION}` (`Accept: application/octet-stream`) fallback in `Dockerfile`'s `fetch()` helper, because `github.com/.../releases/download/...` in `x-github-edge-region: fra` can intermittently return `HTTP/2 504` while the REST API asset endpoint resolves to `release-assets.githubusercontent.com` in <100 ms.

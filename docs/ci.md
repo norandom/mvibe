@@ -2,19 +2,19 @@
 
 The GitHub Actions workflow runs the same Dagger Python SDK pipeline used
 locally. Dagger 0.21.8 and SDK dependencies are pinned; no Dagger Cloud account is
-required. Docker must be running. On this Windows workstation, use WSL Debian
-(the Docker daemon lives there; see `.kiro/steering/tech.md`, "Local container
-tooling"):
+required. A container engine must be running. On this Windows workstation the
+engine is Podman (the `docker` command is Podman's shim) and the Dagger CLI runs
+natively; see `.kiro/steering/tech.md`, "Local container tooling":
 
-```bash
-cd /mnt/d/Source/mvibe
-export UV_PROJECT_ENVIRONMENT="$HOME/.cache/mvibe-dagger-runtime"
+```powershell
+Set-Location D:\Source\mvibe
+$env:UV_PROJECT_ENVIRONMENT = 'D:\BuildArtifacts\mvibe-dagger-runtime'
 dagger run uv run --locked --project .dagger --python 3.12 python .dagger/ci.py check
 dagger run uv run --locked --project .dagger --python 3.12 python .dagger/ci.py build
 ```
 
-The explicit environment location avoids slow Python package imports from the
-Windows-mounted filesystem. On ordinary Linux, it is optional. Build output is
+On Linux the same two `dagger run ...` commands apply from the repository root;
+the explicit environment location is optional there. Build output is
 `dist/release`: portable ZIP, universal wheel and SHA256SUMS.
 
 `check` runs Ruff correctness checks, ShellCheck (`install.sh` and
