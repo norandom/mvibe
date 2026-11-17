@@ -1,6 +1,6 @@
 /** Offline lifecycle only. Importing this module starts no process or server. */
 import { isAbsolute, relative, resolve, sep, join } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, realpathSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, statSync, realpathSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -86,7 +86,7 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
   if ([options.capabilityProbe, options.workspaceProbe,options.workspaceMutationProbe,options.workspaceCommandProbe,options.mcpProbe].filter(Boolean).length>1) throw new Error("HOST_PREFLIGHT");
   if (signal?.aborted) throw new Error("HOST_CANCELLED");
   for (const ms of [options.startupMs, options.executionMs, options.cleanupMs]) requireBudget(ms);
-  for (const binary of [options.host, options.bun, options.python]) if (!isAbsolute(binary) || !lstatSync(binary).isFile()) throw new Error("HOST_RUNTIME");
+  for (const binary of [options.host, options.bun, options.python]) if (!isAbsolute(binary) || !statSync(binary).isFile()) throw new Error("HOST_RUNTIME");
   const venvConfig = resolve(options.python, "../..", "pyvenv.cfg");
   if (!existsSync(venvConfig) || !/^uv\s*=\s*\S+/m.test(readFileSync(venvConfig, "utf8"))) throw new Error("HOST_RUNTIME");
   const packageRoot = resolve(import.meta.dir, "../..");
@@ -118,7 +118,7 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
     writeFileSync(jobScript, WINDOWS_JOB_SOURCE);
     writeFileSync(join(root, "sitecustomize.py"), readFileSync(resolve(packageRoot, "test/host-integration-sitecustomize.py")));
     if(options.workspaceMutationProbe)run("git",["init","--quiet"]);
-    const hostVersion = requireReferenceHostVersion(run(options.host, ["--version"]), process.env.VIBE_EXPECTED_HOST_VERSION ?? "2.2.5");
+    const hostVersion = requireReferenceHostVersion(run(options.host, ["--version"]), process.env.VIBE_EXPECTED_HOST_VERSION ?? "2.3.0");
     for (const name of ["@opencode/plugin", "@opencode/cli", "@opencode/protocol", "@opencode/client"])
       if (JSON.parse(readFileSync(join(packageRoot,"node_modules",name,"package.json"),"utf8")).version !== hostVersion) throw new Error("HOST_RUNTIME");
     if (run(options.bun, ["--version"]) !== "1.4.4") throw new Error("HOST_RUNTIME");
@@ -175,8 +175,16 @@ export async function smokeOfflineHost(options: OfflineHostOptions, signal?: Abo
         }
         const stopped = spawnSync(options.python, ["-u", jobScript, "stop", jobName], { env, cwd, timeout: options.cleanupMs, windowsHide: true, stdio: "ignore" });
         if (stopped.status !== 0) throw new Error("HOST_CLEANUP");
-      } else if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch { if (child.exitCode === null) throw new Error("HOST_CLEANUP"); } }
-      if (child.exitCode === null) await new Promise<void>((done, reject) => {
+      } else if (child.pid) {
+        // Let the host reap its MCP children before falling back to group kill.
+        child.kill("SIGTERM");
+        const gracefulDeadline = Math.min(cleanupDeadline - 1000, Date.now() + 3000);
+        while (child.exitCode === null && child.signalCode === null && Date.now() < gracefulDeadline)
+          await new Promise(resolve => setTimeout(resolve, 25));
+        try { process.kill(-child.pid, "SIGKILL"); }
+        catch { if (child.exitCode === null && child.signalCode === null) throw new Error("HOST_CLEANUP"); }
+      }
+      if (child.exitCode === null && child.signalCode === null) await new Promise<void>((done, reject) => {
         const deadline = setTimeout(() => reject(new Error("HOST_CLEANUP")), Math.max(1, cleanupDeadline - Date.now()));
         child!.once("exit", () => { clearTimeout(deadline); done(); });
       });

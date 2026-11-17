@@ -12,9 +12,9 @@ describe("prepared tool compatibility dependencies", () => {
     expect(manifest.devDependencies["@modelcontextprotocol/sdk"]).toBe("1.32.2");
     expect(manifest.devDependencies["@ai-sdk/provider"]).toBe("3.0.19");
     expect(manifest.dependencies).toEqual({
-      "@ai-sdk/openai-compatible": "2.0.88", "@opencode/plugin": "2.2.5", "jsonc-parser": "3.3.1",
+      "@ai-sdk/openai-compatible": "2.0.88", "@opencode/plugin": "2.3.0", "jsonc-parser": "3.3.1",
     });
-    expect(manifest.devDependencies["@opencode/cli"]).toBe("2.2.5");
+    expect(manifest.devDependencies["@opencode/cli"]).toBe("2.3.0");
     expect(manifest.devDependencies.typescript).toBe("5.9.3");
     expect(() => checkPreparedDependencies(read, Bun.version)).not.toThrow();
   });
@@ -38,10 +38,10 @@ describe("prepared tool compatibility dependencies", () => {
   });
 
   test("reference host requires exact version, not a matching major or prefix", () => {
-    expect(requireReferenceHostVersion("opencode v2.2.5\n")).toBe("2.2.5");
-    expect(requireReferenceHostVersion("2.2.5\n")).toBe("2.2.5");
-    for (const version of ["v2.2.6", "v2.2.50", "v2.2.5-beta.1", "private rejected contents"])
-      expect(() => requireReferenceHostVersion(version)).toThrow("Prepare OpenCode 2.2.5; other versions require separate compatibility evidence");
+    expect(requireReferenceHostVersion("opencode v2.3.0\n")).toBe("2.3.0");
+    expect(requireReferenceHostVersion("2.3.0\n")).toBe("2.3.0");
+    for (const version of ["v2.2.6", "v2.3.00", "v2.3.0-beta.1", "private rejected contents"])
+      expect(() => requireReferenceHostVersion(version)).toThrow("Prepare OpenCode 2.3.0; other versions require separate compatibility evidence");
   });
 
   test("default unit configuration keeps process integration deliberately invoked", () => {

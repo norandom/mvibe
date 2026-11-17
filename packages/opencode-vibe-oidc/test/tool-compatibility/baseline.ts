@@ -9,7 +9,7 @@ if(import.meta.main){
  const args=process.argv.slice(2), option=(key:string)=>{const index=args.indexOf(key);return index<0?undefined:args[index+1];};
  const provider=resolve(option("--provider-root")??resolve(import.meta.dir,"../.."));
  const project=resolve(option("--project-root")??process.env.VIBE_TEST_PROJECT_ROOT??resolve(import.meta.dir,"../../../.."));
- const expected=option("--expected-version")??"2.2.5";
+ const expected=option("--expected-version")??"2.3.0";
  const directory=resolve(option("--output")??join(project,"reports/tool-baseline",new Date().toISOString().replaceAll(/[:.]/g,"-")));
  mkdirSync(directory,{recursive:true});
  const env={...process.env,VIBE_EXPECTED_HOST_VERSION:expected,VIBE_TEST_PROJECT_ROOT:project,OPENCODE_DISABLE_AUTOUPDATE:"true",UV_OFFLINE:"true"};
@@ -20,7 +20,7 @@ if(import.meta.main){
  };
  const compilation=execute("compile",["run","typecheck"]);
  const capture=execute("contract-capture",["run","test/tool-compatibility/update-contracts.ts","capture",join(directory,"candidate-contracts.json")]);
- const reference=resolve(import.meta.dir,"contracts/opencode-2.2.5.json");
+ const reference=resolve(import.meta.dir,"contracts/opencode-2.3.0.json");
  const contracts=capture.status==="passed"?execute("contract-compare",["run","test/tool-compatibility/update-contracts.ts","compare",join(directory,"candidate-contracts.json"),reference]):{name:"contract-compare",status:"unverified",exitCode:null,artifact:capture.artifact};
  const probes=[];
  for(const [name,file] of [["query","workspace-query-probe"],["mutation","workspace-mutation-probe"],["command","workspace-command-probe"],["mcp","mcp-probe"]]){

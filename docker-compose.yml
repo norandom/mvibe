@@ -5,22 +5,13 @@
 # Credential mounts (read-only), resolved on the Docker host:
 #   MVIBE_AUTH_DATA     encrypted OIDC store directory containing
 #                       credentials.v1.enc
-#                       (Linux/macOS: ~/.local/share/mvibe-auth,
-#                        Windows: %LOCALAPPDATA%\mvibe-auth)
-#   MVIBE_KEYRING_DATA  file-based keyring directory containing
-#                       python_keyring/keyring_pass.cfg (Linux default:
-#                       ~/.local/share/python_keyring; on this Windows
-#                       workstation exported via WSL to
-#                       /mnt/c/Users/mariu/AppData/Local/Python Keyring).
-#                       Windows Credential Manager is not a file. Export once
-#                       without printing the secret (run on the Windows host):
-#                         uv run --locked --extra docker -- python -c "import keyring; v = keyring.get_password('ai.mistral.vibe', 'MISTRAL_API_KEY'); import keyring.core; keyring.set_keyring(keyring.core.load_keyring('keyrings.alt.file.PlaintextKeyring')); keyring.set_password('ai.mistral.vibe', 'MISTRAL_API_KEY', v); print('exported' if v else 'no native credential found')"
-#                       For OIDC also export service 'ai.mistral.vibe.oidc',
-#                       entry 'mvibe-auth:v1:fernet-key'. Entries are stored
-#                       escaped + base64 in keyring_pass.cfg: always generate
-#                       the file through keyring.set_password, never hand-edit.
-#                       Alternatively sign in inside the container (see
-#                       docs/proxy-guide.md).
+#                       (optional OIDC only; default ./.container-auth)
+#   MVIBE_KEYRING_DATA  private file-keyring directory, required explicitly.
+#                       Export the normal desktop Vibe login (no second login):
+#                         export MVIBE_KEYRING_DATA="$HOME/.local/share/mvibe-container-keyring"
+#                         uv run --locked --extra docker python scripts/export-container-auth.py "$MVIBE_KEYRING_DATA"
+#                       Refresh the export after signing in again through Vibe.
+#                       See docs/vibe-authentication.md for rootless Podman.
 #
 # Examples:
 #   docker compose up --build                 # existing-vibe auth (default)
@@ -44,8 +35,8 @@ services:
     ports:
       - "127.0.0.1:${MVIBE_PROXY_PORT:-8765}:8765"
     volumes:
-      - "${MVIBE_AUTH_DATA:-${HOME}/.local/share/mvibe-auth}:/data/mvibe-auth:ro"
-      - "${MVIBE_KEYRING_DATA:-${HOME}/.local/share/python_keyring}:/data/python_keyring:ro"
+      - "${MVIBE_AUTH_DATA:-./.container-auth}:/data/mvibe-auth:ro"
+      - "${MVIBE_KEYRING_DATA:?Set MVIBE_KEYRING_DATA to the exported container keyring directory}:/data/python_keyring:ro"
       # On Windows (Podman) ${HOME} is empty: set both explicitly, for example
       #   MVIBE_AUTH_DATA=C:\Users\mariu\AppData\Local\mvibe-auth
       #   MVIBE_KEYRING_DATA=C:\Users\mariu\AppData\Local\Python Keyring

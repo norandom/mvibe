@@ -10,7 +10,7 @@ import { MCP_TOOL,mcpRecipe } from "./fixtures/mcp-recipe.js";
 import type { ToolIdentity } from "./contracts.js";
 export default Plugin.define({id:"tool-mcp",async setup(ctx){
  const original=globalThis.fetch,disposers:{dispose():Promise<void>}[]=[];
- const recipe=mcpRecipe(String(ctx.options.mcpNonce)),scopeHash=fixtureHash({recipe,server:"owned",host:"2.2.5"}),runId="mcp-baseline";
+ const recipe=mcpRecipe(String(ctx.options.mcpNonce)),scopeHash=fixtureHash({recipe,server:"owned",host:ctx.app.version}),runId="mcp-baseline";
  const records:any[]=[],inventory:any[]=[],permissions:any[]=[];let sequence=0;let current:any,stage="setup",failureCode="none",ready=false;
  const log=()=>{const path=String(ctx.options.mcpLog);if(statSync(path).size>32768)throw new Error("HOST_CAPTURE");return readFileSync(path,"utf8").trim().split("\n").filter(Boolean).map(v=>JSON.parse(v));};
  const wait=async(p:()=>boolean,ms=12000)=>{const end=Date.now()+ms;while(!p()){if(Date.now()>end)throw new Error("HOST_TIMEOUT");await new Promise(r=>setTimeout(r,25));}};
@@ -84,7 +84,7 @@ export default Plugin.define({id:"tool-mcp",async setup(ctx){
    }
    stage="complete";ready=true;
   }catch(e){failureCode=e instanceof Error&&/^HOST_[A-Z_]+$/.test(e.message)?e.message:"HOST_FAILURE";}
-  writeFileSync(String(ctx.options.readiness),JSON.stringify({ready,stage,failureCode,runId,scopeHash,model:"vibe-oidc/synthetic-model",sdk:"1.32.2",inventory,permissions,records:records.map(({driver,recorder,...c})=>c),server:log(),live:"unverified",allToolCompatibility:"unverified"}));
+  writeFileSync(String(ctx.options.readiness),JSON.stringify({ready,stage,failureCode,runId,scopeHash,hostVersion:ctx.app.version,model:"vibe-oidc/synthetic-model",sdk:"1.32.2",inventory,permissions,records:records.map(({driver,recorder,...c})=>c),server:log(),live:"unverified",allToolCompatibility:"unverified"}));
  })();},50);
  return async()=>{for(const d of disposers.reverse())await d.dispose();await cleanup();globalThis.fetch=original;};
 }});

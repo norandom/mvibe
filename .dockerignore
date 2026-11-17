@@ -26,3 +26,7 @@ install.sh
 install.ps1
 start_proxy.sh
 start_proxy.ps1
+
+.env
+.container-auth
+mmhmem-data

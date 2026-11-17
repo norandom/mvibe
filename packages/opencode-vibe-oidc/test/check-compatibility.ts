@@ -29,8 +29,7 @@ if (action === "--prepare-current") {
   writeFileSync(join(directory, "package.json"), JSON.stringify(manifest, null, 2));
   const install = Bun.spawnSync([process.execPath, "install", "--ignore-scripts"], { cwd: directory, stdout: "inherit", stderr: "inherit" });
   assert.equal(install.exitCode, 0, "Explicit preparation failed; offline verification must not install missing dependencies");
-  assert.equal(process.platform, "win32", "Configure the corresponding prepared host artifact for this platform");
-  const host = join(directory, "node_modules", "@opencode", `cli-windows-${process.arch}`, "bin", "opencode.exe");
+  const host = join(directory, "node_modules", "@opencode", `cli-${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`, "bin", process.platform === "win32" ? "opencode.exe" : "opencode");
   assert.ok(existsSync(host), "Prepared platform-specific host is missing");
   const version = Bun.spawnSync([host, "--version"]);
   assert.equal(version.exitCode, 0); assert.ok(version.stdout.toString().includes("v" + cli));

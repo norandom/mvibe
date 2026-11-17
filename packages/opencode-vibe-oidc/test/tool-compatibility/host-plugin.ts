@@ -44,7 +44,7 @@ export default Plugin.define({id:"tool-capability", async setup(ctx) {
     if(definitions.length>256 || offered.length>=8) throw new Error("HOST_CAPTURE");
     offered.push({case:c.kind,agent:safe(e.agent),definitions});
     const definition=e.tools[nativeName]; if(!definition) throw new Error("HOST_DEFINITION");
-    c.tool={registryId:nativeId,declaredName:nativeName,offeredName:nativeName,origin:"native",originHash:fixtureHash({host:"2.2.5",registryId:nativeId}),schemaHash:fixtureHash({description:definition.description,inputSchema:definition.input})};
+    c.tool={registryId:nativeId,declaredName:nativeName,offeredName:nativeName,origin:"native",originHash:fixtureHash({host:ctx.app.version,registryId:nativeId}),schemaHash:fixtureHash({description:definition.description,inputSchema:definition.input})};
     if(c.requests===0)trace(e.sessionID,c,"definition");
     add(c,"context");
   }));

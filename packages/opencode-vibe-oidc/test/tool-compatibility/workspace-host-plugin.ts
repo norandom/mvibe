@@ -42,7 +42,7 @@ export default Plugin.define({id:"tool-workspace",async setup(ctx){
     if(definitions.length>256)throw new Error("HOST_CAPTURE");offered.push({caseId:c.q.spec.id,definitions});
     const definition=e.tools[c.q.name];
     if(!definition||!inventory.some(t=>t.id===c.q.name&&t.name===c.q.name))throw new Error("HOST_DEFINITION");
-    const tool:ToolIdentity={registryId:c.q.name,declaredName:c.q.name,offeredName:c.q.name,origin:"native",originHash:fixtureHash({host:"2.2.5",registryId:c.q.name}),schemaHash:fixtureHash({description:definition.description,inputSchema:definition.input})};
+    const tool:ToolIdentity={registryId:c.q.name,declaredName:c.q.name,offeredName:c.q.name,origin:"native",originHash:fixtureHash({host:ctx.app.version,registryId:c.q.name}),schemaHash:fixtureHash({description:definition.description,inputSchema:definition.input})};
     if(c.tool&&c.tool.schemaHash!==tool.schemaHash)throw new Error("HOST_DEFINITION");c.tool=tool;
     if(!c.requests)trace(c,"definition");
   }));
@@ -67,7 +67,13 @@ export default Plugin.define({id:"tool-workspace",async setup(ctx){
     }
     if(command&&e.status==="completed"&&"exit" in c.q){
       const output={output:c.q.stdout+c.q.stderr,truncated:false,exit:c.q.exit,status:"completed"};
-      hashOwnedFixture(e.result.output,output);hashOwnedFixture(e.result.metadata,{status:"completed",truncated:false,exit:c.q.exit});c.native=e.result.output;
+      const native=e.result.output as Record<string,unknown>;
+      if(process.platform !== "win32") {
+        hashOwnedFixture(Object.keys(native).sort(),["exitCode","output","wallTimeSeconds"]);
+        if(typeof native.wallTimeSeconds!=="number"||!Number.isFinite(native.wallTimeSeconds)||native.wallTimeSeconds<0)throw new Error("HOST_RESULT");
+        c.native={output:native.output,truncated:false,exit:native.exitCode,status:"completed"};
+      } else c.native=native;
+      hashOwnedFixture(c.native,output);hashOwnedFixture(e.result.metadata,{status:"completed",truncated:false,exit:c.q.exit});
     }
     const content=e.status==="error"?c.q.expected:command&&Array.isArray(e.result.content)&&e.result.content.length!==1?JSON.stringify(e.result.content):Array.isArray(e.result.content)&&e.result.content.length===1&&e.result.content[0]?.type==="text"?e.result.content[0].text:e.result.content;
     c.result=hashOwnedFixture(content,c.q.expected);trace(c,c.q.spec.executorExpectation==="must_complete"?"executor_completed":c.q.spec.expectedOutcome==="denied"?"denied":"error");

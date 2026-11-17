@@ -20,3 +20,6 @@ mmhmem-data/*
 
 # operator-specific compose settings (rates, credential mount paths)
 .env
+
+# Optional container OIDC state (normal existing-vibe mode uses no OIDC store)
+.container-auth/

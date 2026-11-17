@@ -18,8 +18,8 @@ export function createWorkspaceCommands(root:string,bun:string,nonce=randomBytes
   const source=`const fs=require("node:fs");fs.writeSync(1,${JSON.stringify(stdout)});setTimeout(()=>{fs.writeSync(2,${JSON.stringify(stderr)});process.exit(${exit});},80);\n`;
   if(!prepared)writeFileSync(path,source,{flag:"wx",mode:0o600});
   else if(lstatSync(path).isSymbolicLink()||readFileSync(path,"utf8")!==source)throw new Error("HOST_FIXTURE");
-  const objective=`& "${bun.replaceAll("\\","/")}" "${path.replaceAll("\\","/")}"`;
-  const command=objective+"; exit $LASTEXITCODE";
+  const objective=`${process.platform === "win32" ? "& " : ""}"${bun.replaceAll("\\","/")}" "${path.replaceAll("\\","/")}"`;
+  const command=objective+(process.platform === "win32" ? "; exit $LASTEXITCODE" : "");
   // Pinned 2.2.5 DE/bl/y2 keeps the invocation resource, and skips the exit
   // statement's variable expression. Do not allow the whole command as a glob.
   const resource=objective;
@@ -30,7 +30,7 @@ export function createWorkspaceCommands(root:string,bun:string,nonce=randomBytes
   // nonzero exit additionally appears in the model-visible native text.
   // Iv.toResultValue retains multiple text parts; openai-compatible 2.0.88
   // serializes that content array as JSON. Freeze it before execution.
-  const expected=kind==="denied"?JSON.stringify({error:{type:"permission.rejected",message:"Permission denied: shell"},content:[]}):kind==="invalid"?JSON.stringify({error:{type:"tool.execution",message:errorMessage},content:[]}):exit?JSON.stringify([{type:"text",text:stdout+stderr},{type:"text",text:`Exited with code ${exit}`} ]):stdout+stderr;
+  const expected=kind==="denied"?JSON.stringify({error:{type:"permission.rejected",message:"Permission denied: shell"},content:[]}):kind==="invalid"?JSON.stringify({error:{type:"tool.execution",message:errorMessage},content:[]}):exit?JSON.stringify([{type:"text",text:stdout+stderr},{type:"text",text:process.platform === "win32" ? `Exited with code ${exit}` : `Exit code: ${exit}`} ]):stdout+stderr;
   const id=kind==="success"?"shell.stdout-stderr-exit":kind==="nonzero"?"shell.execution-error":kind==="denied"?"shell.denied":"shell.invalid-input";
   const template=kind==="invalid"?{...manifest.cases.find(c=>c.spec.id==="filesystem.invalid-input")!,objective:id,calls:["shell"],spec:{...manifest.cases.find(c=>c.spec.id==="filesystem.invalid-input")!.spec,id,toolIds:["shell"],fixtureKind:"shell" as const}}:manifest.cases.find(c=>c.spec.id===id)!;
   const state={repository:"unchanged",process:"foreground-completed",nonce};

@@ -1,4 +1,4 @@
-# mvibe 3.1.1 — upstream rate-limit queueing and proxy stats
+# mvibe 3.2.0 — Linux compatibility and OpenCode 2.3.0
 
 For students, researchers and educators only. This is untested, experimental
 software, not production software. Original mvibe contributions use the Beerware
@@ -11,7 +11,7 @@ API-key entry. Experimental direct ID-token OIDC remains a separate opt-in route
 it counted as API usage on the tested account. The existing-login route consumed
 the expected Vibe allowance in user-confirmed OpenCode tests.
 
-Download `mvibe-3.1.1.zip` and `SHA256SUMS`, verify the checksum, then extract to a
+Download `mvibe-3.2.0.zip` and `SHA256SUMS`, verify the checksum, then extract to a
 permanent directory outside a development checkout. Complete normal Vibe browser
 sign-in under the same native OS/user first. With uv, Bun 1.4.4 and OpenCode 2 installed:
 
@@ -31,6 +31,26 @@ The standalone wheel is also available for Python library consumers. The archive
 includes the optional proxy with `/openapi.json`, Swagger `/docs`, and opt-in
 `--log` diagnostics. Plugin diagnostics use `options.diagnostics: true`; the CLI
 also needs `--print-logs` for visible events.
+
+## New in 3.2.0
+
+- Reuse normal Vibe login from Linux Secret Service in the direct provider.
+  Export that same credential for a private, read-only container keyring with
+  `scripts/export-container-auth.py`; repeat the export after signing in again.
+- Add a rootless Podman Compose override with UID preservation and fix Compose
+  interpolation compatibility. `MVIBE_KEYRING_DATA` must now be set explicitly.
+  See [Linux authentication setup](vibe-authentication.md#linux-desktop-and-container-reuse).
+- Roll the OpenCode CLI/SDK reference pair forward to 2.3.0 and record its reviewed
+  contract snapshot. Native host integration, file queries/mutations, shell
+  execution and MCP lifecycle checks pass on Linux x86_64.
+- Fix Linux virtual-environment symlink checks, Python cache discovery, native
+  shell fixtures/result validation and child cleanup. The shell proxy launcher
+  resolves its project independently of the caller's working directory.
+- Linux validation: 2,024 Python tests passed (5 optional checks skipped), 1,460
+  provider tests passed, builds/lint/typechecks passed. The Python 3.12 container
+  built and authenticated model discovery succeeded. Live inference/quota and
+  Windows/macOS/ARM were not revalidated locally; native release CI remains the
+  cross-platform publication gate. The image currently embeds x86_64 mmhmem.
 
 ## New in 3.1.1
 

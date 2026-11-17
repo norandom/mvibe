@@ -38,7 +38,7 @@ export function compareContracts(before:unknown,after:unknown,path="$",result:Di
  }else result.push({kind:"changed",path});
  return result;
 }
-export async function captureContracts(host:string,expected="2.2.5"){
+export async function captureContracts(host:string,expected="2.3.0"){
  const root=resolve(import.meta.dir,"../..");
  const {requireReferenceHostVersion,checkPreparedDependencies}=await import("./preparation.js");
  checkPreparedDependencies(path=>readFileSync(join(root,path),"utf8"),Bun.version);
@@ -59,7 +59,7 @@ if(import.meta.main){try{
  if(action==="capture"){
   if(existsSync(output))throw new Error("Capture destination exists; reviewed references are never overwritten");
   if(!process.env.OPENCODE_TEST_BINARY)throw new Error("Explicit prepared host required");
-  const capture=await captureContracts(process.env.OPENCODE_TEST_BINARY,process.env.VIBE_EXPECTED_HOST_VERSION??"2.2.5");
+  const capture=await captureContracts(process.env.OPENCODE_TEST_BINARY,process.env.VIBE_EXPECTED_HOST_VERSION??"2.3.0");
   writeFileSync(output,JSON.stringify(capture,null,2)+"\n",{flag:"wx"});
   console.log(`Captured prepared contracts: ${output}`);
  }else{

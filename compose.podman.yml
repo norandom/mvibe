@@ -1,0 +1,7 @@
+# Rootless Podman: preserve the host user's ownership of private bind mounts.
+# docker compose -f docker-compose.yml -f compose.podman.yml up -d
+x-podman:
+  in_pod: false
+services:
+  proxy:
+    userns_mode: keep-id

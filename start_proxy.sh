@@ -34,4 +34,4 @@ if ! command -v -- "$uv_bin" >/dev/null 2>&1; then
     exit 1
   fi
 fi
-exec "$uv_bin" run --locked --extra proxy -- python "$root/proxy.py" --host "$host" ${rest[@]+"${rest[@]}"}
+exec "$uv_bin" run --project "$root" --locked --extra proxy -- python "$root/proxy.py" --host "$host" ${rest[@]+"${rest[@]}"}

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 
 // No implicit fallback to the user's active service or profile.
 const host = process.env.OPENCODE_TEST_BINARY;
-if (!host) throw new Error("Set OPENCODE_TEST_BINARY to an explicitly prepared OpenCode 2.2.5 executable; see README.md");
+if (!host) throw new Error("Set OPENCODE_TEST_BINARY to an explicitly prepared OpenCode 2.3.0 executable; see README.md");
 const root = mkdtempSync(join(tmpdir(), "vibe-provider-setup-"));
 const evidence = join(root, "events.txt");
 const env: Record<string, string> = {
@@ -33,7 +33,7 @@ try {
   assert.match(out, /vibe-setup-synthetic\/setup-model/);
   const events = readFileSync(evidence, "utf8");
   for (const event of ["provider-transform", "integration-transform", "sdk-hook-registered", "setup-complete"]) assert.ok(events.includes(event), `Missing ${event}: ${events}`);
-  console.log("OpenCode 2.2.5 / @opencode/plugin 2.2.5: synthetic plugin, transforms, scoped hook registration and model visibility PASS");
+  console.log("OpenCode 2.3.0 / @opencode/plugin 2.3.0: synthetic plugin, transforms, scoped hook registration and model visibility PASS");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

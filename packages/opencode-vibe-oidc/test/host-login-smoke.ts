@@ -38,7 +38,7 @@ try {
   assert.equal(result.results.length, 1);
   assert.deepEqual(result.value, { type: "key", key: "vibe-oidc-connected-v1" });
   }
-  console.log("OpenCode 2.2.5 production registration: command completed/reused_current/failed/cancelled and marker-only credential PASS");
+  console.log("OpenCode 2.3.0 production registration: command completed/reused_current/failed/cancelled and marker-only credential PASS");
 } finally { rmSync(root, { recursive: true, force: true }); }
 
 

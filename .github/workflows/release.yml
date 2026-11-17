@@ -110,7 +110,8 @@ jobs:
           $env:OPENCODE_TEST_SOURCE = (Resolve-Path node_modules/@opencode/cli/bin/opencode.exe).Path
           bun run prepare:host
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:OPENCODE_TEST_BINARY = (Resolve-Path .host/opencode.exe).Path
+          $preparedHost = if ($IsWindows) { ".host/opencode.exe" } else { ".host/opencode" }
+          $env:OPENCODE_TEST_BINARY = (Resolve-Path $preparedHost).Path
           $env:VIBE_TEST_PYTHON = $pythonRuntime
           $env:VIBE_HOST_REPORT = Join-Path $env:RUNNER_TEMP 'host-integration.json'
           bun run test:host

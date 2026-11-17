@@ -12,12 +12,12 @@ test("isolated native commands retain deterministic executable resolution and Po
  expect(env).not.toHaveProperty("SECRET");
  const f=createWorkspaceCommands(state.root,process.execPath);
  for(const q of f.commands.filter(q=>q.kind!=="invalid")){
-  expect(q.input.command).toEndWith("; exit $LASTEXITCODE");
-  expect(q.permissionResources).toEqual([String(q.input.command).slice(0,-"; exit $LASTEXITCODE".length)]);
+  if(process.platform === "win32") expect(q.input.command).toEndWith("; exit $LASTEXITCODE");
+  expect(q.permissionResources).toEqual([process.platform === "win32" ? String(q.input.command).slice(0,-"; exit $LASTEXITCODE".length) : String(q.input.command)]);
  }
  expect(f.permissions["*"]).toBe("deny");
  const nonzero=f.commands[1]!;
- expect(JSON.parse(nonzero.expected)).toEqual([{type:"text",text:nonzero.stdout+nonzero.stderr},{type:"text",text:"Exited with code 7"}]);
+ expect(JSON.parse(nonzero.expected)).toEqual([{type:"text",text:nonzero.stdout+nonzero.stderr},{type:"text",text:process.platform === "win32" ? "Exited with code 7" : "Exit code: 7"}]);
 });
 
 test("command recipes freeze trusted stdout stderr and exit expectations before native execution",()=>{
@@ -31,7 +31,7 @@ test("command recipes freeze trusted stdout stderr and exit expectations before 
  const [ok,failed,denied,invalid]=f.commands;
  expect(ok!.stdout).toContain(ok!.nonce);expect(ok!.stderr).toContain(ok!.nonce);
  expect(ok!.exit).toBe(0);expect(failed!.exit).toBe(7);
- expect(failed!.expected).toContain("Exited with code 7");
+ expect(failed!.expected).toContain(process.platform === "win32" ? "Exited with code 7" : "Exit code: 7");
  expect(denied!.expected).toContain("permission.rejected");expect(invalid!.input).not.toHaveProperty("command");
  expect(f.commands.filter(q=>q.kind==="success"||q.kind==="nonzero").every(q=>f.permissions[q.permissionResources[0]!] === "allow")).toBe(true);
  expect(f.permissions[denied!.permissionResources[0]!]).toBeUndefined();

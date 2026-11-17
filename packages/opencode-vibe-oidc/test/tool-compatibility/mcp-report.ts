@@ -6,13 +6,13 @@ import { MCP_TOOL,mcpRecipe } from "./fixtures/mcp-recipe.js";
 export function parseMcpProbe(value:unknown):any{
  const r=value as any,fail=():never=>{throw new Error("HOST_MCP_EVIDENCE");};
  try{
-  if(!r||r.ready!==true||r.stage!=="complete"||r.failureCode!=="none"||r.runId!=="mcp-baseline"||r.sdk!=="1.32.2"||r.model!=="vibe-oidc/synthetic-model"||r.live!=="unverified"||r.allToolCompatibility!=="unverified"||r.records?.length!==3||r.server?.length!==10||r.permissions?.length!==3)fail();
-  const nonce=r.records[0].input.payload.nonce,recipe=mcpRecipe(nonce),scopeHash=fixtureHash({recipe,server:"owned",host:"2.2.5"});
+  if(!r||r.hostVersion!==(process.env.VIBE_EXPECTED_HOST_VERSION??"2.3.0")||r.ready!==true||r.stage!=="complete"||r.failureCode!=="none"||r.runId!=="mcp-baseline"||r.sdk!=="1.32.2"||r.model!=="vibe-oidc/synthetic-model"||r.live!=="unverified"||r.allToolCompatibility!=="unverified"||r.records?.length!==3||r.server?.length!==10||r.permissions?.length!==3)fail();
+  const nonce=r.records[0].input.payload.nonce,recipe=mcpRecipe(nonce),scopeHash=fixtureHash({recipe,server:"owned",host:r.hostVersion});
   if(r.scopeHash!==scopeHash||r.processCleanup?.exited!==true||r.processCleanup?.withinBudget!==true||r.processCleanup.pids.length!==1)fail();
   if(new Set(r.records.map((c:any)=>c.sessionId)).size!==3||new Set(r.records.map((c:any)=>c.call?.hostMessageId)).size!==3)fail();
   const kinds=["initialize","negotiated","initialized","discovered","called","returned","called","returned","called","cancelled"];
   r.server.forEach((e:any,i:number)=>{if(e.kind!==kinds[i]||e.sequence!==i+1||e.pid!==r.processCleanup.pids[0])fail();});
-  if(r.server[0].params.clientInfo.name!=="opencode"||r.server[0].params.clientInfo.version!=="2.2.5"||r.server[1].result.protocolVersion!==r.server[0].params.protocolVersion||fixtureHash(r.server[1].result.capabilities)!==fixtureHash({tools:{}})||r.server[3].schemaHash!==fixtureHash(MCP_TOOL))fail();
+  if(r.server[0].params.clientInfo.name!=="opencode"||r.server[0].params.clientInfo.version!==r.hostVersion||r.server[1].result.protocolVersion!==r.server[0].params.protocolVersion||fixtureHash(r.server[1].result.capabilities)!==fixtureHash({tools:{}})||r.server[3].schemaHash!==fixtureHash(MCP_TOOL))fail();
   for(const [index,mode] of ["success","error","cancel"].entries()){
    const c=r.records[index],q=recipe[mode as keyof typeof recipe],tool=parseToolIdentity(c.tool),called=r.server[4+index*2],outcome=r.server[5+index*2];
    if(c.mode!==mode||c.caseId!=="mcp."+mode||c.runId!==r.runId||c.scopeHash!==scopeHash||c.chainId!=="mcp-chain-"+mode||c.callId!=="mcp-call-"+mode||c.call.hostCallId!==c.callId||c.call.upstreamCallId!==c.callId||c.call.link!=="host_exposed"||fixtureHash(c.input)!==fixtureHash(q.input)||c.call.inputHash!==fixtureHash(q.input)||c.positiveRequired!==q.positiveRequired)fail();

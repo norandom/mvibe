@@ -17,6 +17,48 @@ and account-derived `Pro` label did not change that result. The difference was
 in the authentication path. A successful response alone does not identify the
 budget charged by the server.
 
+## Linux desktop and container reuse
+
+On Linux, normal Vibe and the native plugin/helper use the same Python keyring
+service `ai.mistral.vibe`, account `MISTRAL_API_KEY`. Run them as the same desktop
+user with access to the unlocked Secret Service session (for example KDE Wallet
+or GNOME Keyring). No second login is needed. This workstation's Secret Service
+credential was successfully read by `ExistingVibeSession` on 2026-11-17.
+
+A container has no access to the desktop Secret Service by default. Export only
+the normal Vibe credential to a dedicated file keyring, then mount it read-only:
+
+```bash
+uv sync --locked --extra proxy --extra docker
+export MVIBE_KEYRING_DATA="$HOME/.local/share/mvibe-container-keyring"
+uv run --locked --extra docker python scripts/export-container-auth.py "$MVIBE_KEYRING_DATA"
+docker compose up -d --build
+```
+
+For **rootless Podman** (including systems where `docker` invokes Podman), use:
+
+```bash
+docker compose -f docker-compose.yml -f compose.podman.yml up -d --build
+```
+
+The override preserves your UID so the container can read the private export and
+write its statistics directory. It disables Podman's automatic pod because
+per-container user namespaces cannot be combined with that pod. Docker Engine
+does not use this override. The image runs as UID 1000; hosts with a different UID
+must also set the service `user` to their UID/GID when using private bind mounts.
+
+The export directory is mode `0700`, the file is `0600`, and updates atomically
+replace only the Vibe entry. The file backend stores a reversible credential:
+keep the directory private and outside version control. The host keyring is never
+modified. Re-run the export after a normal Vibe sign-in changes the credential;
+the running proxy reads the replacement on its next request because the directory
+is mounted. This is snapshot reuse, not automatic Secret Service synchronization.
+Missing native credentials leave the previous export intact and report an error.
+
+`MVIBE_KEYRING_DATA` is required explicitly so Compose cannot silently create an
+empty directory and appear configured. The optional OIDC mount defaults to
+`.container-auth/` and is unused in the default `existing-vibe` mode.
+
 ## Browser sign-in has two different outcomes
 
 The normal CLI flow and the experimental CLI OIDC registration both involve a

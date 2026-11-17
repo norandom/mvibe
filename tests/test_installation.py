@@ -45,7 +45,7 @@ def test_clean_no_dev_install_and_copied_script(tmp_path):
     from conftest import _original_env
     uv = shutil.which("uv")
     assert uv, "Prepare uv and its locked dependency cache before offline checks"
-    cache = _original_env.get("UV_CACHE_DIR") or str(Path(_original_env["LOCALAPPDATA"]) / "uv/cache")
+    cache = subprocess.check_output([uv, "cache", "dir"], env=_original_env, text=True).strip()
     env = {**os.environ, "UV_CACHE_DIR": cache, "UV_OFFLINE": "true", "UV_PYTHON_DOWNLOADS": "never",
            "UV_PROJECT_ENVIRONMENT": str(tmp_path / "runtime"), "VIBE_TEST_DISABLE_KEYRING": "1"}
     source = tmp_path / "source"

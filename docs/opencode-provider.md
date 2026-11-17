@@ -61,10 +61,10 @@ bun run typecheck
 bun run build
 ```
 
-Use Bun 1.4.4, TypeScript 5.9.3, `@opencode/plugin` 2.2.5 and
+Use Bun 1.4.4, TypeScript 5.9.3, `@opencode/plugin` 2.3.0 and
 `@ai-sdk/openai-compatible` 2.0.88 for the reproducible reference pair. The
-prepared native OpenCode CLI reports 2.2.5. User-reported 2.2.6 remains unverified.
-Target current OpenCode 2 stable; these exact locks are verification inputs, not
+prepared native OpenCode CLI reports 2.3.0. The Linux host integration passes with SDK 2.3.0.
+Roll forward to current OpenCode 2 stable; these exact locks are verification inputs, not
 a requirement to disable operator updates. Version 1 packages named
 `@opencode-ai/*` are a different release line.
 
